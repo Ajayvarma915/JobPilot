@@ -1,0 +1,9 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.db
+data/generated_resumes/
+data/generated_cover_letters/
+data/raw_jobs/
+playwright/.cache/
