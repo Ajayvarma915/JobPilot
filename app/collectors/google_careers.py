@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -10,17 +11,11 @@ from app.collectors.base import JobCollector
 
 
 BASE_URL = "https://www.google.com/about/careers/applications/"
+SEARCH_URL = urljoin(BASE_URL, "jobs/results/")
 
 
 class GoogleCareersCollector(JobCollector):
-    """
-    Collect job listings from Google Careers search results.
-    """
-
-    SEARCH_URL = urljoin(
-        BASE_URL,
-        "jobs/results/",
-    )
+    """Collect jobs from Google Careers search results."""
 
     def __init__(
         self,
@@ -59,7 +54,7 @@ class GoogleCareersCollector(JobCollector):
 
     def collect(self) -> list[dict[str, Any]]:
         response = self.session.get(
-            self.SEARCH_URL,
+            SEARCH_URL,
             params=self._build_params(),
             timeout=30,
         )
@@ -73,9 +68,6 @@ class GoogleCareersCollector(JobCollector):
 
         jobs: list[dict[str, Any]] = []
 
-        # Google currently renders each search result as an <li>.
-        # We locate cards by their title element rather than
-        # relying on a single generated CSS class.
         for title_element in soup.find_all("h3"):
             title = title_element.get_text(
                 " ",
@@ -91,8 +83,8 @@ class GoogleCareersCollector(JobCollector):
                 continue
 
             job = self._parse_job_card(
-                card=card,
-                title=title,
+                card,
+                title,
             )
 
             if job is not None:
@@ -105,132 +97,11 @@ class GoogleCareersCollector(JobCollector):
         card: Any,
         title: str,
     ) -> dict[str, Any] | None:
-        # Company
-        company = None
 
-        company_icon = card.find(
-            "i",
-            string=lambda value: (
-                value and value.strip() == "corporate_fare"
-            ),
-        )
+        # ---------------------------------------------------------
+        # Job URL + external ID
+        # ---------------------------------------------------------
 
-        if company_icon is not None:
-            company_span = company_icon.find_parent("span")
-
-            if company_span is not None:
-                spans = company_span.find_all(
-                    "span",
-                    recursive=True,
-                )
-
-                if spans:
-                    company = spans[-1].get_text(
-                        " ",
-                        strip=True,
-                    )
-
-        # Fallback: Google cards currently contain
-        # "Google | locations" in a <p>.
-        if not company:
-            company_paragraph = card.find(
-                "p",
-                class_="l103df",
-            )
-
-            if company_paragraph:
-                text = company_paragraph.get_text(
-                    " ",
-                    strip=True,
-                )
-
-                if "|" in text:
-                    company = text.split("|", 1)[0].strip()
-
-        if not company:
-            company = "Google"
-
-        # Locations
-        locations: list[str] = []
-
-        location_icon = card.find(
-            "i",
-            string=lambda value: (
-                value and value.strip() == "place"
-            ),
-        )
-
-        if location_icon is not None:
-            location_container = location_icon.find_parent("span")
-
-            if location_container is not None:
-                location_elements = location_container.find_all(
-                    "span",
-                    class_="r0wTof",
-                )
-
-                for element in location_elements:
-                    value = element.get_text(
-                        " ",
-                        strip=True,
-                    )
-
-                    if value:
-                        value = value.lstrip("; ").strip()
-
-                        if value:
-                            locations.append(value)
-
-        # Experience
-        experience = None
-
-        experience_button = card.find(
-            "button",
-            attrs={
-                "aria-label": lambda value: (
-                    value
-                    and "experience filters" in value.lower()
-                )
-            },
-        )
-
-        if experience_button is not None:
-            experience = experience_button.get_text(
-                " ",
-                strip=True,
-            )
-
-        # Qualifications / description
-        description_parts: list[str] = []
-
-        for heading in card.find_all(
-            ["h4", "h5"],
-        ):
-            heading_text = heading.get_text(
-                " ",
-                strip=True,
-            )
-
-            if heading_text.lower() in {
-                "minimum qualifications",
-                "preferred qualifications",
-            }:
-                parent = heading.parent
-
-                if parent is not None:
-                    text = parent.get_text(
-                        "\n",
-                        strip=True,
-                    )
-
-                    if text:
-                        description_parts.append(text)
-
-        description = "\n\n".join(
-            dict.fromkeys(description_parts)
-        )
-
-        # URL
         link = card.find(
             "a",
             attrs={
@@ -251,17 +122,256 @@ class GoogleCareersCollector(JobCollector):
         if not href:
             return None
 
-        job_url = urljoin(
+        canonical_url = self._canonicalize_url(href)
+
+        external_id = self._extract_external_id(
+            canonical_url
+        )
+
+        # ---------------------------------------------------------
+        # Company
+        # ---------------------------------------------------------
+
+        company = "Google"
+
+        # Google's current search cards contain a company
+        # paragraph such as:
+        #
+        # Google | Mountain View, CA, USA
+        #
+        company_paragraph = card.find(
+            "p",
+            class_="l103df",
+        )
+
+        if company_paragraph is not None:
+            paragraph_text = company_paragraph.get_text(
+                " ",
+                strip=True,
+            )
+
+            if "|" in paragraph_text:
+                company = paragraph_text.split(
+                    "|",
+                    1,
+                )[0].strip()
+
+        # ---------------------------------------------------------
+        # Locations
+        # ---------------------------------------------------------
+
+        locations: list[str] = []
+
+        location_icon = card.find(
+            "i",
+            string=lambda value: (
+                value
+                and value.strip() == "place"
+            ),
+        )
+
+        if location_icon is not None:
+
+            location_container = (
+                location_icon.find_parent("span")
+            )
+
+            if location_container is not None:
+
+                location_elements = (
+                    location_container.find_all(
+                        "span",
+                        class_="r0wTof",
+                    )
+                )
+
+                for element in location_elements:
+
+                    value = element.get_text(
+                        " ",
+                        strip=True,
+                    )
+
+                    value = value.lstrip("; ").strip()
+
+                    if value:
+                        locations.append(value)
+
+        # Remove duplicate locations while preserving order.
+        locations = list(
+            dict.fromkeys(locations)
+        )
+
+        # ---------------------------------------------------------
+        # Experience level
+        # ---------------------------------------------------------
+
+        experience_level = None
+
+        experience_button = card.find(
+            "button",
+            attrs={
+                "aria-label": lambda value: (
+                    value
+                    and "experience filters"
+                    in value.lower()
+                )
+            },
+        )
+
+        if experience_button is not None:
+
+            # Do NOT use button.get_text() because it also
+            # contains Google's material icon text such as
+            # "bar_chart".
+            experience_span = (
+                experience_button.find(
+                    "span",
+                    class_="wVSTAb",
+                )
+            )
+
+            if experience_span is not None:
+                experience_level = (
+                    experience_span.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+        # ---------------------------------------------------------
+        # Description
+        # ---------------------------------------------------------
+
+        description = self._extract_description(card)
+
+        return {
+            "external_id": external_id,
+            "company": company,
+            "title": title,
+            "location": locations,
+            "url": canonical_url,
+            "description": description,
+            "experience_level": experience_level,
+            "source": "google_careers",
+        }
+
+    @staticmethod
+    def _canonicalize_url(href: str) -> str:
+        """
+        Convert Google's relative job URL into a canonical URL.
+
+        Search parameters such as ?page=1&q=... are removed.
+        """
+
+        absolute_url = urljoin(
             BASE_URL,
             href,
         )
 
-        return {
-            "company": company,
-            "title": title,
-            "location": "; ".join(locations),
-            "experience": experience,
-            "url": job_url,
-            "description": description,
-            "source": "google_careers",
-        }
+        parsed = urlparse(absolute_url)
+
+        return parsed._replace(
+            query="",
+            fragment="",
+        ).geturl()
+
+    @staticmethod
+    def _extract_external_id(
+        job_url: str,
+    ) -> str | None:
+        """
+        Extract the numeric Google job ID from the URL.
+
+        Example:
+        /jobs/results/100397...-software-engineer
+        """
+
+        match = re.search(
+            r"/jobs/results/(\d+)-",
+            job_url,
+        )
+
+        if match is None:
+            return None
+
+        return match.group(1)
+
+    @staticmethod
+    def _extract_description(card: Any) -> str:
+        """
+        Extract the useful textual content from the job card.
+
+        We currently include:
+        - experience description
+        - minimum qualifications
+        - preferred qualifications
+
+        We deliberately avoid buttons such as Share / Email.
+        """
+
+        sections: list[str] = []
+
+        # Experience explanation
+        experience_tooltip = card.find(
+            "div",
+            role="tooltip",
+        )
+
+        if experience_tooltip is not None:
+            text = experience_tooltip.get_text(
+                " ",
+                strip=True,
+            )
+
+            if text:
+                sections.append(text)
+
+        # Qualification sections
+        for heading in card.find_all(
+            ["h4", "h5"],
+        ):
+            heading_text = heading.get_text(
+                " ",
+                strip=True,
+            )
+
+            normalized_heading = (
+                heading_text.lower()
+            )
+
+            if normalized_heading not in {
+                "minimum qualifications",
+                "preferred qualifications",
+            }:
+                continue
+
+            section_parts = [
+                heading_text
+            ]
+
+            parent = heading.parent
+
+            if parent is not None:
+                for li in parent.find_all("li"):
+                    text = li.get_text(
+                        " ",
+                        strip=True,
+                    )
+
+                    if text:
+                        section_parts.append(
+                            text
+                        )
+
+            sections.append(
+                "\n".join(section_parts)
+            )
+
+        # Remove exact duplicate sections while
+        # preserving their original order.
+        unique_sections = list(
+            dict.fromkeys(sections)
+        )
+
+        return "\n\n".join(unique_sections)

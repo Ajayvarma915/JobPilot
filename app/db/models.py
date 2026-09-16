@@ -1,9 +1,52 @@
+from __future__ import annotations
+
 from datetime import datetime
 
-from sqlalchemy import String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
+
+
+class Company(Base):
+    __tablename__ = "companies"
+
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    name: Mapped[str] = mapped_column(
+        String(255),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+
+    website: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    careers_url: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    source_type: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    jobs: Mapped[list["Job"]] = relationship(
+        back_populates="company",
+        cascade="all, delete-orphan",
+    )
 
 
 class Job(Base):
@@ -14,9 +57,16 @@ class Job(Base):
         autoincrement=True,
     )
 
-    company: Mapped[str] = mapped_column(
-        String(255),
+    company_id: Mapped[int] = mapped_column(
+        ForeignKey("companies.id"),
         nullable=False,
+        index=True,
+    )
+
+    external_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
     )
 
     title: Mapped[str] = mapped_column(
@@ -25,7 +75,7 @@ class Job(Base):
     )
 
     location: Mapped[str | None] = mapped_column(
-        String(255),
+        Text,
         nullable=True,
     )
 
@@ -44,7 +94,25 @@ class Job(Base):
         nullable=False,
     )
 
+    experience_level: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    employment_type: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    posted_at: Mapped[datetime | None] = mapped_column(
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow,
         nullable=False,
+    )
+
+    company: Mapped["Company"] = relationship(
+        back_populates="jobs",
     )

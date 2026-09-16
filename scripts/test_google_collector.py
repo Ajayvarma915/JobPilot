@@ -19,7 +19,7 @@ def main() -> None:
         print("Company    :", job["company"])
         print("Title      :", job["title"])
         print("Location   :", job["location"])
-        print("Experience :", job["experience"])
+        print("Experience :", job["experience_level"])
         print("URL        :", job["url"])
 
         description = job["description"]
