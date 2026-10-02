@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-
+from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy import ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -52,6 +52,14 @@ class Company(Base):
 class Job(Base):
     __tablename__ = "jobs"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "source",
+            "external_id",
+            name="uq_job_source_external_id",
+        ),
+    )
+    
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
