@@ -5,6 +5,7 @@ def main() -> None:
     collector = GoogleCareersCollector(
         query="Software Engineer",
         location="Hyderabad",
+        fetch_details=True,
     )
 
     jobs = collector.collect()
@@ -22,10 +23,8 @@ def main() -> None:
         print("Experience :", job["experience_level"])
         print("URL        :", job["url"])
 
-        description = job["description"]
-
         print("\nDescription:")
-        print(description[:1000])
+        print(job["description"][:2000])
         print()
 
 

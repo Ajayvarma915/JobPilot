@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 from datetime import datetime
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
-from sqlalchemy import ForeignKey, String, Text
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from sqlalchemy import (
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import (
+    Mapped,
+    mapped_column,
+    relationship,
+)
 
 from app.db.database import Base
 
@@ -59,7 +68,7 @@ class Job(Base):
             name="uq_job_source_external_id",
         ),
     )
-    
+
     id: Mapped[int] = mapped_column(
         primary_key=True,
         autoincrement=True,
@@ -114,6 +123,22 @@ class Job(Base):
 
     posted_at: Mapped[datetime | None] = mapped_column(
         nullable=True,
+    )
+
+    first_seen_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    last_seen_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow,
+        nullable=False,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        default=True,
+        nullable=False,
+        index=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
