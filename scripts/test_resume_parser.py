@@ -2,483 +2,225 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.resume.resume_parser import (
-    ResumeParser,
-)
-
+from app.resume.resume_parser import ResumeParser, parse_resume_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-RESUME_CANDIDATES = [
-    PROJECT_ROOT
-    / "data"
-    / "master_resume"
-    / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
+SAMPLE_RESUME_TEXT = """
+AJAY VARMA KAMMAMPATI
+linkedin.com/in/ajayvarma915
+github.com/Ajayvarma915
+2100100055iot@gmail.com
++91-6300311902
+Nalgonda,Telangana
+EDUCATION
+BTech-Internet Of Things(IOT)
+KL University
+CGPA : 9.5
+09/2021 – present
+Vijayawada,
+Andhra Pradesh
+TECHNICAL SKILLS
+LANGUAGES/TOOLS/FRAMEWORKS/CONCEPTS
+•Java, Python, Data Structures and Algorithms, Object Oriented Programming(OOPS).
+•HTML, CSS, JavaScript, Git and GitHub, React.js, Tailwind CSS, Next.js.
+PROJECTS
+Crypto Tracker
+A cryptocurrency website displaying real-time data through an API for 100 coins using React.js.
+•I implemented Chart.js to compare data of two coins, showing price history over the last 24 hours.
+•Achieving a 90% score for performance and 93% for accessibility in Lighthouse Tool.
+User Management System
+Developed a user management system in Next.js for managing CRUD operations of over 100+ users.
+•Implemented secure authentication, session management using Auth.js for credentials login.
+3. •Integrated Firebase as the database for efficient and scalable data storage.
+Rule Based Chatbot
+Built a chatbot using Python that accepts both text, voice inputs and delivers text, voice outputs.
+•Deployed the chatbot on Jetson Nano, leveraging NLP techniques and Machine Learning concepts.
+•Attained 80% response accuracy and integrated Google search functionality using PyWhatKit.
+VIRTUAL INTERNSHIP
+Octanet Services Private LTD - Web Development Intern
+Project 1: Todo List Application
+01/2024 – 01/2024
+•Created a Todo list application using HTML, CSS, and JavaScript, enabling
+functionalities for adding, deleting, updating, editing, and marking tasks as
+completed, with support for managing up to 50 tasks.
+Project 2: Amazon Clone
+•Developed a fully functional Amazon clone website using HTML, CSS, and
+JavaScript. Showcasing expertise in front-end web development. through
+product listings, sidebar navigations, Image sliders.
+CERTIFICATES
+AWS CP (Cloud Practitioner)
+Python - HackerRank
+Microsoft Azure
+Fundamentals (AZ900)
+React(Basic) - HackerRank
+Java - HackerRank
+Programming in Java - NPTEL
+ACHIEVEMENTS
+•Achieved a Global Rank of 189, 681, 910 in codechef Starters 82, 80, 83.
+•Solved 600+ problems in coding platforms like Leetcode, Codeforces, codechef, GeeksforGeeks and
+HackerRank combined.
+"""
 
-    PROJECT_ROOT
-    / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
-]
 
-
-def check(
-    condition: bool,
-    message: str,
-) -> None:
+def check(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
 
 
-def locate_resume() -> Path | None:
-    for path in RESUME_CANDIDATES:
-        if path.exists():
-            return path
-
-    return None
-
-
 def test_sample_resume_text() -> None:
-    text = """
-    AJAY VARMA KAMMAMPATI
-    linkedin.com/in/ajayvarma915
-    github.com/Ajayvarma915
-    2100100055iot@gmail.com
-    +91-6300311902
-    Nalgonda, Telangana
+    resume = ResumeParser().parse_text(SAMPLE_RESUME_TEXT)
 
-    EDUCATION
-    BTech - Internet Of Things(IOT)
-    KL University
-    CGPA : 9.5
-    09/2021 - present
-    Vijayawada, Andhra Pradesh
-
-    TECHNICAL SKILLS
-    Java, Python, Data Structures and Algorithms,
-    Object Oriented Programming(OOPS).
-    HTML, CSS, JavaScript, Git and GitHub,
-    React.js, Tailwind CSS, Next.js.
-
-    PROJECTS
-    Crypto Tracker
-    A cryptocurrency website displaying real-time data
-    through an API for 100 coins using React.js.
-    - Implemented Chart.js to compare data of two coins.
-
-    User Management System
-    Developed a user management system in Next.js
-    for managing CRUD operations.
-    - Implemented secure authentication and session management
-      using Auth.js.
-
-    Rule Based Chatbot
-    Built a chatbot using Python.
-    - Deployed the chatbot on Jetson Nano using NLP
-      and Machine Learning concepts.
-
-    VIRTUAL INTERNSHIP
-    Octanet Services Private LTD - Web Development Intern
-    01/2024 - 01/2024
-    - Created a Todo list application using HTML,
-      CSS, and JavaScript.
-
-    CERTIFICATES
-    AWS CP (Cloud Practitioner)
-    Microsoft Azure Fundamentals (AZ900)
-    Programming in Java - NPTEL
-
-    ACHIEVEMENTS
-    Solved 600+ problems in coding platforms.
-    """
-
-    parser = ResumeParser()
-
-    result = parser.parse_text(
-        text
-    )
-
+    check(resume.contact.name == "AJAY VARMA KAMMAMPATI", f"Name: {resume.contact.name!r}")
+    check(resume.contact.email == "2100100055iot@gmail.com", "Email was not extracted.")
     check(
-        result.contact.name
-        == "AJAY VARMA KAMMAMPATI",
-        "Name extraction failed.",
+        resume.contact.phone is not None and "6300311902" in resume.contact.phone,
+        f"Phone: {resume.contact.phone!r}",
     )
+    check(resume.contact.linkedin == "linkedin.com/in/ajayvarma915", "LinkedIn was not extracted.")
+    check(resume.contact.github == "github.com/Ajayvarma915", "GitHub was not extracted.")
+    check(resume.contact.location == "Nalgonda, Telangana", f"Location: {resume.contact.location!r}")
 
+    check(resume.education and resume.education[0].degree == "Bachelor", "Education degree was not parsed.")
+    education = resume.education[0]
+    check(education.institution == "KL University" and education.cgpa == 9.5, "Education details were not parsed.")
     check(
-        result.contact.email
-        == "2100100055iot@gmail.com",
-        "Email extraction failed.",
+        education.field_of_study and "Internet Of Things" in education.field_of_study,
+        "Field of study was not parsed.",
     )
 
-    check(
-        "6300311902"
-        in result.contact.phone,
-        "Phone extraction failed.",
-    )
-
-    check(
-        len(result.education) >= 1,
-        "Education was not extracted.",
-    )
-
-    check(
-        result.education[0].degree
-        == "Bachelor",
-        "Degree should normalize to Bachelor.",
-    )
-
-    check(
-        "Java" in result.skills,
-        "Java should be extracted.",
-    )
-
-    check(
-        "Python" in result.skills,
-        "Python should be extracted.",
-    )
-
-    check(
-        "React.js" in result.skills,
-        "React.js should be extracted.",
-    )
-
-    check(
-        "Next.js" in result.skills,
-        "Next.js should be extracted.",
-    )
-
-    check(
-        "Java" in result.programming_languages,
-        "Java should be a programming language.",
-    )
-
-    check(
-        "Python" in result.programming_languages,
-        "Python should be a programming language.",
-    )
-
-    check(
-        "React.js" in result.frameworks,
-        "React.js should be a framework.",
-    )
-
-    check(
-        "Git" in result.tools,
-        "Git should be a tool.",
-    )
-
-    check(
-        len(result.projects) >= 3,
-        "At least three projects should be extracted.",
-    )
-
-    project_names = {
-        project.name.lower()
-        for project in result.projects
+    expected_skills = {
+        "Java", "Python", "JavaScript", "HTML", "CSS", "React.js",
+        "Tailwind CSS", "Next.js", "Git", "GitHub",
+        "Data Structures and Algorithms", "Object-Oriented Programming",
     }
-
     check(
-        "crypto tracker" in project_names,
-        "Crypto Tracker project missing.",
+        expected_skills.issubset(set(resume.skills)),
+        f"Missing skills: {sorted(expected_skills - set(resume.skills))}",
     )
-
     check(
-        "user management system"
-        in project_names,
-        "User Management System missing.",
+        {"Java", "Python"}.issubset(resume.programming_languages),
+        "Programming language categories are wrong.",
     )
-
     check(
-        "rule based chatbot"
-        in project_names,
-        "Rule Based Chatbot missing.",
+        {"React.js", "Next.js"}.issubset(resume.frameworks),
+        "Framework categories are wrong.",
     )
 
+    project_names = [project.name for project in resume.projects]
     check(
-        len(result.experience) >= 1,
-        "Internship experience should be extracted.",
+        project_names == ["Crypto Tracker", "User Management System", "Rule Based Chatbot"],
+        f"Project titles: {project_names!r}",
     )
-
+    check("Firebase" in resume.projects[1].technologies, "Firebase should belong to User Management System.")
     check(
-        len(result.certifications) >= 2,
-        "Certifications should be extracted.",
+        any("Integrated Firebase" in bullet for bullet in resume.projects[1].bullets),
+        "Firebase bullet was lost.",
     )
-
     check(
-        len(result.achievements) >= 1,
-        "Achievements should be extracted.",
+        not any("Integrated Firebase" in name for name in project_names),
+        "A project bullet was misclassified as a title.",
     )
+    check("Chart.js" in resume.projects[0].technologies, "Chart.js should belong to Crypto Tracker.")
+    check("PyWhatKit" in resume.projects[2].technologies, "PyWhatKit should belong to Rule Based Chatbot.")
 
-
-def test_parse_real_pdf() -> None:
-    resume_path = locate_resume()
-
-    if resume_path is None:
-        print(
-            "Real resume PDF not found in the expected locations."
-        )
-        return
-
-    parser = ResumeParser()
-
-    result = parser.parse_file(
-        resume_path
-    )
-
+    check(len(resume.experience) == 1, f"Internship count: {len(resume.experience)}")
+    internship = resume.experience[0]
+    check(internship.company == "Octanet Services Private LTD", f"Company: {internship.company!r}")
+    check(internship.role == "Web Development Intern", f"Role: {internship.role!r}")
     check(
-        len(result.raw_text) > 1000,
-        "PDF text extraction is unexpectedly short.",
+        (internship.start_date, internship.end_date) == ("01/2024", "01/2024"),
+        "Internship dates were not parsed.",
     )
-
     check(
-        "AJAY VARMA KAMMAMPATI"
-        in result.raw_text,
-        "Resume name not found in extracted PDF text.",
+        any("Todo List Application" in item for item in internship.bullets),
+        "Todo List project detail was lost.",
     )
-
     check(
-        result.contact.email
-        != "",
-        "Email was not extracted from real PDF.",
+        any("Amazon Clone" in item for item in internship.bullets),
+        "Amazon Clone detail was lost.",
     )
 
+    certs = [item.name for item in resume.certifications]
+    check("Microsoft Azure Fundamentals (AZ900)" in certs, f"Azure certification split: {certs!r}")
     check(
-        len(result.skills) >= 5,
-        "Too few skills extracted from real PDF.",
+        len(certs) == 6 and "Fundamentals (AZ900)" not in certs,
+        f"Certification grouping: {certs!r}",
     )
-
+    check(len(resume.achievements) == 2, f"Achievement grouping: {resume.achievements!r}")
     check(
-        len(result.projects) >= 2,
-        "Too few projects extracted from real PDF.",
-    )
-
-    check(
-        len(result.certifications) >= 2,
-        "Too few certifications extracted from real PDF.",
+        "HackerRank combined." in resume.achievements[-1],
+        "Wrapped achievement continuation was lost.",
     )
 
 
-def print_resume(
-    result,
-) -> None:
-    print()
-    print("========================================")
-    print("Parsed Resume")
-    print("========================================")
-
-    print()
-    print("Contact")
-    print("----------------------------------------")
-    print(
-        f"Name     : {result.contact.name}"
-    )
-    print(
-        f"Email    : {result.contact.email}"
-    )
-    print(
-        f"Phone    : {result.contact.phone}"
-    )
-    print(
-        f"LinkedIn : {result.contact.linkedin}"
-    )
-    print(
-        f"GitHub   : {result.contact.github}"
-    )
-    print(
-        f"Location : {result.contact.location}"
-    )
-
-    print()
-    print("Skills")
-    print("----------------------------------------")
-    print(
-        ", ".join(result.skills)
-    )
-
-    print()
-    print("Programming Languages")
-    print("----------------------------------------")
-    print(
-        ", ".join(
-            result.programming_languages
-        )
-    )
-
-    print()
-    print("Frameworks")
-    print("----------------------------------------")
-    print(
-        ", ".join(
-            result.frameworks
-        )
-    )
-
-    print()
-    print("Tools")
-    print("----------------------------------------")
-    print(
-        ", ".join(
-            result.tools
-        )
-    )
-
-    print()
-    print("Concepts")
-    print("----------------------------------------")
-    print(
-        ", ".join(
-            result.concepts
-        )
-    )
-
-    print()
-    print("Education")
-    print("----------------------------------------")
-
-    for education in result.education:
-        print(
-            f"- {education.degree}: "
-            f"{education.field_of_study} | "
-            f"{education.institution} | "
-            f"CGPA {education.cgpa}"
-        )
-
-    print()
-    print("Projects")
-    print("----------------------------------------")
-
-    for index, project in enumerate(
-        result.projects,
-        start=1,
-    ):
-        print(
-            f"{index}. {project.name}"
-        )
-
-        if project.technologies:
-            print(
-                "   Technologies: "
-                + ", ".join(
-                    project.technologies
-                )
-            )
-
-        if project.description:
-            print(
-                f"   {project.description}"
-            )
-
-        for bullet in project.bullets:
-            print(
-                f"   - {bullet}"
-            )
-
-    print()
-    print("Experience")
-    print("----------------------------------------")
-
-    for experience in result.experience:
-        print(
-            f"- {experience.role} "
-            f"at {experience.company}"
-        )
-
-        if experience.start_date:
-            print(
-                f"  Dates: "
-                f"{experience.start_date} - "
-                f"{experience.end_date}"
-            )
-
-        for bullet in experience.bullets:
-            print(
-                f"  - {bullet}"
-            )
-
-    print()
-    print("Certifications")
-    print("----------------------------------------")
-
-    for certification in result.certifications:
-        print(
-            f"- {certification.name}"
-        )
-
-    print()
-    print("Achievements")
-    print("----------------------------------------")
-
-    for achievement in result.achievements:
-        print(
-            f"- {achievement}"
-        )
-
-
-def main() -> None:
-    print("========================================")
-    print("Resume Parser Unit Tests")
-    print("========================================")
-
-    tests = [
-        test_sample_resume_text,
-        test_parse_real_pdf,
+def test_real_resume_pdf() -> None:
+    candidates = [
+        PROJECT_ROOT / "data/master_resume/AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
+        PROJECT_ROOT / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
     ]
+    pdf = next((path for path in candidates if path.exists()), None)
 
-    passed = 0
-    failed = 0
+    if pdf is None:
+        raise FileNotFoundError(
+            "Place your PDF at data/master_resume/"
+            "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf before running this test."
+        )
 
-    for index, test_function in enumerate(
-        tests,
-        start=1,
-    ):
+    resume = parse_resume_file(pdf)
+    check(len(resume.raw_text) > 1000, "Extracted PDF text is too short.")
+    check(resume.contact.name == "AJAY VARMA KAMMAMPATI", f"PDF name: {resume.contact.name!r}")
+    check(resume.contact.email == "2100100055iot@gmail.com", "PDF email was not extracted.")
+    check(len(resume.skills) >= 10, f"Too few PDF skills: {resume.skills!r}")
+
+    names = [project.name for project in resume.projects]
+    check(
+        names == ["Crypto Tracker", "User Management System", "Rule Based Chatbot"],
+        f"PDF project titles: {names!r}",
+    )
+    check(
+        "Firebase" in resume.projects[1].technologies,
+        "PDF Firebase bullet is attached to the wrong project.",
+    )
+
+    certs = [item.name for item in resume.certifications]
+    check("Microsoft Azure Fundamentals (AZ900)" in certs, f"PDF Azure certification split: {certs!r}")
+    check(
+        len(resume.achievements) == 2
+        and "HackerRank combined." in resume.achievements[-1],
+        f"PDF achievements: {resume.achievements!r}",
+    )
+    check(
+        resume.experience and resume.experience[0].role == "Web Development Intern",
+        "PDF internship role was not extracted.",
+    )
+
+
+def main() -> int:
+    print("=" * 40, "\nResume Parser Regression Tests\n", "=" * 40, sep="")
+    tests = [
+        ("Synthetic resume and regression cases", test_sample_resume_text),
+        ("Real resume PDF regression cases", test_real_resume_pdf),
+    ]
+    passed = failed = 0
+
+    for number, (name, test) in enumerate(tests, start=1):
         try:
-            test_function()
-
-            print(
-                f"Test {index}: PASS"
-            )
-
+            test()
             passed += 1
-
+            print(f"Test {number}: PASS - {name}")
         except Exception as exc:
-            print(
-                f"Test {index}: FAIL"
-            )
-            print(
-                f"    {exc}"
-            )
-            print()
-
             failed += 1
+            print(f"Test {number}: FAIL - {name}\n  {type(exc).__name__}: {exc}")
 
-    print()
-    print("========================================")
-    print(
-        f"Unit tests: "
-        f"{passed} passed, "
-        f"{failed} failed"
-    )
-    print("========================================")
+    print(f"\nUnit tests: {passed} passed, {failed} failed")
+    if failed:
+        print("FAILURE: Resume parser regression tests failed.")
+        return 1
 
-    if failed > 0:
-        raise SystemExit(1)
-
-    resume_path = locate_resume()
-
-    if resume_path is not None:
-        parser = ResumeParser()
-
-        result = parser.parse_file(
-            resume_path
-        )
-
-        print_resume(
-            result
-        )
-
-    print()
-    print(
-        "SUCCESS: Resume parser tests passed."
-    )
+    print("SUCCESS: Resume parser regression tests passed.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
