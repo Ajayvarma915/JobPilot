@@ -1,0 +1,1 @@
+"""JobPilot FastAPI application package."""

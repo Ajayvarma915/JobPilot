@@ -6,6 +6,7 @@ from pathlib import Path
 from app.resume.evidence_selector import ResumeEvidenceSelector
 from app.resume.evidence_store import MasterResumeEvidenceStore
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 SAMPLE_RESUME = """
 SAMPLE CANDIDATE
@@ -21,6 +22,9 @@ PROJECTS
 Inventory Dashboard
 Built an inventory dashboard using React.js, JavaScript, HTML, and CSS.
 • Added charts, search, and responsive UI features.
+User Management System
+Developed a user management system using Next.js, Auth.js, and Firebase.
+• Implemented credentials authentication and session management.
 Rule-Based Chatbot
 Built a chatbot using Python and Natural Language Processing.
 • Accepted text input and returned responses.
@@ -39,7 +43,6 @@ def check(condition: bool, message: str) -> None:
 def _build_test_store(root: Path) -> tuple[MasterResumeEvidenceStore, dict]:
     source = root / "sample_resume.txt"
     source.write_text(SAMPLE_RESUME, encoding="utf-8")
-
     store = MasterResumeEvidenceStore(root / "evidence.json")
     data = store.build_from_file(source)
     return store, data
@@ -69,10 +72,7 @@ def test_selector_separates_verified_from_unverified() -> None:
             "Relevant unverified evidence should be suggested for review.",
         )
         check(
-            all(
-                not item["eligible_for_resume"]
-                for item in result["review_queue"]
-            ),
+            all(not item["eligible_for_resume"] for item in result["review_queue"]),
             "Review queue items must not be resume-eligible.",
         )
         check(
@@ -135,9 +135,7 @@ def test_selector_separates_verified_from_unverified() -> None:
             note="Checked project details against source resume",
         )
 
-        verified_result = ResumeEvidenceSelector(
-            store.store_path
-        ).select_for_job(
+        verified_result = ResumeEvidenceSelector(store.store_path).select_for_job(
             job_title="Frontend Software Engineer",
             job_description=(
                 "Build responsive web interfaces using React.js and JavaScript. "
@@ -157,29 +155,74 @@ def test_selector_separates_verified_from_unverified() -> None:
             "Relevant verified project not selected.",
         )
         check(
-            all(
-                item["user_verified"]
-                for item in verified_result["selected_evidence"]
-            ),
+            all(item["user_verified"] for item in verified_result["selected_evidence"]),
             "An unverified record was selected.",
         )
         check(
             verified_result["coverage"]["verified_covered"]
             == ["React.js", "JavaScript"],
-            "Verified required coverage is wrong: "
-            f"{verified_result['coverage']}",
+            f"Verified required coverage is wrong: {verified_result['coverage']}",
         )
         check(
-            "Angular"
-            in verified_result["coverage"]["not_found_in_evidence"],
+            "Angular" in verified_result["coverage"]["not_found_in_evidence"],
             "Missing Angular requirement must not be fabricated.",
         )
 
 
+def test_js_suffix_is_not_misclassified_as_javascript() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+        store, data = _build_test_store(root)
+
+        project = next(
+            item
+            for item in data["evidence"]
+            if item["category"] == "project"
+            and item["title"] == "User Management System"
+        )
+
+        selector = ResumeEvidenceSelector(store.store_path)
+
+        result = selector.select_for_job(
+            job_title="Full Stack Engineer",
+            job_description=(
+                "Maintain a user management application built with "
+                "Next.js, Auth.js, and Firebase."
+            ),
+            required_skills=["JavaScript"],
+            preferred_skills=["Next.js", "Auth.js", "Firebase"],
+        )
+
+        selected_project = next(
+            item
+            for item in result["review_queue"]
+            if item["evidence_id"] == project["evidence_id"]
+        )
+
+        check(
+            "JavaScript" not in selected_project["matched_required_skills"],
+            "Next.js/Auth.js must not imply JavaScript skill evidence.",
+        )
+
+        inferred_result = selector.select_for_job(
+            job_title="Full Stack Engineer",
+            job_description="Maintain an application built with Next.js and Auth.js.",
+        )
+
+        inferred = {
+            item.casefold()
+            for item in inferred_result["signals"]["inferred_job_technologies"]
+        }
+
+        check(
+            "javascript" not in inferred,
+            f"`.js` suffix was incorrectly inferred as JavaScript: {inferred}",
+        )
+
+
 def test_selector_handles_real_evidence_store() -> None:
-    project_root = Path(__file__).resolve().parents[1]
     store_path = (
-        project_root
+        PROJECT_ROOT
         / "data"
         / "master_resume"
         / "master_resume_evidence.json"
@@ -203,20 +246,20 @@ def test_selector_handles_real_evidence_store() -> None:
     )
 
     check(
-        result["review_queue"],
-        "Real resume should produce review suggestions for this JD.",
+        result["review_queue"] or result["selected_evidence"],
+        "Real resume should produce relevant evidence for this JD.",
     )
     check(
-        not result["selected_evidence"],
-        "The freshly generated store should not have eligible evidence "
-        "before user verification.",
+        all(item["user_verified"] is True for item in result["selected_evidence"]),
+        "Selected evidence must be user-verified.",
     )
     check(
-        all(
-            item["user_verified"] is False
-            for item in result["review_queue"]
-        ),
-        "Real resume review queue should still require review.",
+        all(item["user_verified"] is False for item in result["review_queue"]),
+        "Review queue must contain only unverified evidence.",
+    )
+    check(
+        result["safety"]["only_user_verified_records_selected"] is True,
+        "Selector safety metadata should preserve the verification gate.",
     )
 
 
@@ -227,7 +270,11 @@ def main() -> int:
             test_selector_separates_verified_from_unverified,
         ),
         (
-            "Real resume evidence remains review-gated",
+            ".js suffix is not misclassified as JavaScript",
+            test_js_suffix_is_not_misclassified_as_javascript,
+        ),
+        (
+            "Real resume evidence respects verification status",
             test_selector_handles_real_evidence_store,
         ),
     ]

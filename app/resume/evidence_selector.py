@@ -63,6 +63,42 @@ def _canonical_skills(values: Iterable[str] | None) -> list[str]:
     return _clean_list(_canonical_skill(value) for value in (values or []))
 
 
+def _extract_technologies_safely(text: str) -> list[str]:
+    """Detect technologies without reading the .js suffix as JavaScript.
+
+    Short aliases such as JS and TS are accepted as standalone tokens,
+    but a preceding dot blocks them. This prevents Next.js and Auth.js
+    from being interpreted as separate JavaScript skill evidence.
+    """
+    matches: list[tuple[int, str]] = []
+
+    for canonical, aliases in TECHNOLOGY_ALIASES.items():
+        positions: list[int] = []
+
+        for alias in aliases:
+            if alias.casefold() in {"js", "ts"}:
+                pattern = re.compile(
+                    rf"(?<![A-Za-z0-9+#.]){re.escape(alias)}(?![A-Za-z0-9+#])",
+                    re.IGNORECASE,
+                )
+            else:
+                pattern = re.compile(
+                    rf"(?<![A-Za-z0-9+#]){re.escape(alias)}(?![A-Za-z0-9+#])",
+                    re.IGNORECASE,
+                )
+
+            found = pattern.search(text)
+
+            if found:
+                positions.append(found.start())
+
+        if positions:
+            matches.append((min(positions), canonical))
+
+    matches.sort(key=lambda item: item[0])
+    return _clean_list(name for _, name in matches)
+
+
 def _tokens(text: str) -> set[str]:
     return {
         token.casefold().strip(".-")
@@ -73,8 +109,8 @@ def _tokens(text: str) -> set[str]:
 
 
 def _evidence_skill_names(item: dict[str, Any]) -> set[str]:
-    # A skill record's source text may be the entire skills-section line.
-    # Do not let neighboring skills on that line become false matches.
+    # A skill record can point to an entire skills-section line.
+    # Use its own title to avoid importing neighboring skills.
     if item.get("category") == "skill" and item.get("title"):
         return {_canonical_skill(str(item["title"])).casefold()}
 
@@ -84,12 +120,9 @@ def _evidence_skill_names(item: dict[str, Any]) -> set[str]:
         str(item.get("source", {}).get("text", "")),
     ]
 
-    metadata = item.get("metadata", {})
-
-    for value in metadata.get("technologies", []) or []:
-        text_parts.append(str(value))
-
-    recognized = extract_technologies("\n".join(text_parts))
+    # Do not trust parser-derived metadata for skill matching: older metadata
+    # may contain a false JavaScript match extracted from Next.js or Auth.js.
+    recognized = _extract_technologies_safely("\n".join(text_parts))
     return {name.casefold() for name in recognized}
 
 
@@ -100,8 +133,7 @@ def _evidence_tokens(item: dict[str, Any]) -> set[str]:
     )
 
     if item.get("category") == "skill":
-        # The original source line can contain many comma-separated skills.
-        # Score this record using its own title, not neighboring source terms.
+        # Score each skill record using its own title, not neighboring skills.
         text = str(item.get("title", ""))
     else:
         text = " ".join(
@@ -150,15 +182,12 @@ def _category_weight(category: str, kind: str) -> float:
 class ResumeEvidenceSelector:
     """Rank resume evidence against a JD without inventing new claims.
 
-    The selector does not generate resume prose. Only evidence explicitly
-    verified by the user is placed in `selected_evidence`. Relevant unverified
-    records are kept separately in `review_queue`.
+    Only evidence explicitly verified by the user is put in
+    selected_evidence. Relevant unverified records go to review_queue.
     """
 
     def __init__(self, store_path: str | Path | None = None) -> None:
-        self.store = MasterResumeEvidenceStore(
-            store_path or DEFAULT_STORE_PATH
-        )
+        self.store = MasterResumeEvidenceStore(store_path or DEFAULT_STORE_PATH)
 
     def select_for_job(
         self,
@@ -180,8 +209,8 @@ class ResumeEvidenceSelector:
             raise ValueError("job_description must not be empty")
 
         required = _canonical_skills(required_skills)
-
         required_keys = {item.casefold() for item in required}
+
         preferred = [
             skill
             for skill in _canonical_skills(preferred_skills)
@@ -189,7 +218,9 @@ class ResumeEvidenceSelector:
         ]
 
         detected_from_jd = _canonical_skills(
-            extract_technologies(f"{job_title}\n{job_description}")
+            _extract_technologies_safely(
+                f"{job_title}\n{job_description}"
+            )
         )
 
         explicit = {
@@ -213,16 +244,13 @@ class ResumeEvidenceSelector:
             skills = _evidence_skill_names(item)
 
             matched_required = [
-                skill for skill in required
-                if skill.casefold() in skills
+                skill for skill in required if skill.casefold() in skills
             ]
             matched_preferred = [
-                skill for skill in preferred
-                if skill.casefold() in skills
+                skill for skill in preferred if skill.casefold() in skills
             ]
             matched_inferred = [
-                skill for skill in inferred
-                if skill.casefold() in skills
+                skill for skill in inferred if skill.casefold() in skills
             ]
 
             item_tokens = _evidence_tokens(item)
@@ -230,17 +258,13 @@ class ResumeEvidenceSelector:
             title_overlap = sorted(title_tokens & item_tokens)
 
             score = (
-                len(matched_required)
-                * _category_weight(category, "required")
-                + len(matched_preferred)
-                * _category_weight(category, "preferred")
-                + len(matched_inferred)
-                * _category_weight(category, "inferred")
+                len(matched_required) * _category_weight(category, "required")
+                + len(matched_preferred) * _category_weight(category, "preferred")
+                + len(matched_inferred) * _category_weight(category, "inferred")
             )
 
-            # Small textual signals are used only for ordering non-skill
-            # evidence. Skill records require an exact canonical skill match;
-            # e.g. Tailwind CSS must not count as a direct CSS skill record.
+            # Text overlap is only a secondary ranking signal for larger items.
+            # Individual skill records require exact canonical skill matches.
             if category != "skill":
                 score += min(len(title_overlap), 3) * (
                     2.0 if category in {"project", "experience"} else 0.5
@@ -260,26 +284,22 @@ class ResumeEvidenceSelector:
 
             if matched_required:
                 reasons.append(
-                    "matches required skills: "
-                    + ", ".join(matched_required)
+                    "matches required skills: " + ", ".join(matched_required)
                 )
 
             if matched_preferred:
                 reasons.append(
-                    "matches preferred skills: "
-                    + ", ".join(matched_preferred)
+                    "matches preferred skills: " + ", ".join(matched_preferred)
                 )
 
             if matched_inferred:
                 reasons.append(
-                    "matches JD technology terms: "
-                    + ", ".join(matched_inferred)
+                    "matches JD technology terms: " + ", ".join(matched_inferred)
                 )
 
             if title_overlap:
                 reasons.append(
-                    "overlapping role/project terms: "
-                    + ", ".join(title_overlap)
+                    "overlapping role/project terms: " + ", ".join(title_overlap)
                 )
 
             candidates.append(
@@ -295,13 +315,9 @@ class ResumeEvidenceSelector:
                     "matched_preferred_skills": matched_preferred,
                     "matched_job_technologies": matched_inferred,
                     "text_overlap_terms": generic_overlap[:10],
-                    "reason": reasons or [
-                        "matched wording in job description"
-                    ],
+                    "reason": reasons or ["matched wording in job description"],
                     "user_verified": is_verified,
-                    "review_status": review.get(
-                        "status", "needs_review"
-                    ),
+                    "review_status": review.get("status", "needs_review"),
                     "eligible_for_resume": is_verified,
                 }
             )
@@ -365,21 +381,17 @@ class ResumeEvidenceSelector:
         awaiting_review = [
             required_by_key[key]
             for key in required_by_key
-            if key not in selected_required
-            and key in review_required
+            if key not in selected_required and key in review_required
         ]
 
         uncovered = [
             required_by_key[key]
             for key in required_by_key
-            if key not in selected_required
-            and key not in review_required
+            if key not in selected_required and key not in review_required
         ]
 
         return {
-            "job": {
-                "title": job_title.strip(),
-            },
+            "job": {"title": job_title.strip()},
             "signals": {
                 "required_skills": required,
                 "preferred_skills": preferred,
