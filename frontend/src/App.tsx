@@ -45,10 +45,45 @@ const API_BASE = (
 
 type Screen = "overview" | "jobs" | "resume";
 type ApiStatus = "checking" | "connected" | "offline";
+type CareerLevelFilter = "early" | "all";
 
 interface Company {
   id: number;
   name: string;
+}
+
+interface JobFilters {
+  company: string;
+  location: string;
+  source: string;
+  career_level: CareerLevelFilter;
+}
+
+interface JobMatch {
+  score: number;
+  recommendation: "strong_match" | "good_match" | "review" | "low_match";
+  recommendation_label: string;
+  role_family: string;
+  seniority: string;
+  required_years: number | null;
+  analysis_confidence: string;
+  score_breakdown: {
+    role: number;
+    seniority: number;
+    experience: number;
+    skills: number;
+    education: number;
+    location: number;
+  };
+  matched_required_skills: string[];
+  missing_required_skills: string[];
+  required_skills: string[];
+  matched_preferred_skills: string[];
+  preferred_skills: string[];
+  required_education: string[];
+  hard_constraints: string[];
+  reasons: string[];
+  concerns: string[];
 }
 
 interface Job {
@@ -66,6 +101,7 @@ interface Job {
   first_seen_at: string | null;
   last_seen_at: string | null;
   is_active: boolean;
+  match?: JobMatch;
 }
 
 interface DashboardStats {
@@ -163,12 +199,6 @@ interface ApiError {
   detail?: string;
 }
 
-interface JobFilters {
-  company: string;
-  location: string;
-  source: string;
-}
-
 const NAV_ITEMS: Array<{
   id: Screen;
   label: string;
@@ -198,7 +228,7 @@ const NAV_ITEMS: Array<{
 const numberFormat = new Intl.NumberFormat("en-IN");
 
 function formatNumber(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
     return "—";
   }
 
@@ -228,20 +258,13 @@ function errorText(error: unknown): string {
   return "An unexpected error occurred.";
 }
 
-function categoryLabel(category: string): string {
-  return category.replaceAll("_", " ");
-}
-
 async function apiRequest<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
   const headers = new Headers(init?.headers);
 
-  if (
-    init?.body &&
-    !headers.has("Content-Type")
-  ) {
+  if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -271,7 +294,6 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const detail = (data as ApiError)?.detail;
-
     throw new Error(
       typeof detail === "string"
         ? detail
@@ -280,6 +302,10 @@ async function apiRequest<T>(
   }
 
   return data as T;
+}
+
+function categoryLabel(category: string): string {
+  return category.replaceAll("_", " ");
 }
 
 function makeResumeRequest(
@@ -295,6 +321,193 @@ function makeResumeRequest(
     preferred_skills: parseSkills(preferredSkills),
     max_projects: 3,
   };
+}
+
+function recommendationTone(
+  recommendation: JobMatch["recommendation"],
+): string {
+  switch (recommendation) {
+    case "strong_match":
+      return "border-emerald-400/20 bg-emerald-400/[0.08] text-emerald-200";
+    case "good_match":
+      return "border-blue-400/20 bg-blue-400/[0.08] text-blue-200";
+    case "review":
+      return "border-amber-300/20 bg-amber-300/[0.08] text-amber-100";
+    default:
+      return "border-rose-400/20 bg-rose-400/[0.08] text-rose-200";
+  }
+}
+
+function MatchBadge({ match }: { match?: JobMatch }) {
+  if (!match) {
+    return (
+      <span className="inline-flex items-center rounded-full border border-slate-700/60 bg-slate-800/40 px-2.5 py-1 text-[10px] text-slate-500">
+        Match unavailable
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold ${recommendationTone(match.recommendation)}`}
+      title={`Structured candidate match score: ${match.score}/100`}
+    >
+      <Target size={11} />
+      {Math.round(match.score)}/100 · {match.recommendation_label}
+    </span>
+  );
+}
+
+function MatchDetails({ match }: { match?: JobMatch }) {
+  if (!match) {
+    return (
+      <p className="mt-3 text-[11px] text-slate-500">
+        Match details are unavailable for this job.
+      </p>
+    );
+  }
+
+  const components: Array<{ label: string; value: number; max: number }> = [
+    { label: "Role fit", value: match.score_breakdown.role, max: 25 },
+    { label: "Seniority", value: match.score_breakdown.seniority, max: 20 },
+    { label: "Experience", value: match.score_breakdown.experience, max: 20 },
+    { label: "Skills", value: match.score_breakdown.skills, max: 20 },
+    { label: "Education", value: match.score_breakdown.education, max: 10 },
+    { label: "Location", value: match.score_breakdown.location, max: 5 },
+  ];
+
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-4 border-t border-slate-700/50 pt-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+      <div>
+        <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">
+          Score breakdown
+        </p>
+
+        <div className="space-y-2.5">
+          {components.map((component) => (
+            <div key={component.label}>
+              <div className="mb-1 flex items-center justify-between gap-3 text-[10px]">
+                <span className="text-slate-400">{component.label}</span>
+                <span className="tabular-nums text-slate-300">
+                  {component.value.toFixed(1)} / {component.max}
+                </span>
+              </div>
+
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-blue-500 to-violet-400"
+                  style={{
+                    width: `${Math.max(
+                      0,
+                      Math.min(100, (component.value / component.max) * 100),
+                    )}%`,
+                  }}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-3 text-[10px] text-slate-500">
+          JD analysis confidence: {match.analysis_confidence}
+          {match.required_years != null
+            ? ` · Minimum experience detected: ${match.required_years}+ years`
+            : " · No explicit minimum years detected"}
+        </p>
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">
+            Why it matches
+          </p>
+
+          {match.reasons.length > 0 ? (
+            <ul className="space-y-1.5">
+              {match.reasons.map((reason, index) => (
+                <li
+                  key={`${index}-${reason}`}
+                  className="flex gap-2 text-[11px] leading-4 text-slate-300"
+                >
+                  <CheckCircle2
+                    size={12}
+                    className="mt-0.5 shrink-0 text-emerald-300"
+                  />
+                  <span>{reason}</span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[11px] text-slate-500">
+              No positive match signals were identified.
+            </p>
+          )}
+        </div>
+
+        {match.matched_required_skills.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] font-semibold text-emerald-300">
+              Required skills matched
+            </p>
+            <p className="text-[11px] leading-4 text-slate-300">
+              {match.matched_required_skills.join(", ")}
+            </p>
+          </div>
+        )}
+
+        {match.matched_preferred_skills.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] font-semibold text-blue-300">
+              Preferred skills matched
+            </p>
+            <p className="text-[11px] leading-4 text-slate-300">
+              {match.matched_preferred_skills.join(", ")}
+            </p>
+          </div>
+        )}
+
+        {match.missing_required_skills.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] font-semibold text-amber-200">
+              Required skills not found in profile
+            </p>
+            <p className="text-[11px] leading-4 text-slate-300">
+              {match.missing_required_skills.join(", ")}
+            </p>
+          </div>
+        )}
+
+        {match.hard_constraints.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] font-semibold text-rose-200">
+              Potential hard constraints
+            </p>
+            <p className="text-[11px] leading-4 text-slate-300">
+              {match.hard_constraints.join(" · ")}
+            </p>
+          </div>
+        )}
+
+        {match.concerns.length > 0 && (
+          <div>
+            <p className="mb-1 text-[10px] font-semibold text-amber-200">
+              Things to check
+            </p>
+            <ul className="space-y-1">
+              {match.concerns.map((concern, index) => (
+                <li
+                  key={`${index}-${concern}`}
+                  className="text-[11px] leading-4 text-slate-400"
+                >
+                  {concern}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function Brand() {
@@ -406,13 +619,8 @@ function MetricCard({
       className="panel panel-hover rounded-2xl p-5"
     >
       <div className="flex items-start justify-between gap-3">
-        <p className="text-[12px] font-medium text-slate-400">
-          {label}
-        </p>
-
-        <div
-          className={`grid h-9 w-9 place-items-center rounded-xl ${iconStyle}`}
-        >
+        <p className="text-[12px] font-medium text-slate-400">{label}</p>
+        <div className={`grid h-9 w-9 place-items-center rounded-xl ${iconStyle}`}>
           <Icon size={17} strokeWidth={1.8} />
         </div>
       </div>
@@ -421,9 +629,7 @@ function MetricCard({
         {value}
       </p>
 
-      <p className="mt-1.5 text-[11px] text-slate-500">
-        {caption}
-      </p>
+      <p className="mt-1.5 text-[11px] text-slate-500">{caption}</p>
     </motion.div>
   );
 }
@@ -442,11 +648,7 @@ function EmptyState({
       <div className="mb-3 grid h-11 w-11 place-items-center rounded-2xl border border-slate-700/70 bg-slate-800/50 text-slate-400">
         <Icon size={19} />
       </div>
-
-      <p className="text-sm font-medium text-slate-200">
-        {title}
-      </p>
-
+      <p className="text-sm font-medium text-slate-200">{title}</p>
       <p className="mt-1.5 max-w-sm text-xs leading-5 text-slate-500">
         {message}
       </p>
@@ -472,7 +674,6 @@ function JobMiniCard({
           <p className="truncate text-[13px] font-semibold text-slate-100">
             {job.title}
           </p>
-
           <p className="mt-1 text-[11px] text-slate-400">
             {job.company?.name || "Unknown company"}
           </p>
@@ -495,13 +696,16 @@ function JobMiniCard({
         </div>
       </div>
 
-      <button
-        className="secondary-button shrink-0 !px-3 !py-2"
-        onClick={() => onTailor(job)}
-      >
-        Tailor resume
-        <ArrowRight size={13} />
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <MatchBadge match={job.match} />
+        <button
+          className="secondary-button shrink-0 !px-3 !py-2"
+          onClick={() => onTailor(job)}
+        >
+          Tailor resume
+          <ArrowRight size={13} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -527,9 +731,7 @@ function OverviewView({
 }) {
   const verifiedPercent =
     evidence && evidence.record_count > 0
-      ? Math.round(
-          (evidence.verified_count / evidence.record_count) * 100,
-        )
+      ? Math.round((evidence.verified_count / evidence.record_count) * 100)
       : 0;
 
   return (
@@ -540,21 +742,13 @@ function OverviewView({
         <motion.div
           className="pointer-events-none absolute -right-10 -top-24 -z-10 h-80 w-80 rounded-full bg-blue-500/15 blur-3xl"
           animate={{ x: [0, 15, 0], y: [0, 10, 0] }}
-          transition={{
-            duration: 9,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
+          transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
         />
 
         <motion.div
           className="pointer-events-none absolute -bottom-32 right-[28%] -z-10 h-64 w-64 rounded-full bg-violet-500/10 blur-3xl"
           animate={{ x: [0, -14, 0] }}
-          transition={{
-            duration: 11,
-            repeat: Infinity,
-            ease: "easeInOut",
-          }}
+          transition={{ duration: 11, repeat: Infinity, ease: "easeInOut" }}
         />
 
         <div className="relative max-w-3xl">
@@ -593,12 +787,10 @@ function OverviewView({
               <ShieldCheck size={13} className="text-emerald-300" />
               Verified-evidence workflow
             </span>
-
             <span className="inline-flex items-center gap-2">
               <Zap size={13} className="text-blue-300" />
               Local-first processing
             </span>
-
             <span className="inline-flex items-center gap-2">
               <Activity size={13} className="text-violet-300" />
               Live API data
@@ -613,11 +805,7 @@ function OverviewView({
           <motion.div
             className="absolute inset-0 rounded-full border border-blue-300/20"
             animate={{ rotate: 360 }}
-            transition={{
-              duration: 26,
-              repeat: Infinity,
-              ease: "linear",
-            }}
+            transition={{ duration: 26, repeat: Infinity, ease: "linear" }}
           >
             <span className="absolute -top-1 left-1/2 h-2 w-2 rounded-full bg-blue-300 shadow-[0_0_14px_rgba(125,170,255,0.8)]" />
           </motion.div>
@@ -637,7 +825,6 @@ function OverviewView({
           iconStyle="bg-blue-400/[0.1] text-blue-300"
           delay={0.03}
         />
-
         <MetricCard
           label="Active listings"
           value={loading ? "…" : formatNumber(stats?.active_jobs)}
@@ -646,7 +833,6 @@ function OverviewView({
           iconStyle="bg-emerald-400/[0.09] text-emerald-300"
           delay={0.08}
         />
-
         <MetricCard
           label="Companies"
           value={loading ? "…" : formatNumber(stats?.total_companies)}
@@ -655,7 +841,6 @@ function OverviewView({
           iconStyle="bg-violet-400/[0.1] text-violet-300"
           delay={0.13}
         />
-
         <MetricCard
           label="Verified evidence"
           value={
@@ -690,11 +875,7 @@ function OverviewView({
           {jobs.length > 0 ? (
             <div>
               {jobs.map((job) => (
-                <JobMiniCard
-                  key={job.id}
-                  job={job}
-                  onTailor={onTailor}
-                />
+                <JobMiniCard key={job.id} job={job} onTailor={onTailor} />
               ))}
             </div>
           ) : (
@@ -778,7 +959,6 @@ function OverviewView({
               <div className="grid h-8 w-8 place-items-center rounded-xl bg-cyan-400/[0.09] text-cyan-300">
                 <Globe2 size={16} />
               </div>
-
               <div>
                 <p className="text-[12px] font-semibold text-slate-100">
                   Collector sources
@@ -801,7 +981,6 @@ function OverviewView({
                       {item.source.replaceAll("_", " ")}
                     </span>
                   </div>
-
                   <span className="text-[11px] font-semibold text-slate-200">
                     {formatNumber(item.count)} jobs
                   </span>
@@ -813,22 +992,19 @@ function OverviewView({
               </p>
             )}
           </div>
-
-          <div className="flex justify-end">
-            <button
-              className="secondary-button"
-              onClick={onRefresh}
-              disabled={loading}
-            >
-              <RefreshCw
-                size={13}
-                className={loading ? "loading-ring" : ""}
-              />
-              Refresh dashboard
-            </button>
-          </div>
         </div>
       </section>
+
+      <div className="flex justify-end">
+        <button
+          className="secondary-button"
+          onClick={onRefresh}
+          disabled={loading}
+        >
+          <RefreshCw size={13} />
+          Refresh dashboard
+        </button>
+      </div>
     </div>
   );
 }
@@ -880,10 +1056,7 @@ function JobsView({
             onClick={onRefresh}
             disabled={loading}
           >
-            <RefreshCw
-              size={14}
-              className={loading ? "loading-ring" : ""}
-            />
+            <RefreshCw size={14} className={loading ? "loading-ring" : ""} />
             Refresh
           </button>
         }
@@ -899,7 +1072,6 @@ function JobsView({
               size={16}
               className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500"
             />
-
             <input
               className="field !pl-10"
               placeholder="Search jobs, skills, companies..."
@@ -914,7 +1086,7 @@ function JobsView({
           </button>
         </div>
 
-        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <input
             className="field"
             placeholder="Company"
@@ -955,6 +1127,21 @@ function JobsView({
                 {source.replaceAll("_", " ")}
               </option>
             ))}
+          </select>
+
+          <select
+            className="field"
+            value={filterDraft.career_level}
+            onChange={(event) =>
+              setFilterDraft({
+                ...filterDraft,
+                career_level: event.target.value as CareerLevelFilter,
+              })
+            }
+            aria-label="Role level filter"
+          >
+            <option value="early">Early-career suitable</option>
+            <option value="all">All role levels</option>
           </select>
 
           <button className="secondary-button" type="submit">
@@ -998,7 +1185,11 @@ function JobsView({
           <EmptyState
             icon={Search}
             title="No matching opportunities"
-            message="Try another keyword, company, or location filter."
+            message={
+              filterDraft.career_level === "early"
+                ? "No jobs matched all current filters and the early-career suitability rules. Choose ‘All role levels’ to inspect other jobs and their match concerns."
+                : "Try another keyword, company, or location filter."
+            }
           />
         </div>
       ) : (
@@ -1021,10 +1212,13 @@ function JobsView({
                     <h3 className="text-sm font-semibold leading-5 text-slate-100">
                       {job.title}
                     </h3>
-
                     <p className="mt-1 text-[11px] text-slate-400">
                       {job.company?.name || "Unknown company"}
                     </p>
+
+                    <div className="mt-2">
+                      <MatchBadge match={job.match} />
+                    </div>
 
                     <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[10px] text-slate-500">
                       {job.location && (
@@ -1033,14 +1227,12 @@ function JobsView({
                           {job.location}
                         </span>
                       )}
-
                       {job.experience_level && (
                         <span className="inline-flex items-center gap-1">
                           <Clock3 size={12} />
                           {job.experience_level}
                         </span>
                       )}
-
                       <span className="inline-flex items-center gap-1">
                         <Globe2 size={12} />
                         {job.source.replaceAll("_", " ")}
@@ -1074,6 +1266,19 @@ function JobsView({
                   </button>
                 </div>
               </div>
+
+              <details className="group mt-4 rounded-xl border border-slate-700/45 bg-slate-950/20 px-3.5 py-3">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[11px] font-semibold text-slate-300 marker:hidden">
+                  <span className="inline-flex items-center gap-2">
+                    <Target size={13} className="text-blue-300" />
+                    Why this match score?
+                  </span>
+                  <span className="text-[10px] font-normal text-slate-500 transition group-open:rotate-180">
+                    ⌄
+                  </span>
+                </summary>
+                <MatchDetails match={job.match} />
+              </details>
             </motion.article>
           ))}
         </div>
@@ -1112,12 +1317,9 @@ function CoverageChip({
   tone: "green" | "amber" | "rose";
 }) {
   const tones = {
-    green:
-      "border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-200",
-    amber:
-      "border-amber-300/15 bg-amber-300/[0.06] text-amber-100",
-    rose:
-      "border-rose-400/15 bg-rose-400/[0.06] text-rose-200",
+    green: "border-emerald-400/15 bg-emerald-400/[0.06] text-emerald-200",
+    amber: "border-amber-300/15 bg-amber-300/[0.06] text-amber-100",
+    rose: "border-rose-400/15 bg-rose-400/[0.06] text-rose-200",
   };
 
   return (
@@ -1125,7 +1327,6 @@ function CoverageChip({
       <p className="text-[10px] font-semibold uppercase tracking-wide opacity-80">
         {label}
       </p>
-
       <p className="mt-2 text-[12px] font-medium">
         {items.length > 0 ? items.join(", ") : "None"}
       </p>
@@ -1185,27 +1386,20 @@ function ResumeView({
             <div className="grid h-10 w-10 place-items-center rounded-xl border border-blue-300/15 bg-blue-400/[0.08] text-blue-300">
               <FileText size={18} />
             </div>
-
             <div>
               <h3 className="text-sm font-semibold text-slate-100">
                 Job requirements
               </h3>
-
               <p className="mt-1 text-[10px] text-slate-500">
                 Submit the job description to the local API.
               </p>
             </div>
           </div>
 
-          <label
-            htmlFor="job-title"
-            className="mb-2 block text-[11px] font-medium text-slate-300"
-          >
+          <label className="mb-2 block text-[11px] font-medium text-slate-300">
             Job title
           </label>
-
           <input
-            id="job-title"
             className="field mb-4"
             value={jobTitle}
             onChange={(event) => setJobTitle(event.target.value)}
@@ -1214,15 +1408,10 @@ function ResumeView({
             required
           />
 
-          <label
-            htmlFor="job-description"
-            className="mb-2 block text-[11px] font-medium text-slate-300"
-          >
+          <label className="mb-2 block text-[11px] font-medium text-slate-300">
             Job description
           </label>
-
           <textarea
-            id="job-description"
             className="field mb-4 min-h-44 resize-y leading-5"
             value={jobDescription}
             onChange={(event) => setJobDescription(event.target.value)}
@@ -1232,34 +1421,23 @@ function ResumeView({
             required
           />
 
-          <label
-            htmlFor="required-skills"
-            className="mb-2 block text-[11px] font-medium text-slate-300"
-          >
+          <label className="mb-2 block text-[11px] font-medium text-slate-300">
             Required skills
           </label>
-
           <input
-            id="required-skills"
             className="field mb-4"
             value={requiredSkills}
             onChange={(event) => setRequiredSkills(event.target.value)}
             placeholder="JavaScript, React.js"
           />
-
           <p className="-mt-2 mb-4 text-[10px] text-slate-500">
             Comma-separated skills explicitly required by the employer.
           </p>
 
-          <label
-            htmlFor="preferred-skills"
-            className="mb-2 block text-[11px] font-medium text-slate-300"
-          >
+          <label className="mb-2 block text-[11px] font-medium text-slate-300">
             Preferred skills
           </label>
-
           <input
-            id="preferred-skills"
             className="field mb-5"
             value={preferredSkills}
             onChange={(event) => setPreferredSkills(event.target.value)}
@@ -1282,11 +1460,9 @@ function ResumeView({
             ) : (
               <Target size={15} />
             )}
-
             {selectionLoading
               ? "Selecting evidence..."
               : "Analyze & select evidence"}
-
             {!selectionLoading && <ArrowRight size={15} />}
           </button>
         </form>
@@ -1298,12 +1474,10 @@ function ResumeView({
                 <div className="grid h-10 w-10 place-items-center rounded-xl border border-violet-300/15 bg-violet-400/[0.08] text-violet-300">
                   <Gauge size={18} />
                 </div>
-
                 <div>
                   <h3 className="text-sm font-semibold text-slate-100">
                     Requirement coverage
                   </h3>
-
                   <p className="mt-1 text-[10px] text-slate-500">
                     Based on the skills you supplied
                   </p>
@@ -1325,13 +1499,11 @@ function ResumeView({
                     items={selection.coverage.verified_covered}
                     tone="green"
                   />
-
                   <CoverageChip
                     label="Awaiting review"
                     items={selection.coverage.awaiting_evidence_review}
                     tone="amber"
                   />
-
                   <CoverageChip
                     label="Not found"
                     items={selection.coverage.not_found_in_evidence}
@@ -1359,12 +1531,10 @@ function ResumeView({
                 <h3 className="text-sm font-semibold text-slate-100">
                   Selected evidence
                 </h3>
-
                 <p className="mt-1 text-[10px] text-slate-500">
                   Projects, skills, and experience relevant to this role.
                 </p>
               </div>
-
               <span className="rounded-full border border-slate-700/70 bg-slate-800/50 px-2.5 py-1 text-[10px] text-slate-300">
                 {selection?.selected_evidence.length ?? 0} records
               </span>
@@ -1394,7 +1564,6 @@ function ResumeView({
                         <p className="text-[12px] font-semibold text-slate-100">
                           {item.title}
                         </p>
-
                         <p className="mt-1 text-[10px] capitalize text-slate-500">
                           {categoryLabel(item.category)}
                           {item.source?.section
@@ -1402,7 +1571,6 @@ function ResumeView({
                             : ""}
                         </p>
                       </div>
-
                       <span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-emerald-300">
                         <CheckCircle2 size={12} />
                         Verified
@@ -1433,20 +1601,14 @@ function ResumeView({
             {generated && (
               <div className="mt-4 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.055] p-4">
                 <div className="flex items-start gap-2">
-                  <CheckCircle2
-                    size={16}
-                    className="mt-0.5 text-emerald-300"
-                  />
-
+                  <CheckCircle2 size={16} className="mt-0.5 text-emerald-300" />
                   <div className="min-w-0 flex-1">
                     <p className="text-[12px] font-semibold text-emerald-100">
                       Resume generated successfully
                     </p>
-
                     <p className="mt-1 break-words text-[10px] leading-5 text-slate-400">
                       {generated.resume_filename}
                     </p>
-
                     <a
                       className="primary-button mt-3 !py-2"
                       href={`${API_BASE}${generated.download_url}`}
@@ -1471,11 +1633,9 @@ function ResumeView({
               ) : (
                 <WandSparkles size={15} />
               )}
-
               {generationLoading
                 ? "Generating document..."
                 : "Generate tailored resume"}
-
               {!generationLoading && <ArrowRight size={15} />}
             </button>
 
@@ -1508,15 +1668,19 @@ function App() {
   const [jobsPage, setJobsPage] = useState(0);
   const [queryInput, setQueryInput] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
+
   const [filterDraft, setFilterDraft] = useState<JobFilters>({
     company: "",
     location: "",
     source: "",
+    career_level: "early",
   });
+
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
     company: "",
     location: "",
     source: "",
+    career_level: "early",
   });
 
   const [jobTitle, setJobTitle] = useState("");
@@ -1531,6 +1695,7 @@ function App() {
   const [generated, setGenerated] = useState<GeneratedResume | null>(null);
   const [generationLoading, setGenerationLoading] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const refreshOverview = useCallback(async () => {
@@ -1575,15 +1740,20 @@ function App() {
       });
 
       if (appliedQuery) params.set("q", appliedQuery);
+
       if (appliedFilters.company) {
         params.set("company", appliedFilters.company);
       }
+
       if (appliedFilters.location) {
         params.set("location", appliedFilters.location);
       }
+
       if (appliedFilters.source) {
         params.set("source", appliedFilters.source);
       }
+
+      params.set("career_level", appliedFilters.career_level);
 
       const result = await apiRequest<JobListResponse>(
         `/api/jobs?${params.toString()}`,
@@ -1599,12 +1769,6 @@ function App() {
     }
   }, [appliedFilters, appliedQuery, jobsPage]);
 
-  /*
-   * Schedule the requests after the effect itself has completed.
-   * This avoids synchronously triggering state updates from an effect.
-   * Cleanup also cancels pending tasks when dependencies change or the
-   * component unmounts.
-   */
   useEffect(() => {
     const timerId = window.setTimeout(() => {
       void refreshOverview();
@@ -1650,14 +1814,13 @@ function App() {
 
   const applyJobFilters = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-
     setJobsPage(0);
     setAppliedQuery(queryInput.trim());
-
     setAppliedFilters({
       company: filterDraft.company.trim(),
       location: filterDraft.location.trim(),
       source: filterDraft.source.trim(),
+      career_level: filterDraft.career_level,
     });
   };
 
@@ -1931,6 +2094,7 @@ function App() {
                   aria-label="Open Resume Studio"
                 >
                   <Bell size={15} />
+
                   {evidence?.pending_count ? (
                     <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-amber-400 px-1 text-[8px] font-bold text-slate-950">
                       {evidence.pending_count}
@@ -2074,10 +2238,7 @@ function App() {
             </AnimatePresence>
 
             <footer className="mt-12 flex flex-col justify-between gap-2 border-t border-slate-800/60 py-5 text-[10px] text-slate-600 sm:flex-row sm:items-center">
-              <span>
-                JobPilot · Personal career intelligence workspace
-              </span>
-
+              <span>JobPilot · Personal career intelligence workspace</span>
               <span className="inline-flex items-center gap-1.5">
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
