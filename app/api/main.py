@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy import case, create_engine, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -43,13 +43,11 @@ DATABASE_PATH = (
 
 EVIDENCE_STORE_PATH = DEFAULT_STORE_PATH
 GENERATED_RESUMES_DIR = PROJECT_ROOT / "data" / "generated_resumes"
-DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 
 engine = create_engine(
-    DATABASE_URL,
+    f"sqlite:///{DATABASE_PATH.as_posix()}",
     connect_args={"check_same_thread": False},
 )
-
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
@@ -57,8 +55,49 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-# Candidate's TCS employment start date.
 CANDIDATE_START_DATE = date(2025, 9, 18)
+
+CITY_ALIASES = {
+    "bangalore": "bengaluru",
+    "bengaluru": "bengaluru",
+    "hyderabad": "hyderabad",
+}
+
+CITY_DISPLAY_NAMES = {
+    "bengaluru": "Bengaluru",
+    "hyderabad": "Hyderabad",
+}
+
+SENIOR_ROLE_PATTERN = re.compile(
+    r"\b(senior|staff|principal|distinguished|fellow|manager|director|"
+    r"head|lead|chief|architect|vice president)\b",
+    re.IGNORECASE,
+)
+INTERN_ROLE_PATTERN = re.compile(r"\b(intern|internship)\b", re.IGNORECASE)
+PHD_PATTERN = re.compile(r"\bph\.?\s*d\.?\b|\bdoctorate\b", re.IGNORECASE)
+QUALIFICATION_START_PATTERN = re.compile(
+    r"\b(?:minimum|basic|required)\s+qualifications?\b",
+    re.IGNORECASE,
+)
+QUALIFICATION_END_PATTERN = re.compile(
+    r"\b(?:preferred qualifications?|responsibilities|what you(?:'|’)ll do|"
+    r"about the job|about the role|equal opportunity)\b",
+    re.IGNORECASE,
+)
+YEARS_BEFORE_EXPERIENCE_PATTERN = re.compile(
+    r"\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b[^\n]{0,120}\bexperience\b",
+    re.IGNORECASE,
+)
+EXPERIENCE_BEFORE_YEARS_PATTERN = re.compile(
+    r"\bexperience\b[^\n]{0,100}\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b",
+    re.IGNORECASE,
+)
+RECOMMENDATION_LABELS = {
+    "strong_match": "Strong match",
+    "good_match": "Good match",
+    "review": "Review",
+    "low_match": "Low match",
+}
 
 
 def _candidate_experience_years() -> float:
@@ -67,13 +106,10 @@ def _candidate_experience_years() -> float:
 
 
 def _maximum_early_career_years() -> int:
-    # Permit a stretch of up to the next whole year of required experience.
     return max(1, math.floor(_candidate_experience_years()) + 1)
 
 
 def _create_job_matcher() -> JobMatcher:
-    # The profile snapshot previously contained 0.0 years. Use the current
-    # TCS tenure for API-based scoring without changing the stored profile.
     profile = replace(
         CANDIDATE_PROFILE,
         years_of_experience=_candidate_experience_years(),
@@ -82,7 +118,6 @@ def _create_job_matcher() -> JobMatcher:
 
 
 def get_db() -> Generator[Session, None, None]:
-    """Provide one database session per request."""
     if not DATABASE_PATH.is_file():
         raise HTTPException(
             status_code=503,
@@ -108,7 +143,7 @@ app = FastAPI(
         "Local API for job discovery, candidate-job matching, "
         "resume evidence, and tailored resume generation."
     ),
-    version="0.3.0",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -132,52 +167,8 @@ class EvidenceSelectionRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------
-# City matching and early-career filtering
+# Location and role filtering
 # ---------------------------------------------------------------------
-
-CITY_ALIASES = {
-    "bangalore": "bengaluru",
-    "bengaluru": "bengaluru",
-    "hyderabad": "hyderabad",
-}
-
-SENIOR_ROLE_PATTERN = re.compile(
-    r"\b(senior|staff|principal|distinguished|fellow|manager|director|"
-    r"head|lead|chief|architect|vice president)\b",
-    re.IGNORECASE,
-)
-
-INTERN_ROLE_PATTERN = re.compile(
-    r"\b(intern|internship)\b",
-    re.IGNORECASE,
-)
-
-PHD_PATTERN = re.compile(
-    r"\bph\.?\s*d\.?\b|\bdoctorate\b",
-    re.IGNORECASE,
-)
-
-QUALIFICATION_START_PATTERN = re.compile(
-    r"\b(?:minimum|basic|required)\s+qualifications?\b",
-    re.IGNORECASE,
-)
-
-QUALIFICATION_END_PATTERN = re.compile(
-    r"\b(?:preferred qualifications?|responsibilities|what you(?:'|’)ll do|"
-    r"about the job|about the role|equal opportunity)\b",
-    re.IGNORECASE,
-)
-
-YEARS_BEFORE_EXPERIENCE_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b[^\n]{0,120}\bexperience\b",
-    re.IGNORECASE,
-)
-
-EXPERIENCE_BEFORE_YEARS_PATTERN = re.compile(
-    r"\bexperience\b[^\n]{0,100}\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b",
-    re.IGNORECASE,
-)
-
 
 def _normalize_city(value: str | None) -> str:
     if not value:
@@ -186,18 +177,15 @@ def _normalize_city(value: str | None) -> str:
     city = value.split(",", maxsplit=1)[0]
     city = re.sub(r"\s+", " ", city).strip().casefold()
     city = city.strip(" []'\"")
-
     return CITY_ALIASES.get(city, city)
 
 
 def _location_entries(stored_location: str | None) -> list[str]:
-    """Split a stored multi-city string into individual location entries."""
     if not stored_location or not stored_location.strip():
         return []
 
     raw = stored_location.strip()
 
-    # Some older data may store a Python list representation as a string.
     if raw.startswith("[") and raw.endswith("]"):
         try:
             parsed = ast.literal_eval(raw)
@@ -219,11 +207,17 @@ def _location_entries(stored_location: str | None) -> list[str]:
     ]
 
 
+def _location_display_name(entry: str) -> str:
+    city_key = _normalize_city(entry)
+    if city_key in CITY_DISPLAY_NAMES:
+        return CITY_DISPLAY_NAMES[city_key]
+    return entry.split(",", maxsplit=1)[0].strip() or entry.strip()
+
+
 def _find_matching_location(
     stored_location: str | None,
     requested_location: str,
 ) -> str | None:
-    """Return the original location entry matching the requested city."""
     requested_city = _normalize_city(requested_location)
     if not requested_city:
         return None
@@ -238,7 +232,6 @@ def _find_matching_location(
 def _minimum_qualification_text(description: str) -> str:
     start = QUALIFICATION_START_PATTERN.search(description)
     remaining = description[start.end():] if start else description
-
     end = QUALIFICATION_END_PATTERN.search(remaining)
     return remaining[:end.start()] if end else remaining
 
@@ -246,7 +239,6 @@ def _minimum_qualification_text(description: str) -> str:
 def _extract_required_experience_years(
     description: str,
 ) -> float | None:
-    """Read minimum qualifications, avoiding preferred-only experience."""
     minimum_text = _minimum_qualification_text(description)
     values: list[float] = []
 
@@ -271,22 +263,18 @@ def _is_early_career_suitable(
     title: str,
     description: str,
 ) -> bool:
-    """Exclude obvious senior, management, internship and doctoral roles."""
     clean_title = re.sub(r"\s+", " ", title).strip()
+
     if not clean_title:
         return False
-
     if SENIOR_ROLE_PATTERN.search(clean_title):
         return False
-
     if INTERN_ROLE_PATTERN.search(clean_title):
         return False
-
     if PHD_PATTERN.search(clean_title) or _requires_phd(description):
         return False
 
     required_years = _extract_required_experience_years(description)
-
     if (
         required_years is not None
         and required_years > _maximum_early_career_years()
@@ -297,21 +285,46 @@ def _is_early_career_suitable(
 
 
 # ---------------------------------------------------------------------
-# Structured candidate-job match serialization
+# Serialization and matching
 # ---------------------------------------------------------------------
 
-RECOMMENDATION_LABELS = {
-    "strong_match": "Strong match",
-    "good_match": "Good match",
-    "review": "Review",
-    "low_match": "Low match",
-}
+def _serialize_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
 
 
-def _serialize_match(job: Job) -> dict[str, Any]:
-    """Use the existing structured JobMatcher; do not create a new formula."""
-    result = _create_job_matcher().match(job)
+def _relative_display_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(PROJECT_ROOT.resolve()))
+    except ValueError:
+        return resolved.name
 
+
+def _serialize_job(
+    job: Job,
+    company: Company,
+    matched_location: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "external_id": job.external_id,
+        "title": job.title,
+        "company": {"id": company.id, "name": company.name},
+        "location": matched_location or job.location,
+        "all_locations": job.location,
+        "url": job.url,
+        "description": job.description,
+        "source": job.source,
+        "experience_level": job.experience_level,
+        "employment_type": job.employment_type,
+        "posted_at": _serialize_datetime(job.posted_at),
+        "first_seen_at": _serialize_datetime(job.first_seen_at),
+        "last_seen_at": _serialize_datetime(job.last_seen_at),
+        "is_active": job.is_active,
+    }
+
+
+def _serialize_match(result: Any) -> dict[str, Any]:
     return {
         "score": result.score,
         "recommendation": result.recommendation,
@@ -340,47 +353,6 @@ def _serialize_match(job: Job) -> dict[str, Any]:
         "hard_constraints": list(result.hard_constraints),
         "reasons": list(result.reasons),
         "concerns": list(result.concerns),
-    }
-
-
-# ---------------------------------------------------------------------
-# General serialization and evidence helpers
-# ---------------------------------------------------------------------
-
-def _serialize_datetime(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
-
-
-def _relative_display_path(path: Path) -> str:
-    resolved = path.resolve()
-
-    try:
-        return str(resolved.relative_to(PROJECT_ROOT.resolve()))
-    except ValueError:
-        return resolved.name
-
-
-def _serialize_job_without_matching(
-    job: Job,
-    company: Company,
-    matched_location: str | None = None,
-) -> dict[str, Any]:
-    return {
-        "id": job.id,
-        "external_id": job.external_id,
-        "title": job.title,
-        "company": {"id": company.id, "name": company.name},
-        "location": matched_location or job.location,
-        "all_locations": job.location,
-        "url": job.url,
-        "description": job.description,
-        "source": job.source,
-        "experience_level": job.experience_level,
-        "employment_type": job.employment_type,
-        "posted_at": _serialize_datetime(job.posted_at),
-        "first_seen_at": _serialize_datetime(job.first_seen_at),
-        "last_seen_at": _serialize_datetime(job.last_seen_at),
-        "is_active": job.is_active,
     }
 
 
@@ -430,7 +402,7 @@ def _select_evidence(
 
 
 # ---------------------------------------------------------------------
-# Root, health and dashboard stats
+# Root and health
 # ---------------------------------------------------------------------
 
 @app.get("/")
@@ -444,9 +416,7 @@ def root() -> dict[str, str]:
 
 
 @app.get("/api/health")
-def health(
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
+def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     try:
         db.execute(select(1))
         jobs_count = int(
@@ -470,9 +440,7 @@ def health(
 
 
 @app.get("/api/dashboard/stats")
-def dashboard_stats(
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
+def dashboard_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     total_jobs = int(
         db.scalar(select(func.count()).select_from(Job)) or 0
     )
@@ -519,7 +487,214 @@ def dashboard_stats(
 
 
 # ---------------------------------------------------------------------
-# Job listing, searching, matching, filtering and pagination
+# Searchable company directory
+# ---------------------------------------------------------------------
+
+@app.get("/api/companies")
+def list_companies(
+    q: str | None = Query(default=None, max_length=200),
+    active_only: bool = True,
+    limit: int = Query(default=500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    active_count = func.sum(
+        case((Job.is_active.is_(True), 1), else_=0)
+    )
+
+    statement = (
+        select(
+            Company.id,
+            Company.name,
+            Company.website,
+            Company.careers_url,
+            func.count(Job.id).label("job_count"),
+            active_count.label("active_job_count"),
+            func.group_concat(func.distinct(Job.source)).label("sources"),
+        )
+        .outerjoin(Job, Job.company_id == Company.id)
+        .group_by(
+            Company.id,
+            Company.name,
+            Company.website,
+            Company.careers_url,
+        )
+        .order_by(Company.name.asc())
+    )
+
+    if q and q.strip():
+        statement = statement.where(
+            Company.name.ilike(f"%{q.strip()}%")
+        )
+
+    rows = db.execute(statement).all()
+    items: list[dict[str, Any]] = []
+
+    for row in rows:
+        job_count = int(row.job_count or 0)
+        active_job_count = int(row.active_job_count or 0)
+
+        if job_count == 0:
+            continue
+        if active_only and active_job_count == 0:
+            continue
+
+        source_types = sorted(
+            part.strip()
+            for part in (row.sources or "").split(",")
+            if part.strip()
+        )
+
+        items.append(
+            {
+                "id": row.id,
+                "name": row.name,
+                "website": row.website,
+                "careers_url": row.careers_url,
+                "job_count": job_count,
+                "active_job_count": active_job_count,
+                "source_types": source_types,
+            }
+        )
+
+    return {
+        "items": items[:limit],
+        "total": len(items),
+        "limit": limit,
+        "active_only": active_only,
+    }
+
+
+# ---------------------------------------------------------------------
+# Searchable location directory
+# ---------------------------------------------------------------------
+
+@app.get("/api/locations")
+def list_locations(
+    q: str | None = Query(default=None, max_length=200),
+    active_only: bool = True,
+    limit: int = Query(default=500, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    statement = select(Job.id, Job.location)
+
+    if active_only:
+        statement = statement.where(Job.is_active.is_(True))
+
+    rows = db.execute(statement).all()
+    job_ids_by_city: dict[str, set[int]] = {}
+    display_by_city: dict[str, str] = {}
+
+    for job_id, stored_location in rows:
+        for entry in _location_entries(stored_location):
+            city_key = _normalize_city(entry)
+            if not city_key:
+                continue
+
+            display_name = _location_display_name(entry)
+            if city_key in CITY_DISPLAY_NAMES:
+                display_name = CITY_DISPLAY_NAMES[city_key]
+
+            display_by_city.setdefault(city_key, display_name)
+            job_ids_by_city.setdefault(city_key, set()).add(int(job_id))
+
+    items: list[dict[str, Any]] = []
+
+    for city_key, job_ids in job_ids_by_city.items():
+        name = display_by_city[city_key]
+
+        if q and q.strip():
+            query = q.strip().casefold()
+            if query not in name.casefold() and query not in city_key:
+                continue
+
+        items.append(
+            {
+                "city": name,
+                "value": name,
+                "job_count": len(job_ids),
+            }
+        )
+
+    items.sort(
+        key=lambda item: (-item["job_count"], item["city"].casefold())
+    )
+
+    return {
+        "items": items[:limit],
+        "total": len(items),
+        "active_only": active_only,
+    }
+
+
+# ---------------------------------------------------------------------
+# Job-title autocomplete
+# ---------------------------------------------------------------------
+
+@app.get("/api/job-suggestions")
+def job_suggestions(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=8, ge=1, le=20),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    query = q.strip()
+
+    if len(query) < 2:
+        return {"query": query, "items": []}
+
+    rows = db.execute(
+        select(Job.title, Company.name)
+        .join(Company, Job.company_id == Company.id)
+        .where(
+            Job.is_active.is_(True),
+            Job.title.ilike(f"%{query}%"),
+        )
+        .order_by(Job.title.asc(), Company.name.asc())
+        .limit(1000)
+    ).all()
+
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for title, company_name in rows:
+        clean_title = (title or "").strip()
+        if not clean_title:
+            continue
+
+        key = clean_title.casefold()
+        if key not in grouped:
+            grouped[key] = {
+                "title": clean_title,
+                "count": 0,
+                "companies": set(),
+            }
+
+        grouped[key]["count"] += 1
+        if company_name:
+            grouped[key]["companies"].add(company_name)
+
+    results = list(grouped.values())
+    results.sort(
+        key=lambda item: (
+            not item["title"].casefold().startswith(query.casefold()),
+            -item["count"],
+            item["title"].casefold(),
+        )
+    )
+
+    return {
+        "query": query,
+        "items": [
+            {
+                "title": item["title"],
+                "count": item["count"],
+                "companies": sorted(item["companies"]),
+            }
+            for item in results[:limit]
+        ],
+    }
+
+
+# ---------------------------------------------------------------------
+# Jobs, keyword/company/location/source/experience filters and scores
 # ---------------------------------------------------------------------
 
 @app.get("/api/jobs")
@@ -539,6 +714,7 @@ def list_jobs(
     if active_only:
         filters.append(Job.is_active.is_(True))
 
+    search_pattern: str | None = None
     if q and q.strip():
         search_pattern = f"%{q.strip()}%"
         filters.append(
@@ -563,12 +739,14 @@ def list_jobs(
     )
 
     candidate_rows = db.execute(statement).all()
+    matcher = _create_job_matcher()
+
     scored_rows: list[
         tuple[Job, Company, str | None, dict[str, Any], int]
     ] = []
 
     for job, company_obj in candidate_rows:
-        matched_location: str | None = None
+        matched_location = None
 
         if location and location.strip():
             matched_location = _find_matching_location(job.location, location)
@@ -581,7 +759,9 @@ def list_jobs(
         ):
             continue
 
-        match = _serialize_match(job)
+        result = matcher.match(job)
+        match = _serialize_match(result)
+
         direct_title_match = int(
             bool(
                 q
@@ -600,7 +780,6 @@ def list_jobs(
             )
         )
 
-    # Candidate fit is primary; a direct title match breaks ties.
     scored_rows.sort(
         key=lambda row: (
             row[3]["score"],
@@ -613,14 +792,10 @@ def list_jobs(
 
     total = len(scored_rows)
     page_rows = scored_rows[offset:offset + limit]
-
     items: list[dict[str, Any]] = []
+
     for job, company_obj, matched_location, match, _ in page_rows:
-        serialized = _serialize_job_without_matching(
-            job,
-            company_obj,
-            matched_location,
-        )
+        serialized = _serialize_job(job, company_obj, matched_location)
         serialized["match"] = match
         items.append(serialized)
 
@@ -675,13 +850,13 @@ def get_job(
             detail="The job refers to a missing company record.",
         )
 
-    serialized = _serialize_job_without_matching(job, company)
-    serialized["match"] = _serialize_match(job)
+    serialized = _serialize_job(job, company)
+    serialized["match"] = _serialize_match(_create_job_matcher().match(job))
     return serialized
 
 
 # ---------------------------------------------------------------------
-# Resume evidence status and selection
+# Resume evidence endpoints
 # ---------------------------------------------------------------------
 
 @app.get("/api/evidence/summary")
@@ -707,7 +882,9 @@ def evidence_summary() -> dict[str, Any]:
     counts_by_category: dict[str, int] = {}
     for item in evidence:
         category = str(item.get("category", "unknown"))
-        counts_by_category[category] = counts_by_category.get(category, 0) + 1
+        counts_by_category[category] = (
+            counts_by_category.get(category, 0) + 1
+        )
 
     return {
         "status": "ready",
@@ -730,7 +907,7 @@ def select_evidence(
 
 
 # ---------------------------------------------------------------------
-# Tailored resume generation and download
+# Resume generation and download
 # ---------------------------------------------------------------------
 
 @app.post("/api/resumes/generate", status_code=201)

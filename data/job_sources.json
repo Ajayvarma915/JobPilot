@@ -1,0 +1,29 @@
+{
+  "google": {
+    "enabled": true,
+    "query": "Software Engineer",
+    "location": "Hyderabad",
+    "max_pages": 2,
+    "fetch_details": true,
+    "company_name": "Google",
+    "website": "https://www.google.com",
+    "careers_url": "https://www.google.com/about/careers/applications/jobs/results/"
+  },
+  "greenhouse": [
+    {
+      "enabled": true,
+      "board_token": "coinbase",
+      "company_name": "Coinbase",
+      "website": "https://www.coinbase.com",
+      "careers_url": "https://www.coinbase.com/careers"
+    },
+    {
+      "enabled": true,
+      "board_token": "knowbe4",
+      "company_name": "KnowBe4",
+      "website": "https://www.knowbe4.com",
+      "careers_url": "https://www.knowbe4.com/careers"
+    }
+  ],
+  "lever": []
+}

@@ -14,6 +14,7 @@ import {
   BriefcaseBusiness,
   Building2,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -50,6 +51,32 @@ type CareerLevelFilter = "early" | "all";
 interface Company {
   id: number;
   name: string;
+}
+
+interface CompanyOption extends Company {
+  website: string | null;
+  careers_url: string | null;
+  job_count: number;
+  active_job_count: number;
+  source_types: string[];
+}
+
+interface LocationOption {
+  city: string;
+  value: string;
+  job_count: number;
+}
+
+interface JobTitleSuggestion {
+  title: string;
+  count: number;
+  companies: string[];
+}
+
+interface FilterOption {
+  value: string;
+  label: string;
+  meta?: string;
 }
 
 interface JobFilters {
@@ -92,6 +119,7 @@ interface Job {
   title: string;
   company: Company;
   location: string | null;
+  all_locations?: string | null;
   url: string;
   description: string;
   source: string;
@@ -136,6 +164,24 @@ interface JobListResponse {
     total: number;
     has_more: boolean;
   };
+}
+
+interface CompanyDirectoryResponse {
+  items: CompanyOption[];
+  total: number;
+  limit: number;
+  active_only: boolean;
+}
+
+interface LocationDirectoryResponse {
+  items: LocationOption[];
+  total: number;
+  active_only: boolean;
+}
+
+interface JobSuggestionResponse {
+  query: string;
+  items: JobTitleSuggestion[];
 }
 
 interface SelectedEvidence {
@@ -258,13 +304,32 @@ function errorText(error: unknown): string {
   return "An unexpected error occurred.";
 }
 
+function categoryLabel(category: string): string {
+  return category.replaceAll("_", " ");
+}
+
+function makeResumeRequest(
+  jobTitle: string,
+  jobDescription: string,
+  requiredSkills: string,
+  preferredSkills: string,
+) {
+  return {
+    job_title: jobTitle.trim(),
+    job_description: jobDescription.trim(),
+    required_skills: parseSkills(requiredSkills),
+    preferred_skills: parseSkills(preferredSkills),
+    max_projects: 3,
+  };
+}
+
 async function apiRequest<T>(
   path: string,
   init?: RequestInit,
 ): Promise<T> {
   const headers = new Headers(init?.headers);
 
-  if (!headers.has("Content-Type")) {
+  if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -294,6 +359,7 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const detail = (data as ApiError)?.detail;
+
     throw new Error(
       typeof detail === "string"
         ? detail
@@ -302,25 +368,6 @@ async function apiRequest<T>(
   }
 
   return data as T;
-}
-
-function categoryLabel(category: string): string {
-  return category.replaceAll("_", " ");
-}
-
-function makeResumeRequest(
-  jobTitle: string,
-  jobDescription: string,
-  requiredSkills: string,
-  preferredSkills: string,
-) {
-  return {
-    job_title: jobTitle.trim(),
-    job_description: jobDescription.trim(),
-    required_skills: parseSkills(requiredSkills),
-    preferred_skills: parseSkills(preferredSkills),
-    max_projects: 3,
-  };
 }
 
 function recommendationTone(
@@ -367,7 +414,11 @@ function MatchDetails({ match }: { match?: JobMatch }) {
     );
   }
 
-  const components: Array<{ label: string; value: number; max: number }> = [
+  const components: Array<{
+    label: string;
+    value: number;
+    max: number;
+  }> = [
     { label: "Role fit", value: match.score_breakdown.role, max: 25 },
     { label: "Seniority", value: match.score_breakdown.seniority, max: 20 },
     { label: "Experience", value: match.score_breakdown.experience, max: 20 },
@@ -377,7 +428,7 @@ function MatchDetails({ match }: { match?: JobMatch }) {
   ];
 
   return (
-    <div className="mt-4 grid grid-cols-1 gap-4 border-t border-slate-700/50 pt-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <div className="mt-4 grid grid-cols-1 gap-4 border-t border-slate-700/50 pt-4 xl:grid-cols-2">
       <div>
         <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.15em] text-slate-500">
           Score breakdown
@@ -510,6 +561,147 @@ function MatchDetails({ match }: { match?: JobMatch }) {
   );
 }
 
+function SearchableFilter({
+  label,
+  value,
+  placeholder,
+  options,
+  allOptionLabel,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  options: FilterOption[];
+  allOptionLabel: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const normalizedValue = value.trim().toLocaleLowerCase();
+  const filteredOptions = options
+    .filter(
+      (option) =>
+        !normalizedValue ||
+        option.label.toLocaleLowerCase().includes(normalizedValue) ||
+        option.value.toLocaleLowerCase().includes(normalizedValue),
+    )
+    .slice(0, 10);
+
+  const exactOptionExists = options.some(
+    (option) => option.value.toLocaleLowerCase() === normalizedValue,
+  );
+
+  return (
+    <div className="relative min-w-0">
+      <label className="sr-only">{label}</label>
+
+      <div className="relative">
+        <input
+          className="field pr-9"
+          value={value}
+          placeholder={placeholder}
+          autoComplete="off"
+          aria-label={label}
+          aria-autocomplete="list"
+          aria-expanded={open}
+          onFocus={() => setOpen(true)}
+          onBlur={() => {
+            window.setTimeout(() => setOpen(false), 140);
+          }}
+          onChange={(event) => {
+            onChange(event.target.value);
+            setOpen(true);
+          }}
+        />
+
+        <button
+          type="button"
+          className="absolute inset-y-0 right-0 grid w-9 place-items-center text-slate-500 hover:text-slate-200"
+          aria-label={`Show ${label.toLowerCase()} options`}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <ChevronDown size={15} />
+        </button>
+      </div>
+
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 top-[calc(100%+6px)] z-50 max-h-64 w-full min-w-[240px] overflow-y-auto rounded-xl border border-slate-700 bg-[#0d1423] p-1.5 shadow-2xl"
+        >
+          <button
+            type="button"
+            role="option"
+            aria-selected={value === ""}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onChange("");
+              setOpen(false);
+            }}
+            className={`flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-[11px] transition ${
+              value === ""
+                ? "bg-blue-400/[0.1] text-blue-200"
+                : "text-slate-300 hover:bg-white/[0.05]"
+            }`}
+          >
+            <span>{allOptionLabel}</span>
+            <span className="text-[10px] text-slate-500">Clear filter</span>
+          </button>
+
+          {filteredOptions.map((option) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={value === option.value}
+              key={option.value}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onChange(option.value);
+                setOpen(false);
+              }}
+              className={`flex w-full items-start justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition ${
+                value === option.value
+                  ? "bg-blue-400/[0.1] text-blue-200"
+                  : "text-slate-300 hover:bg-white/[0.05]"
+              }`}
+            >
+              <span className="min-w-0 flex-1 truncate">
+                {option.label}
+              </span>
+              {option.meta && (
+                <span className="shrink-0 text-[10px] text-slate-500">
+                  {option.meta}
+                </span>
+              )}
+            </button>
+          ))}
+
+          {value.trim() && !exactOptionExists && (
+            <button
+              type="button"
+              role="option"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => setOpen(false)}
+              className="mt-1 flex w-full items-center gap-2 rounded-lg border-t border-slate-700/60 px-3 py-2.5 text-left text-[10px] text-blue-200 hover:bg-white/[0.04]"
+            >
+              <Search size={12} />
+              Use typed filter: “{value.trim()}”
+            </button>
+          )}
+
+          {filteredOptions.length === 0 && !value.trim() && (
+            <p className="px-3 py-3 text-[11px] text-slate-500">
+              No options available yet.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Brand() {
   return (
     <div className="flex items-center gap-3">
@@ -553,7 +745,6 @@ function StatusPill({ status }: { status: ApiStatus }) {
           }`}
         />
       )}
-
       {connected ? "API connected" : checking ? "Connecting" : "API offline"}
     </span>
   );
@@ -578,18 +769,15 @@ function SectionHeading({
             {eyebrow}
           </p>
         )}
-
         <h2 className="text-xl font-semibold tracking-[-0.04em] text-slate-100">
           {title}
         </h2>
-
         {description && (
           <p className="mt-1.5 max-w-2xl text-[12px] leading-5 text-slate-400">
             {description}
           </p>
         )}
       </div>
-
       {right}
     </div>
   );
@@ -624,11 +812,9 @@ function MetricCard({
           <Icon size={17} strokeWidth={1.8} />
         </div>
       </div>
-
       <p className="mt-5 text-[29px] font-semibold tracking-[-0.055em] text-white">
         {value}
       </p>
-
       <p className="mt-1.5 text-[11px] text-slate-500">{caption}</p>
     </motion.div>
   );
@@ -669,7 +855,6 @@ function JobMiniCard({
         <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-700/60 bg-slate-800/70 text-slate-300">
           <Building2 size={17} />
         </div>
-
         <div className="min-w-0">
           <p className="truncate text-[13px] font-semibold text-slate-100">
             {job.title}
@@ -677,7 +862,6 @@ function JobMiniCard({
           <p className="mt-1 text-[11px] text-slate-400">
             {job.company?.name || "Unknown company"}
           </p>
-
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
             {job.location && (
               <span className="inline-flex items-center gap-1">
@@ -685,7 +869,6 @@ function JobMiniCard({
                 {job.location}
               </span>
             )}
-
             {job.experience_level && (
               <span className="inline-flex items-center gap-1">
                 <Clock3 size={11} />
@@ -738,13 +921,11 @@ function OverviewView({
     <div className="space-y-7">
       <section className="relative isolate overflow-hidden rounded-[24px] border border-blue-300/15 bg-[#101a31] p-6 sm:p-8 lg:p-9">
         <div className="soft-grid pointer-events-none absolute inset-0 -z-10 opacity-65" />
-
         <motion.div
           className="pointer-events-none absolute -right-10 -top-24 -z-10 h-80 w-80 rounded-full bg-blue-500/15 blur-3xl"
           animate={{ x: [0, 15, 0], y: [0, 10, 0] }}
           transition={{ duration: 9, repeat: Infinity, ease: "easeInOut" }}
         />
-
         <motion.div
           className="pointer-events-none absolute -bottom-32 right-[28%] -z-10 h-64 w-64 rounded-full bg-violet-500/10 blur-3xl"
           animate={{ x: [0, -14, 0] }}
@@ -775,10 +956,21 @@ function OverviewView({
               Explore opportunities
               <ArrowRight size={15} />
             </button>
-
             <button className="secondary-button" onClick={onBuild}>
               <WandSparkles size={15} />
               Resume studio
+            </button>
+            <button
+              className="secondary-button"
+              onClick={onRefresh}
+              disabled={loading}
+              title="Refresh dashboard data"
+            >
+              <RefreshCw
+                size={15}
+                className={loading ? "loading-ring" : ""}
+              />
+              Refresh data
             </button>
           </div>
 
@@ -801,7 +993,6 @@ function OverviewView({
         <div className="pointer-events-none absolute right-7 top-8 hidden h-36 w-36 items-center justify-center rounded-full border border-white/[0.055] lg:flex">
           <div className="absolute inset-4 rounded-full border border-blue-200/[0.09]" />
           <div className="absolute inset-8 rounded-full border border-violet-200/[0.12]" />
-
           <motion.div
             className="absolute inset-0 rounded-full border border-blue-300/20"
             animate={{ rotate: 360 }}
@@ -809,7 +1000,6 @@ function OverviewView({
           >
             <span className="absolute -top-1 left-1/2 h-2 w-2 rounded-full bg-blue-300 shadow-[0_0_14px_rgba(125,170,255,0.8)]" />
           </motion.div>
-
           <div className="grid h-14 w-14 place-items-center rounded-2xl border border-blue-200/20 bg-blue-400/[0.08] text-blue-200">
             <Command size={25} />
           </div>
@@ -871,7 +1061,6 @@ function OverviewView({
               </button>
             }
           />
-
           {jobs.length > 0 ? (
             <div>
               {jobs.map((job) => (
@@ -908,7 +1097,6 @@ function OverviewView({
                   evidence verified
                 </p>
               </div>
-
               <div className="mb-1 flex items-center gap-1.5 text-[11px] text-emerald-300">
                 <CheckCircle2 size={14} />
                 {evidence?.pending_count === 0
@@ -994,17 +1182,6 @@ function OverviewView({
           </div>
         </div>
       </section>
-
-      <div className="flex justify-end">
-        <button
-          className="secondary-button"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          <RefreshCw size={13} />
-          Refresh dashboard
-        </button>
-      </div>
     </div>
   );
 }
@@ -1018,8 +1195,16 @@ function JobsView({
   error,
   query,
   setQuery,
+  suggestions,
+  suggestionsLoading,
+  suggestionsOpen,
+  onQueryFocus,
+  onQueryBlur,
+  onSelectSuggestion,
   filterDraft,
   setFilterDraft,
+  companyOptions,
+  locationOptions,
   sourceOptions,
   onApplyFilters,
   onPrevious,
@@ -1035,8 +1220,16 @@ function JobsView({
   error: string | null;
   query: string;
   setQuery: (value: string) => void;
+  suggestions: JobTitleSuggestion[];
+  suggestionsLoading: boolean;
+  suggestionsOpen: boolean;
+  onQueryFocus: () => void;
+  onQueryBlur: () => void;
+  onSelectSuggestion: (title: string) => void;
   filterDraft: JobFilters;
   setFilterDraft: (value: JobFilters) => void;
+  companyOptions: FilterOption[];
+  locationOptions: FilterOption[];
   sourceOptions: string[];
   onApplyFilters: (event: FormEvent<HTMLFormElement>) => void;
   onPrevious: () => void;
@@ -1044,12 +1237,14 @@ function JobsView({
   onRefresh: () => void;
   onTailor: (job: Job) => void;
 }) {
+  const showSuggestions = suggestionsOpen && query.trim().length >= 2;
+
   return (
     <div className="space-y-6">
       <SectionHeading
         eyebrow="Discover"
         title="Explore opportunities"
-        description="Search your collected jobs by title, company, description, or location."
+        description="Search job titles, skills or keywords, then narrow the results by company, location and experience."
         right={
           <button
             className="secondary-button"
@@ -1062,22 +1257,81 @@ function JobsView({
         }
       />
 
-      <form
-        onSubmit={onApplyFilters}
-        className="panel rounded-2xl p-4 sm:p-5"
-      >
+      <form onSubmit={onApplyFilters} className="panel rounded-2xl p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row">
-          <div className="relative min-w-0 flex-1">
+          <div className="relative z-30 min-w-0 flex-1">
             <Search
               size={16}
-              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500"
+              className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500"
             />
             <input
               className="field !pl-10"
-              placeholder="Search jobs, skills, companies..."
+              placeholder="Search job titles, skills or keywords..."
               value={query}
+              autoComplete="off"
+              aria-label="Search jobs"
+              aria-autocomplete="list"
+              aria-expanded={showSuggestions}
+              onFocus={onQueryFocus}
+              onBlur={onQueryBlur}
               onChange={(event) => setQuery(event.target.value)}
             />
+
+            <AnimatePresence>
+              {showSuggestions && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  className="absolute left-0 right-0 top-[calc(100%+7px)] max-h-72 overflow-y-auto rounded-xl border border-slate-700 bg-[#0d1423] p-2 shadow-2xl"
+                >
+                  <div className="flex items-center justify-between px-2 py-1.5">
+                    <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-slate-500">
+                      Suggested job titles
+                    </p>
+                    {suggestionsLoading && (
+                      <LoaderCircle
+                        size={12}
+                        className="loading-ring text-blue-300"
+                      />
+                    )}
+                  </div>
+
+                  {!suggestionsLoading && suggestions.length === 0 ? (
+                    <p className="px-2 py-3 text-[11px] leading-5 text-slate-400">
+                      No title suggestions. Press Search jobs to search the
+                      descriptions and keywords too.
+                    </p>
+                  ) : (
+                    suggestions.map((suggestion) => (
+                      <button
+                        type="button"
+                        key={suggestion.title}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => onSelectSuggestion(suggestion.title)}
+                        className="flex w-full items-start gap-3 rounded-lg px-2.5 py-2.5 text-left hover:bg-white/[0.05]"
+                      >
+                        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-blue-400/[0.08] text-blue-300">
+                          <BriefcaseBusiness size={13} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11px] font-medium text-slate-100">
+                            {suggestion.title}
+                          </p>
+                          <p className="mt-1 truncate text-[10px] text-slate-500">
+                            {suggestion.companies.join(", ")}
+                          </p>
+                        </div>
+                        <span className="shrink-0 pt-1 text-[9px] text-slate-500">
+                          {suggestion.count} listing
+                          {suggestion.count === 1 ? "" : "s"}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <button className="primary-button shrink-0" type="submit">
@@ -1087,33 +1341,32 @@ function JobsView({
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          <input
-            className="field"
-            placeholder="Company"
+          <SearchableFilter
+            label="Company"
             value={filterDraft.company}
-            onChange={(event) =>
-              setFilterDraft({
-                ...filterDraft,
-                company: event.target.value,
-              })
+            placeholder="All companies · search"
+            allOptionLabel="All companies"
+            options={companyOptions}
+            onChange={(value) =>
+              setFilterDraft({ ...filterDraft, company: value })
             }
           />
 
-          <input
-            className="field"
-            placeholder="Location"
+          <SearchableFilter
+            label="Location"
             value={filterDraft.location}
-            onChange={(event) =>
-              setFilterDraft({
-                ...filterDraft,
-                location: event.target.value,
-              })
+            placeholder="All locations · search"
+            allOptionLabel="All locations"
+            options={locationOptions}
+            onChange={(value) =>
+              setFilterDraft({ ...filterDraft, location: value })
             }
           />
 
           <select
             className="field"
             value={filterDraft.source}
+            aria-label="Job source"
             onChange={(event) =>
               setFilterDraft({
                 ...filterDraft,
@@ -1132,13 +1385,13 @@ function JobsView({
           <select
             className="field"
             value={filterDraft.career_level}
+            aria-label="Role level filter"
             onChange={(event) =>
               setFilterDraft({
                 ...filterDraft,
                 career_level: event.target.value as CareerLevelFilter,
               })
             }
-            aria-label="Role level filter"
           >
             <option value="early">Early-career suitable</option>
             <option value="all">All role levels</option>
@@ -1148,6 +1401,12 @@ function JobsView({
             <Filter size={14} />
             Apply filters
           </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
+          <span>{companyOptions.length} companies with active jobs</span>
+          <span>{locationOptions.length} locations in collected listings</span>
+          <span>Keyword search also searches job descriptions</span>
         </div>
       </form>
 
@@ -1161,7 +1420,6 @@ function JobsView({
             jobs found
           </span>
         </div>
-
         <span className="text-[10px] text-slate-500">
           Page {page + 1} · 10 jobs per page
         </span>
@@ -1187,8 +1445,8 @@ function JobsView({
             title="No matching opportunities"
             message={
               filterDraft.career_level === "early"
-                ? "No jobs matched all current filters and the early-career suitability rules. Choose ‘All role levels’ to inspect other jobs and their match concerns."
-                : "Try another keyword, company, or location filter."
+                ? "No jobs matched all filters and the early-career rules. Choose All role levels to inspect other jobs."
+                : "Try another keyword, company, location or source."
             }
           />
         </div>
@@ -1222,7 +1480,14 @@ function JobsView({
 
                     <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[10px] text-slate-500">
                       {job.location && (
-                        <span className="inline-flex items-center gap-1">
+                        <span
+                          className="inline-flex items-center gap-1"
+                          title={
+                            job.all_locations && job.all_locations !== job.location
+                              ? `All listed locations: ${job.all_locations}`
+                              : undefined
+                          }
+                        >
                           <MapPin size={12} />
                           {job.location}
                         </span>
@@ -1256,7 +1521,6 @@ function JobsView({
                     Original posting
                     <ExternalLink size={13} />
                   </a>
-
                   <button
                     className="primary-button !px-3 !py-2"
                     onClick={() => onTailor(job)}
@@ -1268,14 +1532,15 @@ function JobsView({
               </div>
 
               <details className="group mt-4 rounded-xl border border-slate-700/45 bg-slate-950/20 px-3.5 py-3">
-                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[11px] font-semibold text-slate-300 marker:hidden">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-[11px] font-semibold text-slate-300">
                   <span className="inline-flex items-center gap-2">
                     <Target size={13} className="text-blue-300" />
                     Why this match score?
                   </span>
-                  <span className="text-[10px] font-normal text-slate-500 transition group-open:rotate-180">
-                    ⌄
-                  </span>
+                  <ChevronDown
+                    size={13}
+                    className="text-slate-500 transition group-open:rotate-180"
+                  />
                 </summary>
                 <MatchDetails match={job.match} />
               </details>
@@ -1293,7 +1558,6 @@ function JobsView({
           <ChevronLeft size={15} />
           Previous
         </button>
-
         <button
           className="secondary-button"
           onClick={onNext}
@@ -1483,7 +1747,6 @@ function ResumeView({
                   </p>
                 </div>
               </div>
-
               {selection && (
                 <span className="rounded-full border border-emerald-400/15 bg-emerald-400/[0.06] px-2.5 py-1 text-[10px] text-emerald-300">
                   Analyzed
@@ -1510,7 +1773,6 @@ function ResumeView({
                     tone="rose"
                   />
                 </div>
-
                 <div className="flex items-center gap-2 text-[11px] text-slate-400">
                   <ShieldCheck size={14} className="text-emerald-300" />
                   Only user-verified evidence is eligible for resume generation.
@@ -1660,14 +1922,21 @@ function App() {
   const [previewJobs, setPreviewJobs] = useState<Job[]>([]);
   const [evidence, setEvidence] = useState<EvidenceSummary | null>(null);
 
+  const [companyOptions, setCompanyOptions] = useState<CompanyOption[]>([]);
+  const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
+
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobsTotal, setJobsTotal] = useState(0);
   const [jobsHasMore, setJobsHasMore] = useState(false);
   const [jobsLoading, setJobsLoading] = useState(false);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [jobsPage, setJobsPage] = useState(0);
+
   const [queryInput, setQueryInput] = useState("");
   const [appliedQuery, setAppliedQuery] = useState("");
+  const [jobSuggestions, setJobSuggestions] = useState<JobTitleSuggestion[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
 
   const [filterDraft, setFilterDraft] = useState<JobFilters>({
     company: "",
@@ -1695,7 +1964,6 @@ function App() {
   const [generated, setGenerated] = useState<GeneratedResume | null>(null);
   const [generationLoading, setGenerationLoading] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
-
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const refreshOverview = useCallback(async () => {
@@ -1703,13 +1971,21 @@ function App() {
     setApiError(null);
 
     try {
-      const [health, dashboard, jobsResponse, evidenceSummary] =
-        await Promise.all([
-          apiRequest<{ status: string }>("/api/health"),
-          apiRequest<DashboardStats>("/api/dashboard/stats"),
-          apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0"),
-          apiRequest<EvidenceSummary>("/api/evidence/summary"),
-        ]);
+      const [
+        health,
+        dashboard,
+        jobsResponse,
+        evidenceSummary,
+        companiesResponse,
+        locationsResponse,
+      ] = await Promise.all([
+        apiRequest<{ status: string }>("/api/health"),
+        apiRequest<DashboardStats>("/api/dashboard/stats"),
+        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0"),
+        apiRequest<EvidenceSummary>("/api/evidence/summary"),
+        apiRequest<CompanyDirectoryResponse>("/api/companies?limit=1000"),
+        apiRequest<LocationDirectoryResponse>("/api/locations?limit=1000"),
+      ]);
 
       if (health.status !== "ok") {
         throw new Error("The API returned an unexpected health status.");
@@ -1718,6 +1994,8 @@ function App() {
       setStats(dashboard);
       setPreviewJobs(jobsResponse.items);
       setEvidence(evidenceSummary);
+      setCompanyOptions(companiesResponse.items);
+      setLocationOptions(locationsResponse.items);
       setApiStatus("connected");
     } catch (error) {
       setApiStatus("offline");
@@ -1737,23 +2015,19 @@ function App() {
         limit: "10",
         offset: String(jobsPage * 10),
         active_only: "true",
+        career_level: appliedFilters.career_level,
       });
 
       if (appliedQuery) params.set("q", appliedQuery);
-
       if (appliedFilters.company) {
         params.set("company", appliedFilters.company);
       }
-
       if (appliedFilters.location) {
         params.set("location", appliedFilters.location);
       }
-
       if (appliedFilters.source) {
         params.set("source", appliedFilters.source);
       }
-
-      params.set("career_level", appliedFilters.career_level);
 
       const result = await apiRequest<JobListResponse>(
         `/api/jobs?${params.toString()}`,
@@ -1789,6 +2063,45 @@ function App() {
     return () => window.clearTimeout(timerId);
   }, [screen, loadJobs]);
 
+  useEffect(() => {
+    const query = queryInput.trim();
+    let cancelled = false;
+
+    const timerId = window.setTimeout(() => {
+      if (query.length < 2) {
+        setJobSuggestions([]);
+        setSuggestionsLoading(false);
+        return;
+      }
+
+      setSuggestionsLoading(true);
+
+      void apiRequest<JobSuggestionResponse>(
+        `/api/job-suggestions?q=${encodeURIComponent(query)}&limit=8`,
+      )
+        .then((response) => {
+          if (!cancelled) {
+            setJobSuggestions(response.items);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setJobSuggestions([]);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setSuggestionsLoading(false);
+          }
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [queryInput]);
+
   const openJobs = () => {
     setScreen("jobs");
     setMobileNavOpen(false);
@@ -1822,6 +2135,14 @@ function App() {
       source: filterDraft.source.trim(),
       career_level: filterDraft.career_level,
     });
+    setSuggestionsOpen(false);
+  };
+
+  const selectSuggestedTitle = (title: string) => {
+    setQueryInput(title);
+    setAppliedQuery(title);
+    setJobsPage(0);
+    setSuggestionsOpen(false);
   };
 
   const handlePreviousPage = () => {
@@ -1838,7 +2159,6 @@ function App() {
     event: FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
-
     setSelectionLoading(true);
     setSelectionError(null);
     setGenerationError(null);
@@ -1903,6 +2223,18 @@ function App() {
     (item) => item.source,
   );
 
+  const companyFilterOptions: FilterOption[] = companyOptions.map((item) => ({
+    value: item.name,
+    label: item.name,
+    meta: `${formatNumber(item.active_job_count)} active`,
+  }));
+
+  const locationFilterOptions: FilterOption[] = locationOptions.map((item) => ({
+    value: item.value || item.city,
+    label: item.city,
+    meta: `${formatNumber(item.job_count)} jobs`,
+  }));
+
   return (
     <div className="min-h-screen text-slate-100">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -1945,12 +2277,10 @@ function App() {
                         : "text-slate-500 group-hover:text-slate-300"
                     }
                   />
-
                   <span className="min-w-0 flex-1">
                     <span className="block text-[12px] font-semibold">
                       {item.label}
                     </span>
-
                     <span
                       className={`mt-0.5 block text-[10px] ${
                         active ? "text-blue-200/60" : "text-slate-600"
@@ -1959,7 +2289,6 @@ function App() {
                       {item.description}
                     </span>
                   </span>
-
                   {active && (
                     <ChevronRight size={14} className="text-blue-300/70" />
                   )}
@@ -1979,7 +2308,6 @@ function App() {
               <div className="grid h-8 w-8 place-items-center rounded-lg bg-emerald-400/[0.08] text-emerald-300">
                 <Activity size={15} />
               </div>
-
               <div>
                 <p className="text-[11px] font-semibold text-slate-200">
                   Local engine
@@ -1989,10 +2317,8 @@ function App() {
                 </p>
               </div>
             </div>
-
             <div className="mt-3 flex items-center justify-between border-t border-slate-700/40 pt-3">
               <span className="text-[10px] text-slate-500">Connection</span>
-
               <span className="inline-flex items-center gap-1.5 text-[10px] text-slate-300">
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
@@ -2003,7 +2329,6 @@ function App() {
                         : "bg-rose-400"
                   }`}
                 />
-
                 {apiStatus === "connected"
                   ? "Online"
                   : apiStatus === "checking"
@@ -2017,11 +2342,9 @@ function App() {
             <div className="mb-3 grid h-8 w-8 place-items-center rounded-lg bg-blue-300/10 text-blue-300">
               <Sparkles size={16} />
             </div>
-
             <p className="text-[12px] font-semibold text-slate-100">
               Evidence-first AI
             </p>
-
             <p className="mt-1.5 text-[10px] leading-4 text-slate-500">
               Build resumes from reviewed evidence, not invented credentials.
             </p>
@@ -2031,17 +2354,14 @@ function App() {
             <div className="grid h-9 w-9 place-items-center rounded-xl border border-slate-700 bg-slate-800 text-[11px] font-bold text-slate-200">
               JP
             </div>
-
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-medium text-slate-200">
                 Local workspace
               </p>
-
               <p className="mt-0.5 text-[9px] text-slate-500">
                 Personal job pipeline
               </p>
             </div>
-
             <ShieldCheck size={14} className="text-emerald-300/70" />
           </div>
         </aside>
@@ -2057,12 +2377,10 @@ function App() {
                 >
                   <Command size={17} />
                 </button>
-
                 <div className="min-w-0">
                   <p className="truncate text-[13px] font-semibold text-slate-100">
                     {currentNavItem?.label ?? "Overview"}
                   </p>
-
                   <p className="mt-1 hidden text-[10px] text-slate-500 sm:block">
                     Your job search, organized.
                   </p>
@@ -2071,7 +2389,6 @@ function App() {
 
               <div className="flex shrink-0 items-center gap-2 sm:gap-3">
                 <StatusPill status={apiStatus} />
-
                 <button
                   className="icon-button hidden sm:inline-flex"
                   onClick={() => void refreshOverview()}
@@ -2084,9 +2401,7 @@ function App() {
                     className={refreshing ? "loading-ring" : ""}
                   />
                 </button>
-
                 <div className="hidden h-7 w-px bg-slate-800 sm:block" />
-
                 <button
                   className="icon-button relative"
                   onClick={openResumeStudio}
@@ -2094,7 +2409,6 @@ function App() {
                   aria-label="Open Resume Studio"
                 >
                   <Bell size={15} />
-
                   {evidence?.pending_count ? (
                     <span className="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-amber-400 px-1 text-[8px] font-bold text-slate-950">
                       {evidence.pending_count}
@@ -2114,7 +2428,6 @@ function App() {
                 >
                   {NAV_ITEMS.map((item) => {
                     const Icon = item.icon;
-
                     return (
                       <button
                         key={item.id}
@@ -2145,22 +2458,18 @@ function App() {
                   <div className="mt-0.5 text-rose-300">
                     <Activity size={17} />
                   </div>
-
                   <div>
                     <p className="text-[12px] font-semibold text-rose-200">
                       The JobPilot API could not be reached
                     </p>
-
                     <p className="mt-1 text-[11px] leading-5 text-rose-200/70">
                       {apiError}
                     </p>
-
                     <p className="mt-1 text-[10px] text-slate-500">
                       Confirm that Uvicorn is running on {API_BASE}.
                     </p>
                   </div>
                 </div>
-
                 <button
                   className="secondary-button self-start !border-rose-300/15 sm:self-center"
                   onClick={() => void refreshOverview()}
@@ -2185,7 +2494,7 @@ function App() {
                     stats={stats}
                     jobs={previewJobs}
                     evidence={evidence}
-                    loading={overviewLoading}
+                    loading={overviewLoading || refreshing}
                     onExplore={openJobs}
                     onRefresh={() => void refreshOverview()}
                     onTailor={openResumeForJob}
@@ -2202,14 +2511,33 @@ function App() {
                     loading={jobsLoading}
                     error={jobsError}
                     query={queryInput}
-                    setQuery={setQueryInput}
+                    setQuery={(value) => {
+                      setQueryInput(value);
+                      setSuggestionsOpen(true);
+                    }}
+                    suggestions={jobSuggestions}
+                    suggestionsLoading={suggestionsLoading}
+                    suggestionsOpen={suggestionsOpen}
+                    onQueryFocus={() => setSuggestionsOpen(true)}
+                    onQueryBlur={() => {
+                      window.setTimeout(
+                        () => setSuggestionsOpen(false),
+                        140,
+                      );
+                    }}
+                    onSelectSuggestion={selectSuggestedTitle}
                     filterDraft={filterDraft}
                     setFilterDraft={setFilterDraft}
+                    companyOptions={companyFilterOptions}
+                    locationOptions={locationFilterOptions}
                     sourceOptions={sourceOptions}
                     onApplyFilters={applyJobFilters}
                     onPrevious={handlePreviousPage}
                     onNext={handleNextPage}
-                    onRefresh={() => void loadJobs()}
+                    onRefresh={() => {
+                      void refreshOverview();
+                      void loadJobs();
+                    }}
                     onTailor={openResumeForJob}
                   />
                 )}
@@ -2247,7 +2575,6 @@ function App() {
                       : "bg-slate-600"
                   }`}
                 />
-
                 {apiStatus === "connected"
                   ? "Connected to your local API"
                   : "Waiting for the local API"}
