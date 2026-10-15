@@ -59,7 +59,6 @@ engine = create_engine(
     f"sqlite:///{DATABASE_PATH.as_posix()}",
     connect_args={"check_same_thread": False},
 )
-
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,
@@ -74,7 +73,6 @@ CITY_ALIASES = {
     "bengaluru": "bengaluru",
     "hyderabad": "hyderabad",
 }
-
 CITY_DISPLAY_NAMES = {
     "bengaluru": "Bengaluru",
     "hyderabad": "Hyderabad",
@@ -85,33 +83,21 @@ SENIOR_ROLE_PATTERN = re.compile(
     r"head|lead|chief|architect|vice president)\b",
     re.IGNORECASE,
 )
-
-INTERN_ROLE_PATTERN = re.compile(
-    r"\b(intern|internship)\b",
-    re.IGNORECASE,
-)
-
-PHD_PATTERN = re.compile(
-    r"\bph\.?\s*d\.?\b|\bdoctorate\b",
-    re.IGNORECASE,
-)
-
+INTERN_ROLE_PATTERN = re.compile(r"\b(intern|internship)\b", re.IGNORECASE)
+PHD_PATTERN = re.compile(r"\bph\.?\s*d\.?\b|\bdoctorate\b", re.IGNORECASE)
 QUALIFICATION_START_PATTERN = re.compile(
     r"\b(?:minimum|basic|required)\s+qualifications?\b",
     re.IGNORECASE,
 )
-
 QUALIFICATION_END_PATTERN = re.compile(
     r"\b(?:preferred qualifications?|responsibilities|what you(?:'|’)ll do|"
     r"about the job|about the role|equal opportunity)\b",
     re.IGNORECASE,
 )
-
 YEARS_BEFORE_EXPERIENCE_PATTERN = re.compile(
     r"\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b[^\n]{0,120}\bexperience\b",
     re.IGNORECASE,
 )
-
 EXPERIENCE_BEFORE_YEARS_PATTERN = re.compile(
     r"\bexperience\b[^\n]{0,100}\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b",
     re.IGNORECASE,
@@ -152,7 +138,6 @@ def get_db() -> Generator[Session, None, None]:
         )
 
     db = SessionLocal()
-
     try:
         yield db
     except SQLAlchemyError:
@@ -168,7 +153,7 @@ app = FastAPI(
         "Local API for job discovery, candidate-job matching, "
         "resume evidence, and tailored resume generation."
     ),
-    version="0.5.2",
+    version="0.5.3",
 )
 
 app.add_middleware(
@@ -202,7 +187,6 @@ def _normalize_city(value: str | None) -> str:
     city = value.split(",", maxsplit=1)[0]
     city = re.sub(r"\s+", " ", city).strip().casefold()
     city = city.strip(" []'\"")
-
     return CITY_ALIASES.get(city, city)
 
 
@@ -215,14 +199,12 @@ def _location_entries(stored_location: str | None) -> list[str]:
     if raw.startswith("[") and raw.endswith("]"):
         try:
             parsed = ast.literal_eval(raw)
-
             if isinstance(parsed, (list, tuple)):
                 entries = [
                     str(item).strip()
                     for item in parsed
                     if str(item).strip()
                 ]
-
                 if entries:
                     return entries
         except (ValueError, SyntaxError):
@@ -237,10 +219,8 @@ def _location_entries(stored_location: str | None) -> list[str]:
 
 def _location_display_name(entry: str) -> str:
     city_key = _normalize_city(entry)
-
     if city_key in CITY_DISPLAY_NAMES:
         return CITY_DISPLAY_NAMES[city_key]
-
     return entry.split(",", maxsplit=1)[0].strip() or entry.strip()
 
 
@@ -249,7 +229,6 @@ def _find_matching_location(
     requested_location: str,
 ) -> str | None:
     requested_city = _normalize_city(requested_location)
-
     if not requested_city:
         return None
 
@@ -264,7 +243,6 @@ def _minimum_qualification_text(description: str) -> str:
     start = QUALIFICATION_START_PATTERN.search(description)
     remaining = description[start.end():] if start else description
     end = QUALIFICATION_END_PATTERN.search(remaining)
-
     return remaining[:end.start()] if end else remaining
 
 
@@ -288,32 +266,26 @@ def _extract_required_experience_years(
 
 
 def _requires_phd(description: str) -> bool:
-    return bool(
-        PHD_PATTERN.search(_minimum_qualification_text(description))
-    )
+    return bool(PHD_PATTERN.search(_minimum_qualification_text(description)))
 
 
 def _is_early_career_suitable(
     title: str,
     description: str,
 ) -> bool:
-    """Use consistent eligibility rules for search and autocomplete."""
+    """Shared eligibility rule for normal search and autocomplete."""
     clean_title = re.sub(r"\s+", " ", title).strip()
 
     if not clean_title:
         return False
-
     if SENIOR_ROLE_PATTERN.search(clean_title):
         return False
-
     if INTERN_ROLE_PATTERN.search(clean_title):
         return False
-
     if PHD_PATTERN.search(clean_title) or _requires_phd(description):
         return False
 
     required_years = _extract_required_experience_years(description)
-
     if (
         required_years is not None
         and required_years > _maximum_early_career_years()
@@ -374,7 +346,6 @@ def _warm_match_cache(
         db = SessionLocal()
 
         profile = _candidate_profile()
-
         if profile_fingerprint(profile) != profile_hash:
             return
 
@@ -383,7 +354,6 @@ def _warm_match_cache(
 
         for job_id in job_ids:
             job = db.get(Job, job_id)
-
             if job is None:
                 continue
 
@@ -402,13 +372,11 @@ def _warm_match_cache(
     except Exception:
         if db is not None:
             db.rollback()
-
         logger.exception("Job match-cache warm-up failed.")
 
     finally:
         if db is not None:
             db.close()
-
         release_cache_warmup(job_ids, profile_hash)
 
 
@@ -418,7 +386,6 @@ def _warm_match_cache(
 
 def _relative_display_path(path: Path) -> str:
     resolved = path.resolve()
-
     try:
         return str(resolved.relative_to(PROJECT_ROOT.resolve()))
     except ValueError:
@@ -448,7 +415,6 @@ def _select_evidence(
 ) -> dict[str, Any]:
     try:
         selector = ResumeEvidenceSelector(EVIDENCE_STORE_PATH)
-
         return selector.select_for_job(
             job_title=request.job_title,
             job_description=request.job_description,
@@ -489,7 +455,6 @@ def root() -> dict[str, str]:
 def health(db: Session = Depends(get_db)) -> dict[str, Any]:
     try:
         db.execute(select(1))
-
         jobs_count = int(
             db.scalar(select(func.count()).select_from(Job)) or 0
         )
@@ -642,7 +607,6 @@ def list_locations(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     statement = select(Job.id, Job.location)
-
     if active_only:
         statement = statement.where(Job.is_active.is_(True))
 
@@ -653,7 +617,6 @@ def list_locations(
     for job_id, stored_location in rows:
         for entry in _location_entries(stored_location):
             city_key = _normalize_city(entry)
-
             if not city_key:
                 continue
 
@@ -661,26 +624,23 @@ def list_locations(
                 city_key,
                 _location_display_name(entry),
             )
-
             display_by_city.setdefault(city_key, display)
             job_ids_by_city.setdefault(city_key, set()).add(int(job_id))
 
     items: list[dict[str, Any]] = []
-
-    for city_key, ids in job_ids_by_city.items():
-        city = display_by_city[city_key]
+    for city_key, job_ids in job_ids_by_city.items():
+        name = display_by_city[city_key]
 
         if q and q.strip():
             needle = q.strip().casefold()
-
-            if needle not in city.casefold() and needle not in city_key:
+            if needle not in name.casefold() and needle not in city_key:
                 continue
 
         items.append(
             {
-                "city": city,
-                "value": city,
-                "job_count": len(ids),
+                "city": name,
+                "value": name,
+                "job_count": len(job_ids),
             }
         )
 
@@ -696,44 +656,70 @@ def list_locations(
 
 
 # ---------------------------------------------------------------------
-# Job-title autocomplete
+# Company-aware, filter-aware job autocomplete
 # ---------------------------------------------------------------------
 
 @app.get("/api/job-suggestions")
 def job_suggestions(
     q: str = Query(default="", max_length=200),
     limit: int = Query(default=8, ge=1, le=20),
+    career_level: Literal["early", "all"] = Query(default="early"),
+    company: str | None = Query(default=None, max_length=200),
+    location: str | None = Query(default=None, max_length=200),
+    source: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    Suggest titles compatible with the default early-career filter.
+    Suggest job titles by searching both job titles and company names.
+
+    The selected company, location, source and career-level filters are
+    applied before a title is presented, so autocomplete does not
+    recommend a role that the corresponding filtered search will exclude.
     """
     query = q.strip()
 
     if len(query) < 2:
         return {"query": query, "items": []}
 
-    rows = db.execute(
+    pattern = f"%{query}%"
+    filters = [
+        Job.is_active.is_(True),
+        or_(
+            Job.title.ilike(pattern),
+            Company.name.ilike(pattern),
+        ),
+    ]
+
+    if company and company.strip():
+        filters.append(Company.name.ilike(f"%{company.strip()}%"))
+
+    if source and source.strip():
+        filters.append(Job.source == source.strip())
+
+    statement = (
         select(Job, Company)
         .join(Company, Job.company_id == Company.id)
-        .where(
-            Job.is_active.is_(True),
-            Job.title.ilike(f"%{query}%"),
-        )
+        .where(*filters)
         .order_by(Job.title.asc(), Company.name.asc())
-        .limit(2000)
-    ).all()
+        .limit(5000)
+    )
 
     grouped: dict[str, dict[str, Any]] = {}
+    query_lower = query.casefold()
 
-    for job, company in rows:
-        if not _is_early_career_suitable(
+    for job, company_obj in db.execute(statement).all():
+        if location and location.strip():
+            if _find_matching_location(job.location, location) is None:
+                continue
+
+        if career_level == "early" and not _is_early_career_suitable(
             job.title,
             job.description or "",
         ):
             continue
 
         clean_title = (job.title or "").strip()
+        clean_company = (company_obj.name or "").strip()
 
         if not clean_title:
             continue
@@ -745,18 +731,29 @@ def job_suggestions(
                 "title": clean_title,
                 "count": 0,
                 "companies": set(),
+                "matched_by": set(),
             }
 
-        grouped[key]["count"] += 1
+        item = grouped[key]
+        item["count"] += 1
 
-        if company.name:
-            grouped[key]["companies"].add(company.name)
+        if clean_company:
+            item["companies"].add(clean_company)
+
+        # Track whether the query matched the title or company name.
+        # The frontend uses this to preserve company-search intent.
+        if query_lower in clean_title.casefold():
+            item["matched_by"].add("title")
+
+        if query_lower in clean_company.casefold():
+            item["matched_by"].add("company")
 
     results = list(grouped.values())
 
     results.sort(
         key=lambda item: (
-            not item["title"].casefold().startswith(query.casefold()),
+            not item["title"].casefold().startswith(query_lower),
+            query_lower not in item["title"].casefold(),
             -item["count"],
             item["title"].casefold(),
         )
@@ -769,6 +766,7 @@ def job_suggestions(
                 "title": item["title"],
                 "count": item["count"],
                 "companies": sorted(item["companies"]),
+                "matched_by": sorted(item["matched_by"]),
             }
             for item in results[:limit]
         ],
@@ -792,7 +790,7 @@ def list_jobs(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    # Use the engine attached to this request session; tests may override it.
+    # Use the engine attached to this request's session; tests may override it.
     request_engine = db.get_bind()
     ensure_match_cache_table(request_engine)
 
@@ -824,10 +822,9 @@ def list_jobs(
         .order_by(Job.last_seen_at.desc(), Job.id.desc())
     )
 
-    raw_rows = db.execute(statement).all()
     candidates: list[tuple[Job, Company, str | None, int]] = []
 
-    for job, company_obj in raw_rows:
+    for job, company_obj in db.execute(statement).all():
         matched_location = None
 
         if location and location.strip():
@@ -835,7 +832,6 @@ def list_jobs(
                 job.location,
                 location,
             )
-
             if matched_location is None:
                 continue
 
@@ -866,7 +862,6 @@ def list_jobs(
         (row[0] for row in candidates),
         profile_hash,
     )
-
     cache_ready = len(cached_matches) == len(candidates)
 
     page_results: list[
@@ -898,7 +893,6 @@ def list_jobs(
             ),
             reverse=True,
         )
-
         page_results = ranked[offset:offset + limit]
 
     else:
@@ -918,7 +912,6 @@ def list_jobs(
 
             if match_data is None:
                 assert matcher is not None
-
                 match_data = _serialize_match(matcher.match(job))
                 save_cached_match(db, job, profile_hash, match_data)
                 cached_matches[job_id] = match_data
@@ -957,6 +950,7 @@ def list_jobs(
 
     scheduled_ids: list[int] = []
 
+    # Do not warm IDs from test databases in the real application database.
     if request_engine is engine and pending_ids:
         scheduled_ids = reserve_cache_warmup(
             pending_ids,
@@ -1057,16 +1051,14 @@ def get_job(
     ensure_match_cache_table(db.get_bind())
 
     job = db.scalar(select(Job).where(Job.id == job_id))
-
     if job is None:
         raise HTTPException(
             status_code=404,
             detail=f"Job with ID {job_id} was not found.",
         )
 
-    company = db.get(Company, job.company_id)
-
-    if company is None:
+    company_obj = db.get(Company, job.company_id)
+    if company_obj is None:
         raise HTTPException(
             status_code=500,
             detail="The job refers to a missing company record.",
@@ -1088,7 +1080,7 @@ def get_job(
         "id": job.id,
         "external_id": job.external_id,
         "title": job.title,
-        "company": {"id": company.id, "name": company.name},
+        "company": {"id": company_obj.id, "name": company_obj.name},
         "location": job.location,
         "all_locations": job.location,
         "url": job.url,
@@ -1109,7 +1101,7 @@ def get_job(
 
 
 # ---------------------------------------------------------------------
-# Resume evidence
+# Resume evidence endpoints
 # ---------------------------------------------------------------------
 
 @app.get("/api/evidence/summary")
@@ -1133,7 +1125,6 @@ def evidence_summary() -> dict[str, Any]:
     )
 
     counts_by_category: dict[str, int] = {}
-
     for item in evidence:
         category = str(item.get("category", "unknown"))
         counts_by_category[category] = (
@@ -1181,12 +1172,10 @@ def generate_resume(
         )
 
     store_data = _load_evidence_store()
-
     slug = (
         re.sub(r"[^A-Za-z0-9]+", "_", request.job_title).strip("_")[:60]
         or "Job"
     )
-
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"Tailored_{slug}_{timestamp}.docx"
 

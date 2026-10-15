@@ -71,6 +71,7 @@ interface JobTitleSuggestion {
   title: string;
   count: number;
   companies: string[];
+  matched_by: Array<"title" | "company">;
 }
 
 interface FilterOption {
@@ -227,6 +228,59 @@ interface EvidenceSelection {
   };
 }
 
+interface ResumeScoreCheck {
+  label: string;
+  passed: boolean;
+  points: number;
+  detail: string;
+}
+
+interface ResumeEvaluation {
+  readiness_label: string;
+  readiness_passes_local_checks: boolean;
+  global_disclaimer: string;
+  ats_readability: {
+    score: number;
+    label: string;
+    checks: ResumeScoreCheck[];
+    issues: string[];
+    pdf_page_count: number;
+    pdf_extractable_word_count: number;
+    disclaimer: string;
+  };
+  job_relevance: {
+    score: number;
+    label: string;
+    required_skill_coverage: {
+      score: number | null;
+      matched: string[];
+      missing: string[];
+      awaiting_review: string[];
+    };
+    preferred_skill_coverage: {
+      score: number | null;
+      matched: string[];
+      missing: string[];
+    };
+    job_technology_coverage: {
+      score: number | null;
+      matched: string[];
+      missing: string[];
+    };
+    verified_evidence_categories: string[];
+    blockers: string[];
+    disclaimer: string;
+  };
+  achievement_quality: {
+    score: number;
+    label: string;
+    sample_size: number;
+    checks: Array<{ label: string; passed_count: number; sample_size: number }>;
+    recommendation: string;
+  };
+  recommendations: string[];
+}
+
 interface GeneratedResume {
   status: string;
   job_title: string;
@@ -235,6 +289,9 @@ interface GeneratedResume {
   audit_path: string;
   selected_evidence_count: number;
   download_url: string;
+  pdf_filename?: string;
+  pdf_download_url?: string;
+  evaluation?: ResumeEvaluation;
   safety: {
     verified_evidence_required: boolean;
     claims_invented: boolean;
@@ -1225,7 +1282,7 @@ function JobsView({
   suggestionsOpen: boolean;
   onQueryFocus: () => void;
   onQueryBlur: () => void;
-  onSelectSuggestion: (title: string) => void;
+  onSelectSuggestion: (suggestion: JobTitleSuggestion) => void;
   filterDraft: JobFilters;
   setFilterDraft: (value: JobFilters) => void;
   companyOptions: FilterOption[];
@@ -1290,10 +1347,7 @@ function JobsView({
                       Suggested job titles
                     </p>
                     {suggestionsLoading && (
-                      <LoaderCircle
-                        size={12}
-                        className="loading-ring text-blue-300"
-                      />
+                      <LoaderCircle size={12} className="loading-ring text-blue-300" />
                     )}
                   </div>
 
@@ -1308,7 +1362,7 @@ function JobsView({
                         type="button"
                         key={suggestion.title}
                         onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => onSelectSuggestion(suggestion.title)}
+                        onClick={() => onSelectSuggestion(suggestion)}
                         className="flex w-full items-start gap-3 rounded-lg px-2.5 py-2.5 text-left hover:bg-white/[0.05]"
                       >
                         <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-blue-400/[0.08] text-blue-300">
@@ -1404,8 +1458,12 @@ function JobsView({
         </div>
 
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
-          <span>{companyOptions.length} companies with active jobs</span>
-          <span>{locationOptions.length} locations in collected listings</span>
+          <span>
+            {companyOptions.length} companies with active jobs
+          </span>
+          <span>
+            {locationOptions.length} locations in collected listings
+          </span>
           <span>Keyword search also searches job descriptions</span>
         </div>
       </form>
@@ -1747,6 +1805,7 @@ function ResumeView({
                   </p>
                 </div>
               </div>
+
               {selection && (
                 <span className="rounded-full border border-emerald-400/15 bg-emerald-400/[0.06] px-2.5 py-1 text-[10px] text-emerald-300">
                   Analyzed
@@ -1871,15 +1930,122 @@ function ResumeView({
                     <p className="mt-1 break-words text-[10px] leading-5 text-slate-400">
                       {generated.resume_filename}
                     </p>
-                    <a
-                      className="primary-button mt-3 !py-2"
-                      href={`${API_BASE}${generated.download_url}`}
-                    >
-                      <Download size={14} />
-                      Download DOCX
-                    </a>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {generated.pdf_download_url && (
+                        <a
+                          className="primary-button !py-2"
+                          href={`${API_BASE}${generated.pdf_download_url}`}
+                          download={generated.pdf_filename || undefined}
+                        >
+                          <Download size={14} />
+                          Download PDF
+                        </a>
+                      )}
+                      <a
+                        className="secondary-button !py-2"
+                        href={`${API_BASE}${generated.download_url}`}
+                        download={generated.resume_filename}
+                      >
+                        <Download size={14} />
+                        Download DOCX
+                      </a>
+                    </div>
                   </div>
                 </div>
+
+                {generated.evaluation && (
+                  <div className="mt-4 border-t border-emerald-300/10 pt-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-[12px] font-semibold text-slate-100">
+                          Resume quality review
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          {generated.evaluation.readiness_label}
+                        </p>
+                      </div>
+                      <span className={`rounded-full border px-2.5 py-1 text-[10px] ${
+                        generated.evaluation.readiness_passes_local_checks
+                          ? "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200"
+                          : "border-amber-400/20 bg-amber-400/[0.06] text-amber-200"
+                      }`}>
+                        {generated.evaluation.readiness_passes_local_checks
+                          ? "Local checks passed"
+                          : "Review recommended"}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      {[
+                        {
+                          label: "ATS readability",
+                          score: generated.evaluation.ats_readability.score,
+                          detail: generated.evaluation.ats_readability.label,
+                        },
+                        {
+                          label: "Job relevance",
+                          score: generated.evaluation.job_relevance.score,
+                          detail: generated.evaluation.job_relevance.label,
+                        },
+                        {
+                          label: "Achievement quality",
+                          score: generated.evaluation.achievement_quality.score,
+                          detail: generated.evaluation.achievement_quality.label,
+                        },
+                      ].map((item) => (
+                        <div key={item.label} className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-3">
+                          <p className="text-[10px] text-slate-400">{item.label}</p>
+                          <div className="mt-1 flex items-baseline gap-1">
+                            <span className="text-xl font-semibold text-slate-100">{item.score}</span>
+                            <span className="text-[10px] text-slate-500">/100</span>
+                          </div>
+                          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
+                            <div
+                              className={`h-full rounded-full ${item.score >= 90 ? "bg-emerald-400" : item.score >= 75 ? "bg-amber-400" : "bg-rose-400"}`}
+                              style={{ width: `${Math.max(0, Math.min(100, item.score))}%` }}
+                            />
+                          </div>
+                          <p className="mt-2 text-[10px] leading-4 text-slate-400">{item.detail}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    <p className="mt-3 text-[10px] leading-4 text-slate-500">
+                      {generated.evaluation.global_disclaimer}
+                    </p>
+
+                    {(generated.evaluation.job_relevance.required_skill_coverage.missing.length > 0 ||
+                      generated.evaluation.job_relevance.required_skill_coverage.awaiting_review.length > 0) && (
+                      <div className="mt-3 rounded-lg border border-amber-400/20 bg-amber-400/[0.05] p-3">
+                        <p className="text-[11px] font-semibold text-amber-100">Required-skill gaps</p>
+                        {generated.evaluation.job_relevance.required_skill_coverage.missing.length > 0 && (
+                          <p className="mt-1 text-[10px] leading-4 text-slate-300">
+                            No matching verified evidence: {generated.evaluation.job_relevance.required_skill_coverage.missing.join(", ")}
+                          </p>
+                        )}
+                        {generated.evaluation.job_relevance.required_skill_coverage.awaiting_review.length > 0 && (
+                          <p className="mt-1 text-[10px] leading-4 text-slate-300">
+                            Awaiting your evidence review: {generated.evaluation.job_relevance.required_skill_coverage.awaiting_review.join(", ")}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {generated.evaluation.recommendations.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-[11px] font-semibold text-slate-200">Recommended review</p>
+                        <ul className="mt-1 space-y-1">
+                          {generated.evaluation.recommendations.map((recommendation, index) => (
+                            <li key={`${index}-${recommendation}`} className="flex gap-2 text-[10px] leading-4 text-slate-400">
+                              <span className="text-blue-300">•</span>
+                              <span>{recommendation}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -2076,8 +2242,24 @@ function App() {
 
       setSuggestionsLoading(true);
 
+      const params = new URLSearchParams({
+        q: query,
+        limit: "8",
+        career_level: filterDraft.career_level,
+      });
+
+      if (filterDraft.company.trim()) {
+        params.set("company", filterDraft.company.trim());
+      }
+      if (filterDraft.location.trim()) {
+        params.set("location", filterDraft.location.trim());
+      }
+      if (filterDraft.source.trim()) {
+        params.set("source", filterDraft.source.trim());
+      }
+
       void apiRequest<JobSuggestionResponse>(
-        `/api/job-suggestions?q=${encodeURIComponent(query)}&limit=8`,
+        `/api/job-suggestions?${params.toString()}`,
       )
         .then((response) => {
           if (!cancelled) {
@@ -2100,7 +2282,7 @@ function App() {
       cancelled = true;
       window.clearTimeout(timerId);
     };
-  }, [queryInput]);
+  }, [queryInput, filterDraft]);
 
   const openJobs = () => {
     setScreen("jobs");
@@ -2138,9 +2320,30 @@ function App() {
     setSuggestionsOpen(false);
   };
 
-  const selectSuggestedTitle = (title: string) => {
-    setQueryInput(title);
-    setAppliedQuery(title);
+  const selectSuggestedTitle = (suggestion: JobTitleSuggestion) => {
+    const nextFilters: JobFilters = {
+      company: filterDraft.company.trim(),
+      location: filterDraft.location.trim(),
+      source: filterDraft.source.trim(),
+      career_level: filterDraft.career_level,
+    };
+
+    // When the query matched a company name rather than the title, and the
+    // suggestion belongs to one company, keep that intended company selected.
+    // Do not auto-select a company for an ordinary title match.
+    if (
+      !nextFilters.company &&
+      suggestion.companies.length === 1 &&
+      suggestion.matched_by.includes("company") &&
+      !suggestion.matched_by.includes("title")
+    ) {
+      nextFilters.company = suggestion.companies[0];
+    }
+
+    setFilterDraft(nextFilters);
+    setAppliedFilters(nextFilters);
+    setQueryInput(suggestion.title);
+    setAppliedQuery(suggestion.title);
     setJobsPage(0);
     setSuggestionsOpen(false);
   };
@@ -2312,9 +2515,7 @@ function App() {
                 <p className="text-[11px] font-semibold text-slate-200">
                   Local engine
                 </p>
-                <p className="mt-0.5 text-[9px] text-slate-500">
-                  Python API
-                </p>
+                <p className="mt-0.5 text-[9px] text-slate-500">Python API</p>
               </div>
             </div>
             <div className="mt-3 flex items-center justify-between border-t border-slate-700/40 pt-3">
@@ -2494,7 +2695,7 @@ function App() {
                     stats={stats}
                     jobs={previewJobs}
                     evidence={evidence}
-                    loading={overviewLoading || refreshing}
+                    loading={overviewLoading}
                     onExplore={openJobs}
                     onRefresh={() => void refreshOverview()}
                     onTailor={openResumeForJob}
