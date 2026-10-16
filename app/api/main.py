@@ -14,6 +14,7 @@ from typing import Any, Literal
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from app.applications.tracker import router as applications_router
 from pydantic import BaseModel, Field
 from sqlalchemy import case, create_engine, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -42,6 +43,10 @@ from app.services.job_matcher import JobMatcher
 
 
 logger = logging.getLogger(__name__)
+
+from app.resume.resume_pdf_builder import build_tailored_resume_pdf
+from app.resume.resume_evaluator import evaluate_generated_resume
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 configured_database = os.getenv("JOBPILOT_DATABASE_PATH")
@@ -156,6 +161,8 @@ app = FastAPI(
     version="0.5.3",
 )
 
+app.include_router(applications_router)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -163,7 +170,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type"],
 )
 
@@ -1178,9 +1185,11 @@ def generate_resume(
     )
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     filename = f"Tailored_{slug}_{timestamp}.docx"
+    pdf_filename = f"Tailored_{slug}_{timestamp}.pdf"
 
     GENERATED_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
     output_path = GENERATED_RESUMES_DIR / filename
+    pdf_output_path = GENERATED_RESUMES_DIR / pdf_filename
     audit_path = output_path.with_suffix(".audit.json")
 
     try:
@@ -1190,10 +1199,27 @@ def generate_resume(
             output_path,
             audit_path=audit_path,
         )
-    except (OSError, ValueError, ResumeBuildError) as exc:
+        build_tailored_resume_pdf(
+            selection,
+            store_data,
+            pdf_output_path,
+        )
+        evaluation = evaluate_generated_resume(
+            docx_path=output_path,
+            pdf_path=pdf_output_path,
+            selection=selection,
+            store=store_data,
+        )
+    except Exception as exc:
+        # Do not leave partial or unchecked outputs presented as successful files.
+        for generated_path in (output_path, pdf_output_path, audit_path):
+            try:
+                generated_path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise HTTPException(
             status_code=422,
-            detail=f"Could not generate the tailored resume: {exc}",
+            detail=f"Could not generate and validate the tailored resume: {exc}",
         ) from exc
 
     return {
@@ -1204,6 +1230,9 @@ def generate_resume(
         "audit_path": _relative_display_path(audit_path),
         "selected_evidence_count": len(selection["selected_evidence"]),
         "download_url": f"/api/resumes/{filename}/download",
+        "pdf_filename": pdf_filename,
+        "pdf_download_url": f"/api/resumes/{pdf_filename}/download",
+        "evaluation": evaluation,
         "safety": {
             "verified_evidence_required": True,
             "claims_invented": False,
@@ -1213,14 +1242,15 @@ def generate_resume(
 
 @app.get("/api/resumes/{filename}/download")
 def download_resume(filename: str) -> FileResponse:
+    suffix = Path(filename).suffix.lower()
     if (
         filename in {".", ".."}
         or Path(filename).name != filename
-        or not filename.lower().endswith(".docx")
+        or suffix not in {".docx", ".pdf"}
     ):
         raise HTTPException(
             status_code=400,
-            detail="Invalid resume filename.",
+            detail="Invalid resume filename. Only generated DOCX and PDF files can be downloaded.",
         )
 
     output_directory = GENERATED_RESUMES_DIR.resolve()
@@ -1238,11 +1268,9 @@ def download_resume(filename: str) -> FileResponse:
             detail="Generated resume was not found.",
         )
 
-    return FileResponse(
-        path=output_path,
-        filename=filename,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument."
-            "wordprocessingml.document"
-        ),
+    media_type = (
+        "application/pdf"
+        if suffix == ".pdf"
+        else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
+    return FileResponse(path=output_path, filename=filename, media_type=media_type)

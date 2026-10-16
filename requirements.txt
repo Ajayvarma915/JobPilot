@@ -2,3 +2,5 @@ requests
 beautifulsoup4
 python-dotenv
 sqlalchemy
+reportlab>=4.0
+pypdf>=5.0
