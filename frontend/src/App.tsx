@@ -39,6 +39,8 @@ import {
   Sparkles,
   Target,
   TrendingUp,
+  Trash2,
+  AlertTriangle,
   WandSparkles,
   Zap,
   type LucideIcon,
@@ -233,6 +235,16 @@ interface ApplicationStats {
   total: number;
   needs_action: number;
   by_status: Record<ApplicationStatus, number>;
+}
+
+interface TrackedJobIdsResponse {
+  job_ids: number[];
+}
+
+interface ApplicationDeleteResponse {
+  deleted: boolean;
+  application_id: number;
+  job_id: number;
 }
 
 interface ApplicationUpdatePayload {
@@ -1346,6 +1358,7 @@ function JobsView({
   onNext,
   onRefresh,
   onTrack,
+  onUntrack,
   isTracked,
   trackingJobIds,
   onTailor,
@@ -1374,6 +1387,7 @@ function JobsView({
   onNext: () => void;
   onRefresh: () => void;
   onTrack: (job: Job) => void;
+  onUntrack: (job: Job) => void;
   isTracked: (jobId: number) => boolean;
   trackingJobIds: Set<number>;
   onTailor: (job: Job) => void;
@@ -1664,22 +1678,23 @@ function JobsView({
                     <ExternalLink size={13} />
                   </a>
                   <button
-                    className="secondary-button !px-3 !py-2"
-                    onClick={() => onTrack(job)}
-                    disabled={isTracked(job.id) || trackingJobIds.has(job.id)}
-                    title={isTracked(job.id) ? "Already tracked" : "Add this job to your application pipeline"}
+                    className={`secondary-button !px-3 !py-2 ${isTracked(job.id) ? "!border-rose-400/25 !text-rose-200 hover:!bg-rose-400/[0.08]" : ""}`}
+                    onClick={() => isTracked(job.id) ? onUntrack(job) : onTrack(job)}
+                    disabled={trackingJobIds.has(job.id)}
+                    title={isTracked(job.id) ? "Remove this job from your application pipeline" : "Add this job to your application pipeline"}
+                    aria-label={isTracked(job.id) ? `Untrack ${job.title} at ${job.company?.name || "this company"}` : `Track ${job.title} at ${job.company?.name || "this company"}`}
                   >
                     {trackingJobIds.has(job.id) ? (
                       <LoaderCircle size={13} className="loading-ring" />
                     ) : isTracked(job.id) ? (
-                      <CheckCircle2 size={13} />
+                      <Trash2 size={13} />
                     ) : (
                       <Plus size={13} />
                     )}
                     {trackingJobIds.has(job.id)
                       ? "Saving..."
                       : isTracked(job.id)
-                        ? "Tracked"
+                        ? "Untrack"
                         : "Track"}
                   </button>
                   <button
@@ -1735,12 +1750,14 @@ function JobsView({
 function ApplicationCard({
   application,
   onUpdate,
+  onRequestRemove,
 }: {
   application: TrackedApplication;
   onUpdate: (
     applicationId: number,
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
+  onRequestRemove: (application: TrackedApplication) => void;
 }) {
   const [draftStatus, setDraftStatus] = useState<ApplicationStatus>(application.status);
   const [notes, setNotes] = useState(application.notes ?? "");
@@ -1814,14 +1831,25 @@ function ApplicationCard({
             </div>
           </div>
         </div>
-        <a
-          className="secondary-button shrink-0 !px-3 !py-2"
-          href={application.job.url}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Original posting <ExternalLink size={13} />
-        </a>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <a
+            className="secondary-button !px-3 !py-2"
+            href={application.job.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Original posting <ExternalLink size={13} />
+          </a>
+          <button
+            type="button"
+            className="secondary-button !border-rose-400/25 !px-3 !py-2 !text-rose-200 hover:!bg-rose-400/[0.08]"
+            onClick={() => onRequestRemove(application)}
+            disabled={saving}
+            title="Remove this entry from your JobPilot tracker"
+          >
+            <Trash2 size={13} /> Remove
+          </button>
+        </div>
       </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1903,6 +1931,7 @@ function ApplicationsView({
   setStatusFilter,
   onRefresh,
   onUpdate,
+  onRequestRemove,
   onDiscoverJobs,
 }: {
   applications: TrackedApplication[];
@@ -1919,6 +1948,7 @@ function ApplicationsView({
     applicationId: number,
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
+  onRequestRemove: (application: TrackedApplication) => void;
   onDiscoverJobs: () => void;
 }) {
   const visibleApplications = applications.filter((application) => {
@@ -2020,6 +2050,7 @@ function ApplicationsView({
               key={`${application.id}-${application.updated_at}`}
               application={application}
               onUpdate={onUpdate}
+              onRequestRemove={onRequestRemove}
             />
           ))}
         </div>
@@ -2495,6 +2526,10 @@ function App() {
   const [applicationSearch, setApplicationSearch] = useState("");
   const [applicationStatusFilter, setApplicationStatusFilter] = useState<ApplicationStatus | "all">("all");
   const [trackingJobIds, setTrackingJobIds] = useState<Set<number>>(new Set());
+  const [trackedApplicationJobIds, setTrackedApplicationJobIds] = useState<Set<number>>(new Set());
+  const [applicationToRemove, setApplicationToRemove] = useState<TrackedApplication | null>(null);
+  const [removeApplicationLoading, setRemoveApplicationLoading] = useState(false);
+  const [removeApplicationError, setRemoveApplicationError] = useState<string | null>(null);
 
   const [companyOptions, setCompanyOptions] = useState<CompanyOption[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
@@ -2622,13 +2657,15 @@ function App() {
     setApplicationsError(null);
 
     try {
-      const [list, summary] = await Promise.all([
+      const [list, summary, trackedJobs] = await Promise.all([
         apiRequest<ApplicationListResponse>("/api/applications?limit=100&offset=0"),
         apiRequest<ApplicationStats>("/api/applications/stats"),
+        apiRequest<TrackedJobIdsResponse>("/api/applications/tracked-job-ids"),
       ]);
       setApplications(list.items);
       setApplicationsTotal(list.total);
       setApplicationStats(summary);
+      setTrackedApplicationJobIds(new Set(trackedJobs.job_ids));
     } catch (error) {
       setApplicationsError(errorText(error));
     } finally {
@@ -2811,6 +2848,7 @@ function App() {
         created,
         ...current.filter((item) => item.id !== created.id && item.job_id !== job.id),
       ].slice(0, 100));
+      setTrackedApplicationJobIds((current) => new Set(current).add(job.id));
       setApplicationsTotal((current) => current + 1);
       setApplicationStats((current) => current ? {
         ...current,
@@ -2834,6 +2872,68 @@ function App() {
         next.delete(job.id);
         return next;
       });
+    }
+  };
+
+  const requestRemoveApplication = (application: TrackedApplication) => {
+    setRemoveApplicationError(null);
+    setApplicationToRemove(application);
+  };
+
+  const handleUntrackJob = async (job: Job) => {
+    let application = applications.find((item) => item.job_id === job.id);
+
+    if (!application) {
+      try {
+        application = await apiRequest<TrackedApplication>(
+          `/api/applications/by-job/${job.id}`,
+        );
+      } catch (error) {
+        setJobsError(errorText(error));
+        await loadApplications();
+        return;
+      }
+    }
+
+    requestRemoveApplication(application);
+  };
+
+  const handleConfirmRemoveApplication = async () => {
+    if (!applicationToRemove || removeApplicationLoading) return;
+
+    const target = applicationToRemove;
+    setRemoveApplicationLoading(true);
+    setRemoveApplicationError(null);
+
+    try {
+      await apiRequest<ApplicationDeleteResponse>(
+        `/api/applications/${target.id}`,
+        { method: "DELETE" },
+      );
+
+      setApplications((current) => current.filter((item) => item.id !== target.id));
+      setApplicationsTotal((current) => Math.max(0, current - 1));
+      setTrackedApplicationJobIds((current) => {
+        const next = new Set(current);
+        next.delete(target.job_id);
+        return next;
+      });
+      setApplicationStats((current) => {
+        if (!current) return current;
+        const counts = { ...current.by_status };
+        counts[target.status] = Math.max(0, (counts[target.status] ?? 0) - 1);
+        return {
+          ...current,
+          total: Math.max(0, current.total - 1),
+          needs_action: counts.saved + counts.preparing + counts.ready_to_apply,
+          by_status: counts,
+        };
+      });
+      setApplicationToRemove(null);
+    } catch (error) {
+      setRemoveApplicationError(errorText(error));
+    } finally {
+      setRemoveApplicationLoading(false);
     }
   };
 
@@ -3250,7 +3350,8 @@ function App() {
                       void loadApplications();
                     }}
                     onTrack={(job) => void handleTrackApplication(job)}
-                    isTracked={(jobId) => applications.some((item) => item.job_id === jobId)}
+                    onUntrack={(job) => void handleUntrackJob(job)}
+                    isTracked={(jobId) => trackedApplicationJobIds.has(jobId)}
                     trackingJobIds={trackingJobIds}
                     onTailor={openResumeForJob}
                   />
@@ -3269,6 +3370,7 @@ function App() {
                     setStatusFilter={setApplicationStatusFilter}
                     onRefresh={() => void loadApplications()}
                     onUpdate={handleUpdateApplication}
+                    onRequestRemove={requestRemoveApplication}
                     onDiscoverJobs={openJobs}
                   />
                 )}
@@ -3313,6 +3415,89 @@ function App() {
             </footer>
           </main>
         </div>
+
+        <AnimatePresence>
+          {applicationToRemove && (
+            <motion.div
+              className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              role="presentation"
+              onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !removeApplicationLoading) {
+                  setApplicationToRemove(null);
+                  setRemoveApplicationError(null);
+                }
+              }}
+            >
+              <motion.section
+                initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                transition={{ duration: 0.16 }}
+                className="panel w-full max-w-lg rounded-2xl border border-rose-400/20 p-5 shadow-2xl"
+                role="alertdialog"
+                aria-modal="true"
+                aria-labelledby="remove-application-title"
+                aria-describedby="remove-application-description"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rose-400/20 bg-rose-400/[0.08] text-rose-200">
+                    <AlertTriangle size={18} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <h2 id="remove-application-title" className="text-base font-semibold text-slate-100">
+                      Remove from your tracker?
+                    </h2>
+                    <p className="mt-1 text-[11px] leading-5 text-slate-400">
+                      {applicationToRemove.job.title} · {applicationToRemove.job.company}
+                    </p>
+                  </div>
+                </div>
+                <p id="remove-application-description" className="mt-4 text-[12px] leading-6 text-slate-300">
+                  This removes the tracking entry, status, notes and follow-up details from JobPilot. It does not delete the original job listing or withdraw an application you already submitted. This action cannot be undone.
+                </p>
+                {applicationToRemove.status !== "saved" && applicationToRemove.status !== "preparing" && applicationToRemove.status !== "ready_to_apply" && (
+                  <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.05] p-3 text-[11px] leading-5 text-amber-100">
+                    This record is marked as {APPLICATION_STATUSES.find((item) => item.value === applicationToRemove.status)?.label.toLowerCase()}. Removing it only changes JobPilot's records; it does not change the employer's application status.
+                  </div>
+                )}
+                {removeApplicationError && (
+                  <div className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200" role="alert">
+                    {removeApplicationError}
+                  </div>
+                )}
+                <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-4">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setApplicationToRemove(null);
+                      setRemoveApplicationError(null);
+                    }}
+                    disabled={removeApplicationLoading}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button !border-rose-400/30 !bg-rose-500/15 !text-rose-100 hover:!bg-rose-500/25"
+                    onClick={() => void handleConfirmRemoveApplication()}
+                    disabled={removeApplicationLoading}
+                  >
+                    {removeApplicationLoading ? (
+                      <LoaderCircle size={14} className="loading-ring" />
+                    ) : (
+                      <Trash2 size={14} />
+                    )}
+                    {removeApplicationLoading ? "Removing..." : "Remove tracking"}
+                  </button>
+                </div>
+              </motion.section>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );

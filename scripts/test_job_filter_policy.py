@@ -62,6 +62,42 @@ def test_multi_city_location_matching() -> None:
     )
 
 
+def test_india_country_filter() -> None:
+    check(
+        _find_matching_location("Hyderabad, Telangana, India", "India")
+        == "Hyderabad, Telangana, India",
+        "An Indian city listing should match the India country filter.",
+    )
+
+    check(
+        _find_matching_location(
+            "Remote - India; Mumbai, Maharashtra, India",
+            "India",
+        )
+        == "Remote - India",
+        "Explicit India-remote roles should match the India filter.",
+    )
+
+    check(
+        _find_matching_location("Remote", "India") is None,
+        "Unqualified remote roles must not be assumed to allow work from India.",
+    )
+
+    check(
+        _find_matching_location("São Paulo, Brazil", "India") is None,
+        "Brazil-only listings must not match the India filter.",
+    )
+
+    check(
+        _find_matching_location(
+            "Singapore; Bengaluru, Karnataka, India",
+            "India",
+        )
+        == "Bengaluru, Karnataka, India",
+        "Multi-location roles should match when at least one location is in India.",
+    )
+
+
 def test_experience_extraction() -> None:
     description = """
 Minimum qualifications
@@ -171,6 +207,10 @@ def main() -> int:
         (
             "Multi-city location filtering and city aliases",
             test_multi_city_location_matching,
+        ),
+        (
+            "India country and remote eligibility filtering",
+            test_india_country_filter,
         ),
         (
             "Required experience extraction",

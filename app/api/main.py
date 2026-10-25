@@ -170,7 +170,7 @@ app.add_middleware(
         "http://127.0.0.1:5173",
     ],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -231,6 +231,28 @@ def _location_display_name(entry: str) -> str:
     return entry.split(",", maxsplit=1)[0].strip() or entry.strip()
 
 
+def _location_contains_country(
+    stored_location: str | None,
+    country: str,
+) -> bool:
+    """Return true only when a listing explicitly names this country.
+
+    This deliberately does not treat an unqualified "Remote" role as
+    India-eligible; the listing must state India somewhere in its location.
+    """
+    if not stored_location or not country.strip():
+        return False
+
+    country_pattern = re.compile(
+        rf"\b{re.escape(country.strip())}\b",
+        re.IGNORECASE,
+    )
+    return any(
+        bool(country_pattern.search(entry))
+        for entry in _location_entries(stored_location)
+    )
+
+
 def _find_matching_location(
     stored_location: str | None,
     requested_location: str,
@@ -239,11 +261,28 @@ def _find_matching_location(
     if not requested_city:
         return None
 
+    # Country-level default used by the UI. Match India only when the source
+    # explicitly names India, including locations such as "Remote - India".
+    # An unspecified "Remote" listing is not assumed to be eligible.
+    if requested_city == "india":
+        for entry in _location_entries(stored_location):
+            if re.search(r"\bindia\b", entry, re.IGNORECASE):
+                return entry
+        return None
+
     for entry in _location_entries(stored_location):
         if _normalize_city(entry) == requested_city:
             return entry
 
     return None
+
+
+def _matches_requested_city(
+    stored_location: str | None,
+    requested_location: str,
+) -> bool:
+    """Compatibility helper for tests and callers that need a boolean."""
+    return _find_matching_location(stored_location, requested_location) is not None
 
 
 def _minimum_qualification_text(description: str) -> str:
@@ -620,8 +659,12 @@ def list_locations(
     rows = db.execute(statement).all()
     job_ids_by_city: dict[str, set[int]] = {}
     display_by_city: dict[str, str] = {}
+    india_job_ids: set[int] = set()
 
     for job_id, stored_location in rows:
+        if _location_contains_country(stored_location, "India"):
+            india_job_ids.add(int(job_id))
+
         for entry in _location_entries(stored_location):
             city_key = _normalize_city(entry)
             if not city_key:
@@ -651,8 +694,28 @@ def list_locations(
             }
         )
 
+    # Offer a country-level India option so the UI can default to India while
+    # retaining the explicit "All locations" option for global searches.
+    # Respect text search for directory queries such as ?q=hyderabad.
+    if india_job_ids and (
+        not q
+        or not q.strip()
+        or q.strip().casefold() in "india"
+    ):
+        items.append(
+            {
+                "city": "India",
+                "value": "India",
+                "job_count": len(india_job_ids),
+            }
+        )
+
     items.sort(
-        key=lambda item: (-item["job_count"], item["city"].casefold())
+        key=lambda item: (
+            0 if item["city"].casefold() == "india" else 1,
+            -item["job_count"],
+            item["city"].casefold(),
+        )
     )
 
     return {
@@ -1023,7 +1086,11 @@ def list_jobs(
             "company": company,
             "location": location,
             "location_mode": (
-                "match_any_listed_city"
+                (
+                    "explicit_country_match"
+                    if _normalize_city(location) == "india"
+                    else "match_any_listed_city"
+                )
                 if location and location.strip()
                 else None
             ),

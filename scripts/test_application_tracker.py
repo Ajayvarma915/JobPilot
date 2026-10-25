@@ -176,6 +176,71 @@ class ApplicationTrackerApiTests(unittest.TestCase):
 
         self.assertEqual(filtered["total"], 0)
 
+    def test_tracked_job_ids_and_by_job_lookup(self) -> None:
+        created = self.client.post(
+            "/api/applications",
+            json={"job_id": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        ids = self.client.get("/api/applications/tracked-job-ids")
+        self.assertEqual(ids.status_code, 200)
+        self.assertEqual(ids.json()["job_ids"], [1])
+
+        by_job = self.client.get("/api/applications/by-job/1")
+        self.assertEqual(by_job.status_code, 200, by_job.text)
+        self.assertEqual(by_job.json()["id"], created.json()["id"])
+
+    def test_remove_tracker_entry_keeps_original_job(self) -> None:
+        created = self.client.post(
+            "/api/applications",
+            json={"job_id": 1, "notes": "Accidentally tracked"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+
+        application_id = created.json()["id"]
+
+        removed = self.client.delete(
+            f"/api/applications/{application_id}"
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+
+        self.assertEqual(
+            removed.json(),
+            {
+                "deleted": True,
+                "application_id": application_id,
+                "job_id": 1,
+            },
+        )
+
+        listing = self.client.get("/api/applications")
+        self.assertEqual(listing.status_code, 200, listing.text)
+        self.assertEqual(listing.json()["total"], 0)
+
+        ids = self.client.get("/api/applications/tracked-job-ids")
+        self.assertEqual(ids.json()["job_ids"], [])
+
+        connection = sqlite3.connect(self.database_path)
+        try:
+            job = connection.execute(
+                "SELECT title FROM jobs WHERE id = 1"
+            ).fetchone()
+            self.assertEqual(job[0], "Software Engineer")
+        finally:
+            connection.close()
+
+        # The same job can be tracked again after removal.
+        retracked = self.client.post(
+            "/api/applications",
+            json={"job_id": 1},
+        )
+        self.assertEqual(retracked.status_code, 201, retracked.text)
+
+    def test_delete_missing_application_returns_404(self) -> None:
+        response = self.client.delete("/api/applications/987")
+        self.assertEqual(response.status_code, 404)
+
     def test_invalid_job_and_status_are_rejected(self) -> None:
         missing_job = self.client.post(
             "/api/applications",

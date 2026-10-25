@@ -232,6 +232,10 @@ def get_application_db() -> Generator[sqlite3.Connection, None, None]:
         connection = sqlite3.connect(
             str(database_path),
             timeout=10,
+            # FastAPI may enter/exit a synchronous dependency on different
+            # worker threads. This connection is request-scoped and is never
+            # shared between requests, so cross-thread hand-off is safe.
+            check_same_thread=False,
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
@@ -519,6 +523,38 @@ def create_application(
     return result
 
 
+@router.get("/tracked-job-ids")
+def list_tracked_job_ids(
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, list[int]]:
+    """Return every tracked job ID, independent of the paged UI list."""
+    rows = connection.execute(
+        "SELECT job_id FROM applications ORDER BY job_id"
+    ).fetchall()
+
+    return {"job_ids": [int(row["job_id"]) for row in rows]}
+
+
+@router.get("/by-job/{job_id}")
+def get_application_for_job(
+    job_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    """Find a tracked record even when it isn't on the current UI page."""
+    row = connection.execute(
+        _application_query("WHERE a.job_id = ?"),
+        (job_id,),
+    ).fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail="This job is not currently tracked.",
+        )
+
+    return _serialize(row)
+
+
 @router.get("/{application_id}")
 def get_application(
     application_id: int = ApiPath(ge=1),
@@ -621,3 +657,33 @@ def update_application(
         )
 
     return result
+
+
+@router.delete("/{application_id}")
+def delete_application(
+    application_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    """Remove only the user's pipeline entry; do not delete the job listing."""
+    current = connection.execute(
+        "SELECT id, job_id FROM applications WHERE id = ?",
+        (application_id,),
+    ).fetchone()
+
+    if current is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Application was not found or has already been removed.",
+        )
+
+    connection.execute(
+        "DELETE FROM applications WHERE id = ?",
+        (application_id,),
+    )
+    connection.commit()
+
+    return {
+        "deleted": True,
+        "application_id": int(current["id"]),
+        "job_id": int(current["job_id"]),
+    }

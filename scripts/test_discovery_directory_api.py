@@ -95,6 +95,18 @@ def test_location_directory(client: TestClient) -> None:
         )
         seen_cities.add(normalized)
 
+    india_options = [
+        item for item in locations if item["value"].casefold() == "india"
+    ]
+    check(
+        len(india_options) == 1,
+        "Location directory should provide one India country option.",
+    )
+    check(
+        india_options[0]["job_count"] > 0,
+        "India option should count listings that explicitly identify India.",
+    )
+
     hyderabad_response = client.get(
         "/api/locations",
         params={"q": "hyderabad", "limit": 1000},
