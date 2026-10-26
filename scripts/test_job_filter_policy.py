@@ -79,13 +79,28 @@ def test_india_country_filter() -> None:
     )
 
     check(
-        _find_matching_location("Remote", "India") is None,
-        "Unqualified remote roles must not be assumed to allow work from India.",
+        _find_matching_location("Remote", "India") == "Remote",
+        "A generic Remote listing should be discoverable per user preference.",
+    )
+
+    check(
+        _find_matching_location("Fully Remote", "India") == "Fully Remote",
+        "Clearly global remote labels should match the India default.",
+    )
+
+    check(
+        _find_matching_location("Remote - Brazil", "India") is None,
+        "A Brazil-restricted remote listing must not match the India filter.",
+    )
+
+    check(
+        _find_matching_location("Remote, United States", "India") is None,
+        "A US-restricted remote listing must not match the India filter.",
     )
 
     check(
         _find_matching_location("São Paulo, Brazil", "India") is None,
-        "Brazil-only listings must not match the India filter.",
+        "Brazil-only onsite listings must not match the India filter.",
     )
 
     check(

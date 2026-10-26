@@ -50,6 +50,9 @@ const API_BASE = (
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"
 ).replace(/\/+$/, "");
 
+// Default the workspace to roles based in India and remote roles not tied to another country.
+const DEFAULT_JOB_LOCATION = "India";
+
 type Screen = "overview" | "jobs" | "applications" | "resume";
 type ApiStatus = "checking" | "connected" | "offline";
 type CareerLevelFilter = "early" | "all";
@@ -2549,14 +2552,14 @@ function App() {
 
   const [filterDraft, setFilterDraft] = useState<JobFilters>({
     company: "",
-    location: "",
+    location: DEFAULT_JOB_LOCATION,
     source: "",
     career_level: "early",
   });
 
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
     company: "",
-    location: "",
+    location: DEFAULT_JOB_LOCATION,
     source: "",
     career_level: "early",
   });
@@ -2590,7 +2593,7 @@ function App() {
       ] = await Promise.all([
         apiRequest<{ status: string }>("/api/health"),
         apiRequest<DashboardStats>("/api/dashboard/stats"),
-        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0"),
+        apiRequest<JobListResponse>(`/api/jobs?limit=5&offset=0&location=${encodeURIComponent(DEFAULT_JOB_LOCATION)}`),
         apiRequest<EvidenceSummary>("/api/evidence/summary"),
         apiRequest<CompanyDirectoryResponse>("/api/companies?limit=1000"),
         apiRequest<LocationDirectoryResponse>("/api/locations?limit=1000"),

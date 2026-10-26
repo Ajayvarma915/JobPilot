@@ -261,13 +261,29 @@ def _find_matching_location(
     if not requested_city:
         return None
 
-    # Country-level default used by the UI. Match India only when the source
-    # explicitly names India, including locations such as "Remote - India".
-    # An unspecified "Remote" listing is not assumed to be eligible.
+    # The India default includes locations explicitly in India and clearly
+    # country-unrestricted remote labels. Remote roles naming another country
+    # (for example, "Remote - Brazil" or "Remote, US") remain excluded.
+    # This lets users see generic Remote roles, while employer-specific country
+    # restrictions still need to be checked before applying.
     if requested_city == "india":
-        for entry in _location_entries(stored_location):
+        entries = _location_entries(stored_location)
+
+        for entry in entries:
             if re.search(r"\bindia\b", entry, re.IGNORECASE):
                 return entry
+
+        unrestricted_remote_pattern = re.compile(
+            r"^(?:(?:fully\s+)?remote(?:\s+(?:worldwide|globally|anywhere))?"
+            r"|work\s+from\s+anywhere|anywhere\s+in\s+the\s+world)$",
+            re.IGNORECASE,
+        )
+        if entries and all(
+            unrestricted_remote_pattern.fullmatch(entry.strip())
+            for entry in entries
+        ):
+            return entries[0]
+
         return None
 
     for entry in _location_entries(stored_location):
