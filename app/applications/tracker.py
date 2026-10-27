@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Generator
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePath
+from urllib.parse import urlsplit
 from typing import Any, Literal
 
 from fastapi import (
@@ -115,6 +116,10 @@ class ApplicationUpdate(BaseModel):
     cover_letter_filename: str | None = Field(default=None, max_length=255)
     next_action: str | None = Field(default=None, max_length=500)
     follow_up_date: date | None = None
+    job_reviewed: bool | None = None
+    eligibility_confirmed: bool | None = None
+    resume_reviewed: bool | None = None
+    application_details_reviewed: bool | None = None
 
     @field_validator("status")
     @classmethod
@@ -126,6 +131,18 @@ class ApplicationUpdate(BaseModel):
             raise ValueError(
                 "Status cannot be null; omit it to leave status unchanged."
             )
+        return value
+
+    @field_validator(
+        "job_reviewed",
+        "eligibility_confirmed",
+        "resume_reviewed",
+        "application_details_reviewed",
+    )
+    @classmethod
+    def validate_review_flags_not_null(cls, value: bool | None) -> bool:
+        if value is None:
+            raise ValueError("Review confirmations cannot be null.")
         return value
 
     @field_validator("resume_filename", "cover_letter_filename")
@@ -191,6 +208,10 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             applied_at TEXT,
             next_action TEXT,
             follow_up_date TEXT,
+            job_reviewed INTEGER NOT NULL DEFAULT 0,
+            eligibility_confirmed INTEGER NOT NULL DEFAULT 0,
+            resume_reviewed INTEGER NOT NULL DEFAULT 0,
+            application_details_reviewed INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(job_id)
@@ -199,6 +220,26 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+
+    # Safe, additive migration for installations that created the table before
+    # the application-readiness workflow existed.
+    existing_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(applications)"
+        ).fetchall()
+    }
+    review_columns = {
+        "job_reviewed": "INTEGER NOT NULL DEFAULT 0",
+        "eligibility_confirmed": "INTEGER NOT NULL DEFAULT 0",
+        "resume_reviewed": "INTEGER NOT NULL DEFAULT 0",
+        "application_details_reviewed": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for column_name, column_definition in review_columns.items():
+        if column_name not in existing_columns:
+            connection.execute(
+                f"ALTER TABLE applications ADD COLUMN {column_name} {column_definition}"
+            )
 
     connection.execute(
         """
@@ -266,12 +307,17 @@ def _application_query(where_sql: str = "") -> str:
             a.applied_at,
             a.next_action,
             a.follow_up_date,
+            a.job_reviewed,
+            a.eligibility_confirmed,
+            a.resume_reviewed,
+            a.application_details_reviewed,
             a.created_at,
             a.updated_at,
             j.title AS job_title,
             j.location AS job_location,
             j.url AS job_url,
             j.source AS job_source,
+            j.is_active AS job_is_active,
             c.name AS company_name
         FROM applications a
         JOIN jobs j ON j.id = a.job_id
@@ -291,6 +337,10 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "applied_at": row["applied_at"],
         "next_action": row["next_action"],
         "follow_up_date": row["follow_up_date"],
+        "job_reviewed": bool(row["job_reviewed"]),
+        "eligibility_confirmed": bool(row["eligibility_confirmed"]),
+        "resume_reviewed": bool(row["resume_reviewed"]),
+        "application_details_reviewed": bool(row["application_details_reviewed"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "job": {
@@ -300,6 +350,7 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
             "location": row["job_location"],
             "url": row["job_url"],
             "source": row["job_source"],
+            "is_active": bool(row["job_is_active"]),
         },
     }
 
@@ -531,7 +582,6 @@ def list_tracked_job_ids(
     rows = connection.execute(
         "SELECT job_id FROM applications ORDER BY job_id"
     ).fetchall()
-
     return {"job_ids": [int(row["job_id"]) for row in rows]}
 
 
@@ -553,6 +603,228 @@ def get_application_for_job(
         )
 
     return _serialize(row)
+
+
+def _available_resume_files() -> list[dict[str, Any]]:
+    """Return generated resume files only; never expose arbitrary file paths."""
+    if not GENERATED_RESUMES_DIR.is_dir():
+        return []
+
+    results: list[dict[str, Any]] = []
+    for path in GENERATED_RESUMES_DIR.iterdir():
+        if not path.is_file() or path.suffix.lower() not in {".pdf", ".docx"}:
+            continue
+        try:
+            modified_at = datetime.fromtimestamp(
+                path.stat().st_mtime,
+                tz=timezone.utc,
+            ).isoformat(timespec="seconds")
+        except OSError:
+            continue
+        results.append(
+            {
+                "filename": path.name,
+                "format": path.suffix.lower().lstrip("."),
+                "modified_at": modified_at,
+                "size_bytes": path.stat().st_size,
+            }
+        )
+
+    results.sort(key=lambda item: item["modified_at"], reverse=True)
+    return results[:100]
+
+
+def _assess_readiness(
+    *,
+    job_is_active: bool,
+    job_url: str | None,
+    job_description: str | None,
+    resume_filename: str | None,
+    job_reviewed: bool,
+    eligibility_confirmed: bool,
+    resume_reviewed: bool,
+    application_details_reviewed: bool,
+) -> dict[str, Any]:
+    parts = urlsplit(job_url or "")
+    url_is_valid = parts.scheme in {"http", "https"} and bool(parts.netloc)
+    description_is_available = len((job_description or "").strip()) >= 100
+
+    resume_path: Path | None = None
+    if resume_filename:
+        try:
+            candidate = (GENERATED_RESUMES_DIR / resume_filename).resolve()
+            if (
+                candidate.parent == GENERATED_RESUMES_DIR.resolve()
+                and candidate.is_file()
+                and candidate.suffix.lower() in {".pdf", ".docx"}
+            ):
+                resume_path = candidate
+        except OSError:
+            resume_path = None
+
+    resume_exists = resume_path is not None
+    resume_is_pdf = bool(resume_path and resume_path.suffix.lower() == ".pdf")
+
+    checks = [
+        {
+            "id": "job_active",
+            "label": "Listing is marked active in JobPilot",
+            "passed": bool(job_is_active),
+            "blocking": True,
+            "detail": (
+                "The local listing is marked active. Open the employer page to confirm it is still accepting applications."
+                if job_is_active
+                else "The listing is marked inactive in JobPilot. Recheck the employer posting before proceeding."
+            ),
+        },
+        {
+            "id": "posting_url",
+            "label": "Original posting link is valid",
+            "passed": url_is_valid,
+            "blocking": True,
+            "detail": (
+                "An HTTP(S) job posting link is available."
+                if url_is_valid
+                else "No valid HTTP(S) application link is saved for this job."
+            ),
+        },
+        {
+            "id": "job_description",
+            "label": "Full job description is available",
+            "passed": description_is_available,
+            "blocking": True,
+            "detail": (
+                "JobPilot has enough description text to review role requirements."
+                if description_is_available
+                else "The saved description is missing or too short. Open the employer posting and verify its requirements."
+            ),
+        },
+        {
+            "id": "job_reviewed",
+            "label": "Job responsibilities and requirements reviewed",
+            "passed": job_reviewed,
+            "blocking": True,
+            "detail": "Confirm that you reviewed the actual posting, responsibilities, and required qualifications.",
+        },
+        {
+            "id": "eligibility_confirmed",
+            "label": "Location and eligibility confirmed",
+            "passed": eligibility_confirmed,
+            "blocking": True,
+            "detail": "Confirm your work-location eligibility, experience, education, and any required work authorization.",
+        },
+        {
+            "id": "resume_selected",
+            "label": "Generated tailored resume selected",
+            "passed": resume_exists,
+            "blocking": True,
+            "detail": (
+                f"Selected file: {resume_filename}."
+                if resume_exists
+                else "Generate and select a tailored PDF or DOCX from Resume Studio."
+            ),
+        },
+        {
+            "id": "resume_reviewed",
+            "label": "Resume content reviewed",
+            "passed": resume_reviewed,
+            "blocking": True,
+            "detail": "Review the downloaded document for accuracy, layout, and claims before using it.",
+        },
+        {
+            "id": "application_details_reviewed",
+            "label": "Application-form details prepared",
+            "passed": application_details_reviewed,
+            "blocking": True,
+            "detail": "Confirm you can answer employer form questions accurately and provide any required links or documents.",
+        },
+        {
+            "id": "pdf_preferred",
+            "label": "PDF format preferred for upload",
+            "passed": resume_is_pdf,
+            "blocking": False,
+            "detail": (
+                "PDF is selected, which generally preserves layout. Follow the employer's requested file format."
+                if resume_is_pdf
+                else "A DOCX is selected. PDF is often convenient, but follow the employer's requested format."
+            ),
+        },
+    ]
+
+    blocking_checks = [check for check in checks if check["blocking"]]
+    blockers = [check["label"] for check in blocking_checks if not check["passed"]]
+
+    return {
+        "ready": not blockers,
+        "readiness_label": "Ready for your review" if not blockers else "More review required",
+        "completed_checks": sum(1 for check in checks if check["passed"]),
+        "total_checks": len(checks),
+        "checks": checks,
+        "blockers": blockers,
+        "review": {
+            "job_reviewed": bool(job_reviewed),
+            "eligibility_confirmed": bool(eligibility_confirmed),
+            "resume_reviewed": bool(resume_reviewed),
+            "application_details_reviewed": bool(application_details_reviewed),
+        },
+        "resume_options": _available_resume_files(),
+        "submission_note": "JobPilot prepares and checks your application. It does not submit the employer form automatically.",
+    }
+
+
+@router.get("/{application_id}/readiness")
+def get_application_readiness(
+    application_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT
+            a.id,
+            a.status,
+            a.resume_filename,
+            a.job_reviewed,
+            a.eligibility_confirmed,
+            a.resume_reviewed,
+            a.application_details_reviewed,
+            j.is_active AS job_is_active,
+            j.url AS job_url,
+            j.description AS job_description,
+            j.title AS job_title,
+            c.name AS company_name
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        JOIN companies c ON c.id = j.company_id
+        WHERE a.id = ?
+        """,
+        (application_id,),
+    ).fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Application was not found.")
+
+    result = _assess_readiness(
+        job_is_active=bool(row["job_is_active"]),
+        job_url=row["job_url"],
+        job_description=row["job_description"],
+        resume_filename=row["resume_filename"],
+        job_reviewed=bool(row["job_reviewed"]),
+        eligibility_confirmed=bool(row["eligibility_confirmed"]),
+        resume_reviewed=bool(row["resume_reviewed"]),
+        application_details_reviewed=bool(row["application_details_reviewed"]),
+    )
+    result.update(
+        {
+            "application_id": int(row["id"]),
+            "status": row["status"],
+            "job": {
+                "title": row["job_title"],
+                "company": row["company_name"],
+            },
+            "resume_filename": row["resume_filename"],
+        }
+    )
+    return result
 
 
 @router.get("/{application_id}")
@@ -579,9 +851,21 @@ def update_application(
 ) -> dict[str, Any]:
     current = connection.execute(
         """
-        SELECT id, status, applied_at
-        FROM applications
-        WHERE id = ?
+        SELECT
+            a.id,
+            a.status,
+            a.applied_at,
+            a.resume_filename,
+            a.job_reviewed,
+            a.eligibility_confirmed,
+            a.resume_reviewed,
+            a.application_details_reviewed,
+            j.is_active AS job_is_active,
+            j.url AS job_url,
+            j.description AS job_description
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        WHERE a.id = ?
         """,
         (application_id,),
     ).fetchone()
@@ -610,6 +894,10 @@ def update_application(
         "cover_letter_filename",
         "next_action",
         "follow_up_date",
+        "job_reviewed",
+        "eligibility_confirmed",
+        "resume_reviewed",
+        "application_details_reviewed",
     )
 
     for field in allowed_fields:
@@ -620,11 +908,57 @@ def update_application(
 
         if field == "follow_up_date":
             value = value.isoformat() if value else None
+        elif field in {
+            "job_reviewed",
+            "eligibility_confirmed",
+            "resume_reviewed",
+            "application_details_reviewed",
+        }:
+            value = int(bool(value))
 
         assignments.append(f"{field} = ?")
         values.append(value)
 
     new_status = changes.get("status")
+
+    if new_status == "ready_to_apply":
+        prospective = {
+            "job_is_active": bool(current["job_is_active"]),
+            "job_url": current["job_url"],
+            "job_description": current["job_description"],
+            "resume_filename": changes.get(
+                "resume_filename", current["resume_filename"]
+            ),
+            "job_reviewed": bool(changes.get("job_reviewed", current["job_reviewed"])),
+            "eligibility_confirmed": bool(
+                changes.get("eligibility_confirmed", current["eligibility_confirmed"])
+            ),
+            "resume_reviewed": bool(changes.get("resume_reviewed", current["resume_reviewed"])),
+            "application_details_reviewed": bool(
+                changes.get(
+                    "application_details_reviewed",
+                    current["application_details_reviewed"],
+                )
+            ),
+        }
+        readiness = _assess_readiness(
+            job_is_active=prospective["job_is_active"],
+            job_url=prospective["job_url"],
+            job_description=prospective["job_description"],
+            resume_filename=prospective["resume_filename"],
+            job_reviewed=prospective["job_reviewed"],
+            eligibility_confirmed=prospective["eligibility_confirmed"],
+            resume_reviewed=prospective["resume_reviewed"],
+            application_details_reviewed=prospective["application_details_reviewed"],
+        )
+        if not readiness["ready"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "Complete the application readiness checklist before marking this application ready to apply.",
+                    "blockers": readiness["blockers"],
+                },
+            )
 
     if (
         new_status in APPLIED_OR_LATER_STATUSES

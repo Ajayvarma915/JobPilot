@@ -224,7 +224,12 @@ interface TrackedApplication {
     location: string | null;
     url: string;
     source: string;
+    is_active: boolean;
   };
+  job_reviewed: boolean;
+  eligibility_confirmed: boolean;
+  resume_reviewed: boolean;
+  application_details_reviewed: boolean;
 }
 
 interface ApplicationListResponse {
@@ -255,6 +260,47 @@ interface ApplicationUpdatePayload {
   notes: string | null;
   next_action: string | null;
   follow_up_date: string | null;
+  resume_filename?: string | null;
+  job_reviewed?: boolean;
+  eligibility_confirmed?: boolean;
+  resume_reviewed?: boolean;
+  application_details_reviewed?: boolean;
+}
+
+interface ApplicationReadinessCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  blocking: boolean;
+  detail: string;
+}
+
+interface ApplicationResumeOption {
+  filename: string;
+  format: "pdf" | "docx";
+  modified_at: string;
+  size_bytes: number;
+}
+
+interface ApplicationReadinessResponse {
+  application_id: number;
+  status: ApplicationStatus;
+  ready: boolean;
+  readiness_label: string;
+  completed_checks: number;
+  total_checks: number;
+  checks: ApplicationReadinessCheck[];
+  blockers: string[];
+  review: {
+    job_reviewed: boolean;
+    eligibility_confirmed: boolean;
+    resume_reviewed: boolean;
+    application_details_reviewed: boolean;
+  };
+  resume_filename: string | null;
+  resume_options: ApplicationResumeOption[];
+  submission_note: string;
+  job: { title: string; company: string };
 }
 
 const APPLICATION_STATUSES: Array<{
@@ -386,7 +432,7 @@ interface GeneratedResume {
 }
 
 interface ApiError {
-  detail?: string;
+  detail?: string | { message?: string; blockers?: string[] };
 }
 
 const NAV_ITEMS: Array<{
@@ -509,12 +555,18 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const detail = (data as ApiError)?.detail;
+    let message = `API request failed with HTTP ${response.status}.`;
 
-    throw new Error(
-      typeof detail === "string"
-        ? detail
-        : `API request failed with HTTP ${response.status}.`,
-    );
+    if (typeof detail === "string") {
+      message = detail;
+    } else if (detail && typeof detail === "object") {
+      const summary = detail.message || message;
+      message = detail.blockers?.length
+        ? `${summary} ${detail.blockers.join("; ")}`
+        : summary;
+    }
+
+    throw new Error(message);
   }
 
   return data as T;
@@ -1769,6 +1821,113 @@ function ApplicationCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState(false);
+  const [readinessOpen, setReadinessOpen] = useState(false);
+  const [readiness, setReadiness] = useState<ApplicationReadinessResponse | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(false);
+  const [readinessSaving, setReadinessSaving] = useState(false);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const [readinessSavedMessage, setReadinessSavedMessage] = useState<string | null>(null);
+  const [selectedResumeFilename, setSelectedResumeFilename] = useState(
+    application.resume_filename ?? "",
+  );
+
+  const loadReadiness = async () => {
+    setReadinessLoading(true);
+    setReadinessError(null);
+    try {
+      const response = await apiRequest<ApplicationReadinessResponse>(
+        `/api/applications/${application.id}/readiness`,
+      );
+      setReadiness(response);
+      setSelectedResumeFilename(response.resume_filename ?? "");
+    } catch (error) {
+      setReadinessError(errorText(error));
+    } finally {
+      setReadinessLoading(false);
+    }
+  };
+
+  const visibleReadinessChecks = (readiness?.checks ?? []).map((check) => {
+    if (!readiness) return check;
+    const reviewValueById: Record<string, boolean> = {
+      job_reviewed: readiness.review.job_reviewed,
+      eligibility_confirmed: readiness.review.eligibility_confirmed,
+      resume_reviewed: readiness.review.resume_reviewed,
+      application_details_reviewed: readiness.review.application_details_reviewed,
+      resume_selected: Boolean(
+        selectedResumeFilename && readiness.resume_options.some(
+          (option) => option.filename === selectedResumeFilename,
+        ),
+      ),
+    };
+    return Object.prototype.hasOwnProperty.call(reviewValueById, check.id)
+      ? { ...check, passed: reviewValueById[check.id] }
+      : check;
+  });
+  const readinessIsComplete = Boolean(
+    readiness && visibleReadinessChecks
+      .filter((check) => check.blocking)
+      .every((check) => check.passed),
+  );
+
+  const toggleReadiness = async () => {
+    const nextOpen = !readinessOpen;
+    setReadinessOpen(nextOpen);
+    if (nextOpen) {
+      // Always refresh on open so newly generated files and changed job status appear.
+      await loadReadiness();
+    }
+  };
+
+  const updateReadinessReview = (
+    field: keyof ApplicationReadinessResponse["review"],
+    value: boolean,
+  ) => {
+    setReadiness((current) => current ? {
+      ...current,
+      review: { ...current.review, [field]: value },
+    } : current);
+    setReadinessSavedMessage(null);
+    setReadinessError(null);
+  };
+
+  const saveReadinessReview = async (targetStatus: ApplicationStatus = draftStatus) => {
+    if (!readiness || readinessSaving) return;
+    setReadinessSaving(true);
+    setReadinessError(null);
+    setReadinessSavedMessage(null);
+    try {
+      const updated = await onUpdate(application.id, {
+        status: targetStatus,
+        notes: notes.trim() || null,
+        next_action: nextAction.trim() || null,
+        follow_up_date: followUpDate || null,
+        resume_filename: selectedResumeFilename || null,
+        job_reviewed: readiness.review.job_reviewed,
+        eligibility_confirmed: readiness.review.eligibility_confirmed,
+        resume_reviewed: readiness.review.resume_reviewed,
+        application_details_reviewed: readiness.review.application_details_reviewed,
+      });
+      setDraftStatus(updated.status);
+      setNotes(updated.notes ?? "");
+      setNextAction(updated.next_action ?? "");
+      setFollowUpDate(updated.follow_up_date ?? "");
+      const refreshed = await apiRequest<ApplicationReadinessResponse>(
+        `/api/applications/${application.id}/readiness`,
+      );
+      setReadiness(refreshed);
+      setSelectedResumeFilename(refreshed.resume_filename ?? "");
+      setReadinessSavedMessage(
+        targetStatus === "ready_to_apply"
+          ? "Readiness checks passed. This application is marked Ready to apply; submission is still manual."
+          : "Review checklist saved.",
+      );
+    } catch (error) {
+      setReadinessError(errorText(error));
+    } finally {
+      setReadinessSaving(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -1845,6 +2004,16 @@ function ApplicationCard({
           </a>
           <button
             type="button"
+            className={`secondary-button !px-3 !py-2 ${readiness?.ready ? "!border-emerald-400/25 !text-emerald-200" : ""}`}
+            onClick={() => void toggleReadiness()}
+            aria-expanded={readinessOpen}
+            aria-controls={`readiness-${application.id}`}
+            title="Review application readiness before proceeding"
+          >
+            <FileCheck2 size={13} /> {readiness?.ready ? "Ready checks passed" : "Readiness review"}
+          </button>
+          <button
+            type="button"
             className="secondary-button !border-rose-400/25 !px-3 !py-2 !text-rose-200 hover:!bg-rose-400/[0.08]"
             onClick={() => onRequestRemove(application)}
             disabled={saving}
@@ -1854,6 +2023,154 @@ function ApplicationCard({
           </button>
         </div>
       </div>
+
+      {readinessOpen && (
+        <section
+          id={`readiness-${application.id}`}
+          className="mt-4 rounded-xl border border-blue-400/20 bg-blue-400/[0.035] p-4"
+          aria-label="Application readiness review"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-[12px] font-semibold text-slate-100">Application readiness review</p>
+              <p className="mt-1 text-[10px] text-slate-400">
+                Review the posting, confirm eligibility, and select the exact document you intend to upload.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="secondary-button !px-3 !py-2"
+              onClick={() => void loadReadiness()}
+              disabled={readinessLoading}
+            >
+              <RefreshCw size={12} className={readinessLoading ? "loading-ring" : ""} /> Refresh checks
+            </button>
+          </div>
+
+          {readinessLoading && (
+            <div className="mt-4 flex items-center gap-2 text-[11px] text-slate-400">
+              <LoaderCircle size={14} className="loading-ring" /> Checking posting and available resume files...
+            </div>
+          )}
+          {readinessError && (
+            <div role="alert" className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200">
+              {readinessError}
+            </div>
+          )}
+
+          {readiness && !readinessLoading && (
+            <>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${readinessIsComplete ? "border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200" : "border-amber-300/20 bg-amber-300/[0.06] text-amber-100"}`}>
+                    {readinessIsComplete ? "Ready for your review" : "More review required"}
+                  </span>
+                  <span className="ml-2 text-[10px] text-slate-500">
+                    {visibleReadinessChecks.filter((check) => check.passed).length}/{visibleReadinessChecks.length} checks passed
+                  </span>
+                </div>
+                <div className="h-1.5 w-36 overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className={`h-full rounded-full ${readinessIsComplete ? "bg-emerald-400" : "bg-blue-400"}`}
+                    style={{ width: `${visibleReadinessChecks.length ? (visibleReadinessChecks.filter((check) => check.passed).length / visibleReadinessChecks.length) * 100 : 0}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
+                {visibleReadinessChecks.map((check) => (
+                  <div key={check.id} className="flex gap-2 rounded-lg border border-slate-700/50 bg-slate-950/30 p-3">
+                    {check.passed ? (
+                      <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" />
+                    ) : (
+                      <AlertTriangle size={14} className={`mt-0.5 shrink-0 ${check.blocking ? "text-amber-200" : "text-slate-500"}`} />
+                    )}
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold text-slate-200">{check.label}</p>
+                      <p className="mt-1 text-[10px] leading-4 text-slate-500">{check.detail}</p>
+                      {!check.blocking && !check.passed && <p className="mt-1 text-[9px] text-slate-500">Recommendation, not a blocker</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <label className="block text-[10px] font-medium text-slate-400">
+                  Tailored resume to attach
+                  <select
+                    className="field mt-1.5"
+                    value={selectedResumeFilename}
+                    onChange={(event) => {
+                      setSelectedResumeFilename(event.target.value);
+                      setReadinessSavedMessage(null);
+                      setReadinessError(null);
+                    }}
+                    aria-label={`Select tailored resume for ${application.job.title}`}
+                  >
+                    <option value="">Select a generated PDF or DOCX...</option>
+                    {readiness.resume_options.map((option) => (
+                      <option key={option.filename} value={option.filename}>
+                        {option.filename} · {option.format.toUpperCase()} · {new Date(option.modified_at).toLocaleDateString()}
+                      </option>
+                    ))}
+                  </select>
+                  {readiness.resume_options.length === 0 && (
+                    <span className="mt-1.5 block text-[10px] text-amber-100">
+                      No generated resumes found. Generate one in Resume Studio, then refresh these checks.
+                    </span>
+                  )}
+                </label>
+
+                <div className="space-y-2">
+                  {([
+                    ["job_reviewed", "I reviewed the job description and required qualifications."],
+                    ["eligibility_confirmed", "I confirmed location, experience, education, and work-authorization eligibility."],
+                    ["resume_reviewed", "I reviewed the selected resume's content, dates, links, and PDF layout."],
+                    ["application_details_reviewed", "I can answer the employer's application questions accurately and have required materials ready."],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex cursor-pointer items-start gap-2 text-[10px] leading-4 text-slate-300">
+                      <input
+                        className="mt-0.5 accent-blue-400"
+                        type="checkbox"
+                        checked={readiness.review[key]}
+                        onChange={(event) => updateReadinessReview(key, event.target.checked)}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <p className="mt-3 text-[10px] text-slate-500">{readiness.submission_note}</p>
+              {readinessSavedMessage && (
+                <p role="status" className="mt-3 inline-flex items-center gap-1.5 text-[10px] text-emerald-300">
+                  <CheckCircle2 size={12} /> {readinessSavedMessage}
+                </p>
+              )}
+              <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-3">
+                <button
+                  type="button"
+                  className="secondary-button !px-3 !py-2"
+                  onClick={() => void saveReadinessReview(draftStatus)}
+                  disabled={readinessSaving || readinessLoading}
+                >
+                  {readinessSaving ? <LoaderCircle size={12} className="loading-ring" /> : <Save size={12} />}
+                  {readinessSaving ? "Saving..." : "Save review"}
+                </button>
+                <button
+                  type="button"
+                  className="primary-button !px-3 !py-2"
+                  onClick={() => void saveReadinessReview("ready_to_apply")}
+                  disabled={!readinessIsComplete || readinessSaving || readinessLoading || application.status === "applied"}
+                  title={!readinessIsComplete ? "Complete all required checks first" : "Mark this application ready to apply; this does not submit it"}
+                >
+                  <ShieldCheck size={13} /> Mark Ready to Apply
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      )}
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <label className="block text-[10px] font-medium text-slate-400">

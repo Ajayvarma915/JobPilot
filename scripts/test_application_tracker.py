@@ -22,6 +22,20 @@ class ApplicationTrackerApiTests(unittest.TestCase):
 
         connection = sqlite3.connect(cls.database_path)
 
+        import app.applications.tracker as tracker_module
+
+        cls.tracker_module = tracker_module
+        cls.original_generated_resumes_dir = (
+            tracker_module.GENERATED_RESUMES_DIR
+        )
+        tracker_module.GENERATED_RESUMES_DIR = (
+            Path(cls.temp_dir.name) / "generated_resumes"
+        )
+        tracker_module.GENERATED_RESUMES_DIR.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
         connection.executescript(
             """
             PRAGMA foreign_keys=ON;
@@ -37,7 +51,9 @@ class ApplicationTrackerApiTests(unittest.TestCase):
                 title TEXT NOT NULL,
                 location TEXT,
                 url TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
                 source TEXT NOT NULL,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY(company_id) REFERENCES companies(id)
             );
 
@@ -45,25 +61,33 @@ class ApplicationTrackerApiTests(unittest.TestCase):
             VALUES ('ExampleCo');
 
             INSERT INTO jobs (
-                company_id, title, location, url, source
+                company_id, title, location, url,
+                description, source, is_active
             )
             VALUES (
                 1,
                 'Software Engineer',
                 'Hyderabad, India',
                 'https://example.com/jobs/1',
-                'greenhouse'
+                'Minimum qualifications include a bachelor degree and experience. '
+                || 'Review responsibilities, technical requirements, application steps, and qualifications.',
+                'greenhouse',
+                1
             );
 
             INSERT INTO jobs (
-                company_id, title, location, url, source
+                company_id, title, location, url,
+                description, source, is_active
             )
             VALUES (
                 1,
                 'Backend Engineer',
                 'Remote',
                 'https://example.com/jobs/2',
-                'greenhouse'
+                'Minimum qualifications include a bachelor degree and experience. '
+                || 'Review responsibilities, technical requirements, application steps, and qualifications.',
+                'greenhouse',
+                1
             );
             """
         )
@@ -82,6 +106,9 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         cls.client.close()
         cls.temp_dir.cleanup()
         os.environ.pop("JOBPILOT_DATABASE_PATH", None)
+        cls.tracker_module.GENERATED_RESUMES_DIR = (
+            cls.original_generated_resumes_dir
+        )
 
     def setUp(self) -> None:
         # Initialize the table through the API before clearing test data.
@@ -89,6 +116,7 @@ class ApplicationTrackerApiTests(unittest.TestCase):
 
         connection = sqlite3.connect(self.database_path)
         connection.execute("DELETE FROM applications")
+        connection.execute("UPDATE jobs SET is_active = 1")
         connection.commit()
         connection.close()
 
@@ -197,14 +225,12 @@ class ApplicationTrackerApiTests(unittest.TestCase):
             json={"job_id": 1, "notes": "Accidentally tracked"},
         )
         self.assertEqual(created.status_code, 201, created.text)
-
         application_id = created.json()["id"]
 
         removed = self.client.delete(
             f"/api/applications/{application_id}"
         )
         self.assertEqual(removed.status_code, 200, removed.text)
-
         self.assertEqual(
             removed.json(),
             {
@@ -241,12 +267,120 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         response = self.client.delete("/api/applications/987")
         self.assertEqual(response.status_code, 404)
 
+    def test_readiness_blocks_until_required_review_is_complete(self) -> None:
+        created = self.client.post(
+            "/api/applications",
+            json={"job_id": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        readiness = self.client.get(
+            f"/api/applications/{application_id}/readiness"
+        )
+        self.assertEqual(readiness.status_code, 200, readiness.text)
+
+        payload = readiness.json()
+        self.assertFalse(payload["ready"])
+        self.assertIn(
+            "Generated tailored resume selected",
+            payload["blockers"],
+        )
+        self.assertGreaterEqual(payload["total_checks"], 8)
+        self.assertEqual(payload["job"]["title"], "Software Engineer")
+
+        blocked = self.client.patch(
+            f"/api/applications/{application_id}",
+            json={"status": "ready_to_apply"},
+        )
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertIn("blockers", blocked.json()["detail"])
+
+    def test_ready_status_requires_resume_and_all_confirmations(self) -> None:
+        created = self.client.post(
+            "/api/applications",
+            json={"job_id": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        resume_path = (
+            self.tracker_module.GENERATED_RESUMES_DIR
+            / "Tailored_Test.pdf"
+        )
+        resume_path.write_bytes(b"%PDF-1.4 test fixture")
+
+        update = self.client.patch(
+            f"/api/applications/{application_id}",
+            json={
+                "status": "ready_to_apply",
+                "resume_filename": resume_path.name,
+                "job_reviewed": True,
+                "eligibility_confirmed": True,
+                "resume_reviewed": True,
+                "application_details_reviewed": True,
+            },
+        )
+        self.assertEqual(update.status_code, 200, update.text)
+        self.assertEqual(update.json()["status"], "ready_to_apply")
+        self.assertTrue(update.json()["job_reviewed"])
+        self.assertEqual(
+            update.json()["resume_filename"],
+            resume_path.name,
+        )
+
+        readiness = self.client.get(
+            f"/api/applications/{application_id}/readiness"
+        )
+        self.assertEqual(readiness.status_code, 200, readiness.text)
+        self.assertTrue(readiness.json()["ready"])
+        self.assertEqual(readiness.json()["blockers"], [])
+
+    def test_inactive_job_cannot_be_marked_ready(self) -> None:
+        created = self.client.post(
+            "/api/applications",
+            json={"job_id": 1},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            "UPDATE jobs SET is_active = 0 WHERE id = 1"
+        )
+        connection.commit()
+        connection.close()
+
+        resume_path = (
+            self.tracker_module.GENERATED_RESUMES_DIR
+            / "InactiveRole.pdf"
+        )
+        resume_path.write_bytes(b"%PDF-1.4 test fixture")
+
+        blocked = self.client.patch(
+            f"/api/applications/{application_id}",
+            json={
+                "status": "ready_to_apply",
+                "resume_filename": resume_path.name,
+                "job_reviewed": True,
+                "eligibility_confirmed": True,
+                "resume_reviewed": True,
+                "application_details_reviewed": True,
+            },
+        )
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertTrue(
+            any(
+                "marked active" in value
+                for value in blocked.json()["detail"]["blockers"]
+            )
+        )
+
     def test_invalid_job_and_status_are_rejected(self) -> None:
         missing_job = self.client.post(
             "/api/applications",
             json={"job_id": 999},
         )
-
         self.assertEqual(missing_job.status_code, 404)
 
         invalid_status = self.client.post(
@@ -256,14 +390,12 @@ class ApplicationTrackerApiTests(unittest.TestCase):
                 "status": "magically_hired",
             },
         )
-
         self.assertEqual(invalid_status.status_code, 422)
 
         missing_application = self.client.patch(
             "/api/applications/987",
             json={"status": "interview"},
         )
-
         self.assertEqual(missing_application.status_code, 404)
 
 
