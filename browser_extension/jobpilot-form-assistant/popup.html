@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JobPilot Form Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+  <script src="popup.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div class="brand-mark">⌘</div>
+      <div>
+        <h1>JobPilot</h1>
+        <p>Application form assistant</p>
+      </div>
+      <button id="refreshBtn" class="icon-button" title="Refresh applications" aria-label="Refresh applications">↻</button>
+    </header>
+
+    <section class="panel">
+      <label for="applicationSelect">Tracked application</label>
+      <select id="applicationSelect">
+        <option value="">Loading applications…</option>
+      </select>
+      <div id="jobMeta" class="job-meta">Connect to your local JobPilot API to load applications.</div>
+      <div id="blockerSummary" class="blocker-summary hidden"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Prepare the employer form</h2>
+        <span class="local-badge">Local API</span>
+      </div>
+      <p class="muted">Open the employer's application form in the active tab, then use this extension to fill only supported, clearly labelled fields.</p>
+      <button id="openPostingBtn" class="secondary-button" disabled>Open employer posting ↗</button>
+      <label class="toggle-row" for="overwriteExisting">
+        <input type="checkbox" id="overwriteExisting">
+        <span>Overwrite fields that already contain text</span>
+      </label>
+      <button id="fillBtn" class="primary-button" disabled>Fill supported fields</button>
+      <div id="actionStatus" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel" id="questionsPanel">
+      <div class="section-heading">
+        <h2>Employer questions</h2>
+        <span id="questionCount" class="count">0</span>
+      </div>
+      <p class="muted">Custom answers are shown for manual review and copying. They are not automatically inserted into free-text questions.</p>
+      <div id="questionsList" class="questions-list">
+        <p class="muted">No custom questions saved for this application.</p>
+      </div>
+    </section>
+
+    <footer>
+      <strong>Human review required.</strong> This extension never clicks Submit, Apply, or any other form action. Verify every populated value and attach your resume manually.
+    </footer>
+  </main>
+</body>
+</html>

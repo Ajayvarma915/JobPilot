@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "JobPilot Form Assistant",
+  "version": "0.1.0",
+  "description": "Prefills clearly identified application fields from your local JobPilot preparation packet. It never submits forms.",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8000/*"],
+  "action": {
+    "default_title": "JobPilot Form Assistant",
+    "default_popup": "popup.html"
+  }
+}

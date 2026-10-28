@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+import re
 import sqlite3
 from collections.abc import Generator
 from datetime import date, datetime, timezone
@@ -154,6 +156,61 @@ class ApplicationUpdate(BaseModel):
         return _validate_generated_filename(value)
 
 
+class ApplicationCustomQuestion(BaseModel):
+    question: str = Field(default="", max_length=500)
+    answer: str = Field(default="", max_length=6000)
+
+    @field_validator("question")
+    @classmethod
+    def validate_question(cls, value: str) -> str:
+        cleaned = value.strip()
+        return cleaned
+
+
+class ApplicationPreparationUpdate(BaseModel):
+    contact_name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=80)
+    current_location: str | None = Field(default=None, max_length=200)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    github_url: str | None = Field(default=None, max_length=500)
+    portfolio_url: str | None = Field(default=None, max_length=500)
+    current_employer: str | None = Field(default=None, max_length=200)
+    current_title: str | None = Field(default=None, max_length=200)
+    years_experience: str | None = Field(default=None, max_length=100)
+    notice_period: str | None = Field(default=None, max_length=120)
+    work_authorization: str | None = Field(default=None, max_length=240)
+    requires_sponsorship: Literal["yes", "no", "unknown"] | None = None
+    salary_expectation: str | None = Field(default=None, max_length=200)
+    cover_letter_draft: str | None = Field(default=None, max_length=16000)
+    custom_questions: list[ApplicationCustomQuestion] | None = Field(default=None, max_length=15)
+    resume_filename: str | None = Field(default=None, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if cleaned and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cleaned):
+            raise ValueError("Enter a valid email address.")
+        return cleaned or None
+
+    @field_validator("linkedin_url", "github_url", "portfolio_url")
+    @classmethod
+    def validate_profile_urls(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return None
+        parts = urlsplit(cleaned)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError("Profile links must be valid HTTP(S) URLs.")
+        return cleaned
+
+    @field_validator("resume_filename")
+    @classmethod
+    def validate_resume_filename(cls, value: str | None) -> str | None:
+        return _validate_generated_filename(value)
+
+
 def _database_path() -> Path:
     configured = os.getenv("JOBPILOT_DATABASE_PATH")
 
@@ -240,6 +297,38 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             connection.execute(
                 f"ALTER TABLE applications ADD COLUMN {column_name} {column_definition}"
             )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS application_preparations (
+            application_id INTEGER PRIMARY KEY,
+            contact_name TEXT,
+            email TEXT,
+            phone TEXT,
+            current_location TEXT,
+            linkedin_url TEXT,
+            github_url TEXT,
+            portfolio_url TEXT,
+            current_employer TEXT,
+            current_title TEXT,
+            years_experience TEXT,
+            notice_period TEXT,
+            work_authorization TEXT,
+            requires_sponsorship TEXT CHECK (
+                requires_sponsorship IS NULL OR requires_sponsorship IN ('yes', 'no', 'unknown')
+            ),
+            salary_expectation TEXT,
+            cover_letter_draft TEXT,
+            custom_questions_json TEXT NOT NULL DEFAULT '[]',
+            prepared_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(application_id)
+                REFERENCES applications(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
 
     connection.execute(
         """
@@ -824,6 +913,258 @@ def get_application_readiness(
             "resume_filename": row["resume_filename"],
         }
     )
+    return result
+
+
+def _preparation_blockers(
+    *,
+    contact_name: str | None,
+    email: str | None,
+    phone: str | None,
+    current_location: str | None,
+    resume_filename: str | None,
+    job_is_active: bool,
+    job_url: str | None,
+    custom_questions: list[dict[str, str]],
+) -> list[str]:
+    blockers: list[str] = []
+    if not (contact_name or "").strip():
+        blockers.append("Add your full name.")
+    if not (email or "").strip():
+        blockers.append("Add your email address.")
+    if not (phone or "").strip():
+        blockers.append("Add your phone number.")
+    if not (current_location or "").strip():
+        blockers.append("Add your current location.")
+
+    resume_exists = False
+    if resume_filename:
+        resume_exists = any(
+            item["filename"] == resume_filename
+            for item in _available_resume_files()
+        )
+    if not resume_exists:
+        blockers.append("Select an existing generated PDF or DOCX resume.")
+
+    parts = urlsplit(job_url or "")
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        blockers.append("The original job posting link is missing or invalid.")
+    if not job_is_active:
+        blockers.append("The job is marked inactive; verify the employer posting before proceeding.")
+
+    for index, item in enumerate(custom_questions, start=1):
+        question = (item.get("question") or "").strip()
+        answer = (item.get("answer") or "").strip()
+        if question and not answer:
+            blockers.append(f"Answer custom employer question {index} or remove it.")
+        elif answer and not question:
+            blockers.append(f"Add the prompt for custom employer answer {index}.")
+
+    return blockers
+
+
+def _preparation_response(
+    connection: sqlite3.Connection,
+    application_id: int,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT
+            a.id AS application_id,
+            a.status AS application_status,
+            a.resume_filename,
+            a.cover_letter_filename,
+            j.id AS job_id,
+            j.title AS job_title,
+            j.location AS job_location,
+            j.url AS job_url,
+            j.description AS job_description,
+            j.is_active AS job_is_active,
+            c.name AS company_name,
+            p.contact_name,
+            p.email,
+            p.phone,
+            p.current_location,
+            p.linkedin_url,
+            p.github_url,
+            p.portfolio_url,
+            p.current_employer,
+            p.current_title,
+            p.years_experience,
+            p.notice_period,
+            p.work_authorization,
+            p.requires_sponsorship,
+            p.salary_expectation,
+            p.cover_letter_draft,
+            p.custom_questions_json,
+            p.prepared_at,
+            p.updated_at AS preparation_updated_at
+        FROM applications a
+        JOIN jobs j ON j.id = a.job_id
+        JOIN companies c ON c.id = j.company_id
+        LEFT JOIN application_preparations p ON p.application_id = a.id
+        WHERE a.id = ?
+        """,
+        (application_id,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    try:
+        questions = json.loads(row["custom_questions_json"] or "[]")
+        if not isinstance(questions, list):
+            questions = []
+    except (TypeError, json.JSONDecodeError):
+        questions = []
+
+    profile_fields = (
+        "contact_name", "email", "phone", "current_location", "linkedin_url",
+        "github_url", "portfolio_url", "current_employer", "current_title",
+        "years_experience", "notice_period", "work_authorization",
+        "requires_sponsorship", "salary_expectation",
+    )
+    profile = {field: row[field] for field in profile_fields}
+    blockers = _preparation_blockers(
+        contact_name=row["contact_name"],
+        email=row["email"],
+        phone=row["phone"],
+        current_location=row["current_location"],
+        resume_filename=row["resume_filename"],
+        job_is_active=bool(row["job_is_active"]),
+        job_url=row["job_url"],
+        custom_questions=questions,
+    )
+
+    return {
+        "application_id": int(row["application_id"]),
+        "application_status": row["application_status"],
+        "resume_filename": row["resume_filename"],
+        "cover_letter_filename": row["cover_letter_filename"],
+        "profile": profile,
+        "cover_letter_draft": row["cover_letter_draft"] or "",
+        "custom_questions": questions,
+        "prepared": not blockers,
+        "blockers": blockers,
+        "resume_options": _available_resume_files(),
+        "prepared_at": row["prepared_at"],
+        "updated_at": row["preparation_updated_at"],
+        "job": {
+            "id": int(row["job_id"]),
+            "title": row["job_title"],
+            "company": row["company_name"],
+            "location": row["job_location"],
+            "url": row["job_url"],
+            "description_available": len((row["job_description"] or "").strip()) >= 100,
+            "is_active": bool(row["job_is_active"]),
+        },
+        "submission_note": "This is a copy-ready preparation workspace. It does not autofill or submit the employer's website.",
+    }
+
+
+@router.get("/{application_id}/preparation")
+def get_application_preparation(
+    application_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT id FROM applications WHERE id = ?",
+        (application_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Application was not found.")
+
+    now = _utc_now()
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO application_preparations (
+            application_id, created_at, updated_at
+        ) VALUES (?, ?, ?)
+        """,
+        (application_id, now, now),
+    )
+    connection.commit()
+    result = _preparation_response(connection, application_id)
+    if result is None:
+        raise HTTPException(status_code=500, detail="Preparation data could not be loaded.")
+    return result
+
+
+@router.patch("/{application_id}/preparation")
+def update_application_preparation(
+    request: ApplicationPreparationUpdate,
+    application_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    row = connection.execute(
+        "SELECT id FROM applications WHERE id = ?",
+        (application_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Application was not found.")
+
+    changes = request.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Provide at least one preparation field to save.")
+
+    now = _utc_now()
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO application_preparations (
+            application_id, created_at, updated_at
+        ) VALUES (?, ?, ?)
+        """,
+        (application_id, now, now),
+    )
+
+    prep_columns = {
+        "contact_name", "email", "phone", "current_location", "linkedin_url",
+        "github_url", "portfolio_url", "current_employer", "current_title",
+        "years_experience", "notice_period", "work_authorization",
+        "requires_sponsorship", "salary_expectation", "cover_letter_draft",
+        "custom_questions",
+    }
+    assignments: list[str] = []
+    values: list[Any] = []
+
+    if "resume_filename" in changes:
+        connection.execute(
+            "UPDATE applications SET resume_filename = ?, updated_at = ? WHERE id = ?",
+            (changes.pop("resume_filename"), now, application_id),
+        )
+
+    for field, value in changes.items():
+        if field not in prep_columns:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+        if field == "custom_questions":
+            value = json.dumps(
+                [item.model_dump() if isinstance(item, BaseModel) else item for item in (value or [])],
+                ensure_ascii=False,
+            )
+            field = "custom_questions_json"
+        assignments.append(f"{field} = ?")
+        values.append(value)
+
+    assignments.extend(["updated_at = ?", "prepared_at = NULL"])
+    values.extend([now, application_id])
+    connection.execute(
+        f"UPDATE application_preparations SET {', '.join(assignments)} WHERE application_id = ?",
+        values,
+    )
+    connection.commit()
+
+    result = _preparation_response(connection, application_id)
+    if result is None:
+        raise HTTPException(status_code=500, detail="Saved preparation data could not be loaded.")
+
+    if result["prepared"]:
+        connection.execute(
+            "UPDATE application_preparations SET prepared_at = ? WHERE application_id = ?",
+            (_utc_now(), application_id),
+        )
+        connection.commit()
+        result = _preparation_response(connection, application_id) or result
     return result
 
 

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Clock3,
   Command,
+  Copy,
   Download,
   ExternalLink,
   FileCheck2,
@@ -301,6 +302,73 @@ interface ApplicationReadinessResponse {
   resume_options: ApplicationResumeOption[];
   submission_note: string;
   job: { title: string; company: string };
+}
+
+
+interface ApplicationPreparationQuestion {
+  question: string;
+  answer: string;
+}
+
+interface ApplicationPreparationProfile {
+  contact_name: string | null;
+  email: string | null;
+  phone: string | null;
+  current_location: string | null;
+  linkedin_url: string | null;
+  github_url: string | null;
+  portfolio_url: string | null;
+  current_employer: string | null;
+  current_title: string | null;
+  years_experience: string | null;
+  notice_period: string | null;
+  work_authorization: string | null;
+  requires_sponsorship: "yes" | "no" | "unknown" | null;
+  salary_expectation: string | null;
+}
+
+interface ApplicationPreparationResponse {
+  application_id: number;
+  application_status: ApplicationStatus;
+  resume_filename: string | null;
+  cover_letter_filename: string | null;
+  profile: ApplicationPreparationProfile;
+  cover_letter_draft: string;
+  custom_questions: ApplicationPreparationQuestion[];
+  prepared: boolean;
+  blockers: string[];
+  resume_options: ApplicationResumeOption[];
+  prepared_at: string | null;
+  updated_at: string | null;
+  job: {
+    id: number;
+    title: string;
+    company: string;
+    location: string | null;
+    url: string;
+    description_available: boolean;
+    is_active: boolean;
+  };
+  submission_note: string;
+}
+
+interface ApplicationPreparationDraft {
+  contact_name: string;
+  email: string;
+  phone: string;
+  current_location: string;
+  linkedin_url: string;
+  github_url: string;
+  portfolio_url: string;
+  current_employer: string;
+  current_title: string;
+  years_experience: string;
+  notice_period: string;
+  work_authorization: string;
+  requires_sponsorship: "yes" | "no" | "unknown";
+  salary_expectation: string;
+  cover_letter_draft: string;
+  custom_questions: ApplicationPreparationQuestion[];
 }
 
 const APPLICATION_STATUSES: Array<{
@@ -1802,6 +1870,371 @@ function JobsView({
   );
 }
 
+function ApplicationPreparationPanel({
+  application,
+  onOpenReadiness,
+}: {
+  application: TrackedApplication;
+  onOpenReadiness: () => void;
+}) {
+  const blankDraft: ApplicationPreparationDraft = {
+    contact_name: "",
+    email: "",
+    phone: "",
+    current_location: "",
+    linkedin_url: "",
+    github_url: "",
+    portfolio_url: "",
+    current_employer: "",
+    current_title: "",
+    years_experience: "",
+    notice_period: "",
+    work_authorization: "",
+    requires_sponsorship: "unknown",
+    salary_expectation: "",
+    cover_letter_draft: "",
+    custom_questions: [],
+  };
+
+  const [data, setData] = useState<ApplicationPreparationResponse | null>(null);
+  const [draft, setDraft] = useState<ApplicationPreparationDraft>(blankDraft);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [copyMessage, setCopyMessage] = useState<string | null>(null);
+
+  const applyResponse = (response: ApplicationPreparationResponse) => {
+    setData(response);
+    setDraft({
+      contact_name: response.profile.contact_name ?? "",
+      email: response.profile.email ?? "",
+      phone: response.profile.phone ?? "",
+      current_location: response.profile.current_location ?? "",
+      linkedin_url: response.profile.linkedin_url ?? "",
+      github_url: response.profile.github_url ?? "",
+      portfolio_url: response.profile.portfolio_url ?? "",
+      current_employer: response.profile.current_employer ?? "",
+      current_title: response.profile.current_title ?? "",
+      years_experience: response.profile.years_experience ?? "",
+      notice_period: response.profile.notice_period ?? "",
+      work_authorization: response.profile.work_authorization ?? "",
+      requires_sponsorship: response.profile.requires_sponsorship ?? "unknown",
+      salary_expectation: response.profile.salary_expectation ?? "",
+      cover_letter_draft: response.cover_letter_draft ?? "",
+      custom_questions: response.custom_questions ?? [],
+    });
+  };
+
+  const loadPreparation = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await apiRequest<ApplicationPreparationResponse>(
+        `/api/applications/${application.id}/preparation`,
+      );
+      applyResponse(response);
+    } catch (loadError) {
+      setError(errorText(loadError));
+    } finally {
+      setLoading(false);
+    }
+  }, [application.id]);
+
+  useEffect(() => {
+    const timerId = window.setTimeout(() => {
+      void loadPreparation();
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [loadPreparation]);
+
+  const updateDraft = <K extends keyof ApplicationPreparationDraft>(
+    key: K,
+    value: ApplicationPreparationDraft[K],
+  ) => {
+    setDraft((current) => ({ ...current, [key]: value }));
+    setMessage(null);
+    setCopyMessage(null);
+  };
+
+  const updateQuestion = (
+    index: number,
+    field: keyof ApplicationPreparationQuestion,
+    value: string,
+  ) => {
+    setDraft((current) => ({
+      ...current,
+      custom_questions: current.custom_questions.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: value } : item,
+      ),
+    }));
+    setMessage(null);
+  };
+
+  const savePreparation = async () => {
+    if (saving) return;
+    setSaving(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const payload = {
+        contact_name: draft.contact_name,
+        email: draft.email,
+        phone: draft.phone,
+        current_location: draft.current_location,
+        linkedin_url: draft.linkedin_url,
+        github_url: draft.github_url,
+        portfolio_url: draft.portfolio_url,
+        current_employer: draft.current_employer,
+        current_title: draft.current_title,
+        years_experience: draft.years_experience,
+        notice_period: draft.notice_period,
+        work_authorization: draft.work_authorization,
+        requires_sponsorship: draft.requires_sponsorship,
+        salary_expectation: draft.salary_expectation,
+        cover_letter_draft: draft.cover_letter_draft,
+        custom_questions: draft.custom_questions
+          .map((item) => ({
+            question: item.question.trim(),
+            answer: item.answer.trim(),
+          }))
+          .filter((item) => item.question || item.answer),
+      };
+      const response = await apiRequest<ApplicationPreparationResponse>(
+        `/api/applications/${application.id}/preparation`,
+        { method: "PATCH", body: JSON.stringify(payload) },
+      );
+      applyResponse(response);
+      setMessage(
+        response.prepared
+          ? "Application packet is complete. Review the employer form before submitting."
+          : "Draft saved. Complete the blocking items below before considering the packet ready.",
+      );
+    } catch (saveErrorValue) {
+      setError(errorText(saveErrorValue));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copyPacket = async () => {
+    if (!data) return;
+    const profileLines = [
+      ["Full name", draft.contact_name],
+      ["Email", draft.email],
+      ["Phone", draft.phone],
+      ["Current location", draft.current_location],
+      ["LinkedIn", draft.linkedin_url],
+      ["GitHub", draft.github_url],
+      ["Portfolio", draft.portfolio_url],
+      ["Current employer", draft.current_employer],
+      ["Current title", draft.current_title],
+      ["Years of experience", draft.years_experience],
+      ["Notice period", draft.notice_period],
+      ["Work authorization", draft.work_authorization],
+      ["Requires sponsorship", draft.requires_sponsorship],
+      ["Salary expectation", draft.salary_expectation],
+    ]
+      .filter(([, value]) => String(value ?? "").trim())
+      .map(([label, value]) => `${label}: ${value}`);
+    const questions = draft.custom_questions
+      .filter((item) => item.question.trim() || item.answer.trim())
+      .map((item, index) => `Employer question ${index + 1}: ${item.question}\nAnswer: ${item.answer}`);
+    const packet = [
+      `Application preparation — ${data.job.title} at ${data.job.company}`,
+      `Job posting: ${data.job.url}`,
+      `Selected resume: ${data.resume_filename || "Not selected — open Readiness review"}`,
+      "",
+      "Candidate details",
+      ...profileLines,
+      "",
+      "Employer questions and draft answers",
+      ...(questions.length ? questions : ["No custom employer questions entered."]),
+      "",
+      "Cover letter draft",
+      draft.cover_letter_draft.trim() || "No cover letter draft saved.",
+      "",
+      "Review all answers and documents against the employer's live form. Do not submit without checking accuracy.",
+    ].join("\n");
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("Clipboard access is unavailable in this browser context.");
+      }
+      await navigator.clipboard.writeText(packet);
+      setCopyMessage("Application packet copied to clipboard.");
+    } catch (copyError) {
+      setCopyMessage(errorText(copyError));
+    }
+  };
+
+  const field = (
+    label: string,
+    key: keyof ApplicationPreparationDraft,
+    placeholder: string,
+    required = false,
+    type = "text",
+  ) => {
+    const value = draft[key];
+    if (typeof value !== "string") return null;
+    return (
+      <label key={key} className="block text-[10px] font-medium text-slate-400">
+        {label}{required ? " *" : ""}
+        <input
+          className="field mt-1.5"
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          maxLength={type === "email" ? 320 : 500}
+          onChange={(event) => updateDraft(key, event.target.value as ApplicationPreparationDraft[typeof key])}
+        />
+      </label>
+    );
+  };
+
+  return (
+    <section className="mt-4 rounded-xl border border-violet-400/20 bg-violet-400/[0.035] p-4" aria-label="Application preparation workspace">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-[12px] font-semibold text-slate-100">Application preparation</p>
+          <p className="mt-1 max-w-2xl text-[10px] leading-4 text-slate-400">
+            Prepare reusable candidate details, employer-specific answers, and an optional cover letter. This stays in your local JobPilot database; it does not fill or submit the employer website.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="secondary-button !px-3 !py-2" onClick={() => void loadPreparation()} disabled={loading || saving}>
+            <RefreshCw size={12} className={loading ? "loading-ring" : ""} /> Refresh
+          </button>
+          <button type="button" className="secondary-button !px-3 !py-2" onClick={onOpenReadiness}>
+            <FileCheck2 size={12} /> Resume & readiness
+          </button>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="mt-4 flex items-center gap-2 text-[11px] text-slate-400">
+          <LoaderCircle size={14} className="loading-ring" /> Loading application details...
+        </div>
+      )}
+      {error && <div role="alert" className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200">{error}</div>}
+
+      {data && !loading && (
+        <>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/50 bg-slate-950/40 p-3">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-slate-100">{data.job.title} · {data.job.company}</p>
+              <p className="mt-1 truncate text-[10px] text-slate-400">{data.job.location || "Location not supplied"}</p>
+              <a className="mt-1 inline-flex items-center gap-1 text-[10px] text-blue-300 hover:text-blue-200" href={data.job.url} target="_blank" rel="noreferrer">Open employer posting <ExternalLink size={10} /></a>
+            </div>
+            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${data.prepared ? "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200" : "border-amber-300/20 bg-amber-300/[0.06] text-amber-100"}`}>
+              {data.prepared ? "Packet complete" : `${data.blockers.length} items to resolve`}
+            </span>
+          </div>
+
+          {data.blockers.length > 0 && (
+            <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/[0.045] p-3">
+              <p className="text-[10px] font-semibold text-amber-100">Before using this application packet</p>
+              <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[10px] leading-4 text-amber-100/80">
+                {data.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+              </ul>
+            </div>
+          )}
+
+          <div className="mt-4">
+            <div className="flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-semibold text-slate-100">Candidate details</p>
+                <p className="mt-1 text-[10px] text-slate-500">Enter truthful details you would provide to an employer.</p>
+              </div>
+              <p className="text-[10px] text-slate-500">* Required for packet completeness</p>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {field("Full name", "contact_name", "As shown on your resume", true)}
+              {field("Email address", "email", "you@example.com", true, "email")}
+              {field("Phone number", "phone", "+91 ...", true, "tel")}
+              {field("Current location", "current_location", "City, country", true)}
+              {field("LinkedIn URL", "linkedin_url", "https://linkedin.com/in/...")}
+              {field("GitHub URL", "github_url", "https://github.com/...")}
+              {field("Portfolio URL", "portfolio_url", "https://...")}
+              {field("Current employer", "current_employer", "Employer name")}
+              {field("Current title", "current_title", "Role / designation")}
+              {field("Years of experience", "years_experience", "e.g. 1 year")}
+              {field("Notice period", "notice_period", "e.g. 30 days")}
+              {field("Work authorization", "work_authorization", "Answer according to your situation")}
+              <label className="block text-[10px] font-medium text-slate-400">
+                Requires employer sponsorship?
+                <select className="field mt-1.5" value={draft.requires_sponsorship} onChange={(event) => updateDraft("requires_sponsorship", event.target.value as ApplicationPreparationDraft["requires_sponsorship"])}>
+                  <option value="unknown">Not specified</option>
+                  <option value="yes">Yes</option>
+                  <option value="no">No</option>
+                </select>
+              </label>
+              {field("Salary expectation", "salary_expectation", "Optional; enter only if ready to share")}
+            </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-700/50 pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-[11px] font-semibold text-slate-100">Employer-specific questions</p>
+                <p className="mt-1 text-[10px] text-slate-500">Add questions from the live application form and write answers in your own words.</p>
+              </div>
+              <button type="button" className="secondary-button !px-3 !py-2" disabled={draft.custom_questions.length >= 15} onClick={() => updateDraft("custom_questions", [...draft.custom_questions, { question: "", answer: "" }])}>
+                <Plus size={12} /> Add question
+              </button>
+            </div>
+            <div className="mt-3 space-y-3">
+              {draft.custom_questions.length === 0 && <p className="rounded-lg border border-dashed border-slate-700 p-3 text-[10px] text-slate-500">No custom questions added. You can add them after opening the employer's form.</p>}
+              {draft.custom_questions.map((item, index) => (
+                <div key={`application-question-${index}`} className="rounded-lg border border-slate-700/50 bg-slate-950/30 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[10px] font-semibold text-slate-300">Question {index + 1}</p>
+                    <button type="button" className="text-[10px] text-rose-200 hover:text-rose-100" onClick={() => updateDraft("custom_questions", draft.custom_questions.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
+                  </div>
+                  <label className="mt-2 block text-[10px] font-medium text-slate-400">
+                    Employer question
+                    <input className="field mt-1.5" maxLength={500} placeholder="Paste the exact employer question" value={item.question} onChange={(event) => updateQuestion(index, "question", event.target.value)} />
+                  </label>
+                  <label className="mt-2 block text-[10px] font-medium text-slate-400">
+                    Draft answer
+                    <textarea className="field mt-1.5 min-h-20 resize-y" maxLength={6000} placeholder="Write an accurate answer based on your real experience" value={item.answer} onChange={(event) => updateQuestion(index, "answer", event.target.value)} rows={3} />
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-700/50 pt-4">
+            <label className="block text-[10px] font-medium text-slate-400">
+              Cover letter draft (optional)
+              <textarea className="field mt-1.5 min-h-32 resize-y" maxLength={16000} placeholder="Draft a role-specific cover letter. Verify each claim before using it." value={draft.cover_letter_draft} onChange={(event) => updateDraft("cover_letter_draft", event.target.value)} rows={5} />
+            </label>
+            <div className="mt-3 rounded-lg border border-slate-700/50 bg-slate-950/35 p-3 text-[10px] text-slate-400">
+              <p className="font-semibold text-slate-300">Resume file</p>
+              <p className="mt-1">{data.resume_filename || "No generated resume selected yet."}</p>
+              {!data.resume_filename && <p className="mt-1">Use Resume & readiness to select a generated PDF or DOCX. JobPilot won't invent a file or attach an unverified document.</p>}
+            </div>
+          </div>
+
+          {message && <p role="status" className="mt-3 text-[10px] text-emerald-300">{message}</p>}
+          {copyMessage && <p role="status" className="mt-2 text-[10px] text-slate-300">{copyMessage}</p>}
+          <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-3">
+            <button type="button" className="secondary-button !px-3 !py-2" onClick={() => void copyPacket()} disabled={!data}>
+              <Copy size={12} /> Copy application packet
+            </button>
+            <button type="button" className="primary-button !px-3 !py-2" onClick={() => void savePreparation()} disabled={saving || loading}>
+              {saving ? <LoaderCircle size={12} className="loading-ring" /> : <Save size={12} />}
+              {saving ? "Saving..." : "Save preparation"}
+            </button>
+          </div>
+          <p className="mt-2 text-right text-[10px] text-slate-500">{data.submission_note}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function ApplicationCard({
   application,
   onUpdate,
@@ -1827,6 +2260,7 @@ function ApplicationCard({
   const [readinessSaving, setReadinessSaving] = useState(false);
   const [readinessError, setReadinessError] = useState<string | null>(null);
   const [readinessSavedMessage, setReadinessSavedMessage] = useState<string | null>(null);
+  const [applicationPreparationOpen, setApplicationPreparationOpen] = useState(false);
   const [selectedResumeFilename, setSelectedResumeFilename] = useState(
     application.resume_filename ?? "",
   );
@@ -2014,6 +2448,16 @@ function ApplicationCard({
           </button>
           <button
             type="button"
+            className={`secondary-button !px-3 !py-2 ${applicationPreparationOpen ? "!border-violet-400/25 !text-violet-200" : ""}`}
+            onClick={() => setApplicationPreparationOpen((open) => !open)}
+            aria-expanded={applicationPreparationOpen}
+            aria-controls={`application-preparation-${application.id}`}
+            title="Prepare candidate details and answers for the employer form"
+          >
+            <ClipboardList size={13} /> Application prep
+          </button>
+          <button
+            type="button"
             className="secondary-button !border-rose-400/25 !px-3 !py-2 !text-rose-200 hover:!bg-rose-400/[0.08]"
             onClick={() => onRequestRemove(application)}
             disabled={saving}
@@ -2170,6 +2614,18 @@ function ApplicationCard({
             </>
           )}
         </section>
+      )}
+
+      {applicationPreparationOpen && (
+        <div id={`application-preparation-${application.id}`}>
+          <ApplicationPreparationPanel
+            application={application}
+            onOpenReadiness={() => {
+              if (!readinessOpen) void toggleReadiness();
+              setApplicationPreparationOpen(false);
+            }}
+          />
+        </div>
       )}
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">

@@ -23,18 +23,10 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         connection = sqlite3.connect(cls.database_path)
 
         import app.applications.tracker as tracker_module
-
         cls.tracker_module = tracker_module
-        cls.original_generated_resumes_dir = (
-            tracker_module.GENERATED_RESUMES_DIR
-        )
-        tracker_module.GENERATED_RESUMES_DIR = (
-            Path(cls.temp_dir.name) / "generated_resumes"
-        )
-        tracker_module.GENERATED_RESUMES_DIR.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+        cls.original_generated_resumes_dir = tracker_module.GENERATED_RESUMES_DIR
+        tracker_module.GENERATED_RESUMES_DIR = Path(cls.temp_dir.name) / "generated_resumes"
+        tracker_module.GENERATED_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
 
         connection.executescript(
             """
@@ -61,31 +53,29 @@ class ApplicationTrackerApiTests(unittest.TestCase):
             VALUES ('ExampleCo');
 
             INSERT INTO jobs (
-                company_id, title, location, url,
-                description, source, is_active
+                company_id, title, location, url, description, source, is_active
             )
             VALUES (
                 1,
                 'Software Engineer',
                 'Hyderabad, India',
                 'https://example.com/jobs/1',
-                'Minimum qualifications include a bachelor degree and experience. '
-                || 'Review responsibilities, technical requirements, application steps, and qualifications.',
+                'Minimum qualifications include a bachelor degree and experience. ' ||
+                'Review responsibilities, technical requirements, application steps, and qualifications.',
                 'greenhouse',
                 1
             );
 
             INSERT INTO jobs (
-                company_id, title, location, url,
-                description, source, is_active
+                company_id, title, location, url, description, source, is_active
             )
             VALUES (
                 1,
                 'Backend Engineer',
                 'Remote',
                 'https://example.com/jobs/2',
-                'Minimum qualifications include a bachelor degree and experience. '
-                || 'Review responsibilities, technical requirements, application steps, and qualifications.',
+                'Minimum qualifications include a bachelor degree and experience. ' ||
+                'Review responsibilities, technical requirements, application steps, and qualifications.',
                 'greenhouse',
                 1
             );
@@ -106,9 +96,7 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         cls.client.close()
         cls.temp_dir.cleanup()
         os.environ.pop("JOBPILOT_DATABASE_PATH", None)
-        cls.tracker_module.GENERATED_RESUMES_DIR = (
-            cls.original_generated_resumes_dir
-        )
+        cls.tracker_module.GENERATED_RESUMES_DIR = cls.original_generated_resumes_dir
 
     def setUp(self) -> None:
         # Initialize the table through the API before clearing test data.
@@ -227,18 +215,13 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201, created.text)
         application_id = created.json()["id"]
 
-        removed = self.client.delete(
-            f"/api/applications/{application_id}"
-        )
+        removed = self.client.delete(f"/api/applications/{application_id}")
         self.assertEqual(removed.status_code, 200, removed.text)
-        self.assertEqual(
-            removed.json(),
-            {
-                "deleted": True,
-                "application_id": application_id,
-                "job_id": 1,
-            },
-        )
+        self.assertEqual(removed.json(), {
+            "deleted": True,
+            "application_id": application_id,
+            "job_id": 1,
+        })
 
         listing = self.client.get("/api/applications")
         self.assertEqual(listing.status_code, 200, listing.text)
@@ -279,13 +262,9 @@ class ApplicationTrackerApiTests(unittest.TestCase):
             f"/api/applications/{application_id}/readiness"
         )
         self.assertEqual(readiness.status_code, 200, readiness.text)
-
         payload = readiness.json()
         self.assertFalse(payload["ready"])
-        self.assertIn(
-            "Generated tailored resume selected",
-            payload["blockers"],
-        )
+        self.assertIn("Generated tailored resume selected", payload["blockers"])
         self.assertGreaterEqual(payload["total_checks"], 8)
         self.assertEqual(payload["job"]["title"], "Software Engineer")
 
@@ -304,10 +283,7 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         self.assertEqual(created.status_code, 201, created.text)
         application_id = created.json()["id"]
 
-        resume_path = (
-            self.tracker_module.GENERATED_RESUMES_DIR
-            / "Tailored_Test.pdf"
-        )
+        resume_path = self.tracker_module.GENERATED_RESUMES_DIR / "Tailored_Test.pdf"
         resume_path.write_bytes(b"%PDF-1.4 test fixture")
 
         update = self.client.patch(
@@ -324,10 +300,7 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         self.assertEqual(update.status_code, 200, update.text)
         self.assertEqual(update.json()["status"], "ready_to_apply")
         self.assertTrue(update.json()["job_reviewed"])
-        self.assertEqual(
-            update.json()["resume_filename"],
-            resume_path.name,
-        )
+        self.assertEqual(update.json()["resume_filename"], resume_path.name)
 
         readiness = self.client.get(
             f"/api/applications/{application_id}/readiness"
@@ -345,16 +318,11 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         application_id = created.json()["id"]
 
         connection = sqlite3.connect(self.database_path)
-        connection.execute(
-            "UPDATE jobs SET is_active = 0 WHERE id = 1"
-        )
+        connection.execute("UPDATE jobs SET is_active = 0 WHERE id = 1")
         connection.commit()
         connection.close()
 
-        resume_path = (
-            self.tracker_module.GENERATED_RESUMES_DIR
-            / "InactiveRole.pdf"
-        )
+        resume_path = self.tracker_module.GENERATED_RESUMES_DIR / "InactiveRole.pdf"
         resume_path.write_bytes(b"%PDF-1.4 test fixture")
 
         blocked = self.client.patch(
@@ -370,10 +338,114 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 409, blocked.text)
         self.assertTrue(
-            any(
-                "marked active" in value
-                for value in blocked.json()["detail"]["blockers"]
-            )
+            any("marked active" in value for value in blocked.json()["detail"]["blockers"])
+        )
+
+    def test_application_preparation_starts_incomplete(self) -> None:
+        created = self.client.post("/api/applications", json={"job_id": 1})
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        response = self.client.get(
+            f"/api/applications/{application_id}/preparation"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertFalse(payload["prepared"])
+        self.assertIn("Add your full name.", payload["blockers"])
+        self.assertEqual(payload["job"]["company"], "ExampleCo")
+        self.assertEqual(payload["custom_questions"], [])
+
+    def test_application_preparation_saves_profile_and_custom_answers(self) -> None:
+        created = self.client.post("/api/applications", json={"job_id": 1})
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        resume_path = self.tracker_module.GENERATED_RESUMES_DIR / "Prepared_Resume.pdf"
+        resume_path.write_bytes(b"%PDF-1.4 test fixture")
+
+        response = self.client.patch(
+            f"/api/applications/{application_id}/preparation",
+            json={
+                "contact_name": "Test Candidate",
+                "email": "candidate@example.com",
+                "phone": "+91 90000 00000",
+                "current_location": "Hyderabad, India",
+                "linkedin_url": "https://www.linkedin.com/in/test-candidate",
+                "github_url": "https://github.com/test-candidate",
+                "current_employer": "Example Employer",
+                "current_title": "Systems Engineer",
+                "years_experience": "1 year",
+                "notice_period": "30 days",
+                "work_authorization": "Authorized to work in India",
+                "requires_sponsorship": "no",
+                "salary_expectation": "As per company policy",
+                "resume_filename": resume_path.name,
+                "cover_letter_draft": "Dear hiring team, I am applying for this role.",
+                "custom_questions": [
+                    {
+                        "question": "Why are you interested in this role?",
+                        "answer": "The role aligns with my verified software engineering skills.",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertTrue(payload["prepared"], payload["blockers"])
+        self.assertEqual(payload["profile"]["contact_name"], "Test Candidate")
+        self.assertEqual(payload["resume_filename"], resume_path.name)
+        self.assertEqual(len(payload["custom_questions"]), 1)
+        self.assertTrue(payload["prepared_at"])
+
+        fetched = self.client.get(
+            f"/api/applications/{application_id}/preparation"
+        )
+        self.assertEqual(fetched.status_code, 200, fetched.text)
+        self.assertEqual(fetched.json()["profile"]["email"], "candidate@example.com")
+        self.assertEqual(
+            fetched.json()["custom_questions"][0]["answer"],
+            "The role aligns with my verified software engineering skills.",
+        )
+
+    def test_application_preparation_validates_email_and_profile_urls(self) -> None:
+        created = self.client.post("/api/applications", json={"job_id": 1})
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        invalid_email = self.client.patch(
+            f"/api/applications/{application_id}/preparation",
+            json={"email": "not-an-email"},
+        )
+        self.assertEqual(invalid_email.status_code, 422)
+
+        invalid_url = self.client.patch(
+            f"/api/applications/{application_id}/preparation",
+            json={"linkedin_url": "javascript:alert(1)"},
+        )
+        self.assertEqual(invalid_url.status_code, 422)
+
+    def test_unanswered_custom_question_blocks_preparation(self) -> None:
+        created = self.client.post("/api/applications", json={"job_id": 1})
+        self.assertEqual(created.status_code, 201, created.text)
+        application_id = created.json()["id"]
+
+        response = self.client.patch(
+            f"/api/applications/{application_id}/preparation",
+            json={
+                "contact_name": "Test Candidate",
+                "email": "candidate@example.com",
+                "phone": "+91 90000 00000",
+                "current_location": "Hyderabad, India",
+                "custom_questions": [
+                    {"question": "Are you willing to relocate?", "answer": ""}
+                ],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()["prepared"])
+        self.assertTrue(
+            any("custom employer question 1" in item for item in response.json()["blockers"])
         )
 
     def test_invalid_job_and_status_are_rejected(self) -> None:
@@ -381,6 +453,7 @@ class ApplicationTrackerApiTests(unittest.TestCase):
             "/api/applications",
             json={"job_id": 999},
         )
+
         self.assertEqual(missing_job.status_code, 404)
 
         invalid_status = self.client.post(
@@ -390,12 +463,14 @@ class ApplicationTrackerApiTests(unittest.TestCase):
                 "status": "magically_hired",
             },
         )
+
         self.assertEqual(invalid_status.status_code, 422)
 
         missing_application = self.client.patch(
             "/api/applications/987",
             json={"status": "interview"},
         )
+
         self.assertEqual(missing_application.status_code, 404)
 
 

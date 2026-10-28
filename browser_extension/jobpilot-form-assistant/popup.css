@@ -1,0 +1,271 @@
+:root {
+    color-scheme: dark;
+    font-family: Inter, "Segoe UI", Arial, sans-serif;
+    background: #080d19;
+    color: #e7edf7;
+    font-size: 13px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    width: 390px;
+    min-height: 450px;
+    max-height: 720px;
+    overflow-y: auto;
+    background: #080d19;
+}
+
+button,
+input,
+select {
+    font: inherit;
+}
+
+.shell {
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 1px 8px;
+    border-bottom: 1px solid #1d2a40;
+}
+
+.brand-mark {
+    width: 34px;
+    height: 34px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    font-size: 20px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #6d7cff, #7e43e8);
+    color: white;
+    box-shadow: 0 5px 18px #554df033;
+}
+
+h1 {
+    margin: 0;
+    font-size: 15px;
+    letter-spacing: -.3px;
+}
+
+.header p {
+    margin: 3px 0 0;
+    color: #8092ae;
+    font-size: 11px;
+}
+
+.icon-button {
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+    border: 1px solid #29364d;
+    background: #111b2d;
+    color: #c7d5ea;
+    border-radius: 9px;
+    font-size: 20px;
+    cursor: pointer;
+}
+
+.panel {
+    border: 1px solid #202d43;
+    border-radius: 12px;
+    padding: 12px;
+    background: linear-gradient(145deg, #111a2b, #0d1524);
+}
+
+label {
+    display: block;
+    color: #b9c8de;
+    font-size: 11px;
+    font-weight: 650;
+    margin-bottom: 7px;
+}
+
+select {
+    width: 100%;
+    color: #e7edf7;
+    background: #080e1a;
+    border: 1px solid #2a3850;
+    border-radius: 8px;
+    padding: 10px;
+    outline: none;
+}
+
+select:focus,
+button:focus-visible,
+input:focus-visible {
+    outline: 2px solid #7097ff;
+    outline-offset: 2px;
+}
+
+.job-meta {
+    color: #9daec7;
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 9px;
+    white-space: pre-line;
+}
+
+.blocker-summary {
+    border-radius: 8px;
+    padding: 8px 9px;
+    margin-top: 9px;
+    font-size: 11px;
+    line-height: 1.45;
+    background: #2a2419;
+    border: 1px solid #57482b;
+    color: #f3d89a;
+}
+
+.hidden {
+    display: none;
+}
+
+.section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+h2 {
+    margin: 0;
+    font-size: 12px;
+    font-weight: 750;
+}
+
+.local-badge,
+.count {
+    font-size: 10px;
+    color: #82e1c1;
+    background: #0d302b;
+    border: 1px solid #1a5147;
+    border-radius: 20px;
+    padding: 4px 7px;
+    white-space: nowrap;
+}
+
+.muted {
+    color: #8798b1;
+    font-size: 11px;
+    line-height: 1.55;
+    margin: 8px 0 10px;
+}
+
+.primary-button,
+.secondary-button {
+    width: 100%;
+    border-radius: 8px;
+    padding: 10px 12px;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.primary-button {
+    color: white;
+    border: 1px solid #6c7bff;
+    background: linear-gradient(100deg, #4f76f5, #6355ee);
+}
+
+.secondary-button {
+    color: #d0dbee;
+    border: 1px solid #2a3950;
+    background: #172338;
+    margin-top: 2px;
+}
+
+button:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+}
+
+.toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    font-size: 11px;
+    margin: 11px 0;
+}
+
+.toggle-row input {
+    accent-color: #6878ff;
+}
+
+.status {
+    white-space: pre-line;
+    font-size: 11px;
+    line-height: 1.5;
+    margin-top: 8px;
+    color: #95a8c3;
+}
+
+.status.error {
+    color: #ff9eaa;
+}
+
+.status.success {
+    color: #6fe3bd;
+}
+
+.questions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.question {
+    border: 1px solid #26344a;
+    border-radius: 8px;
+    padding: 9px;
+    background: #0a1221;
+}
+
+.question-title {
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1.45;
+    margin-bottom: 6px;
+}
+
+.question-answer {
+    font-size: 11px;
+    line-height: 1.5;
+    color: #aab9ce;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.copy-answer {
+    margin-top: 8px;
+    border: 1px solid #2b3b54;
+    border-radius: 7px;
+    padding: 6px 8px;
+    background: #172338;
+    color: #d5e0f1;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+footer {
+    color: #8192ac;
+    font-size: 10px;
+    line-height: 1.55;
+    padding: 3px 3px 5px;
+}
+
+footer strong {
+    color: #cbd8eb;
+}
