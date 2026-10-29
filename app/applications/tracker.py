@@ -211,6 +211,82 @@ class ApplicationPreparationUpdate(BaseModel):
         return _validate_generated_filename(value)
 
 
+PROFILE_FIELDS = (
+    "contact_name",
+    "email",
+    "phone",
+    "current_location",
+    "linkedin_url",
+    "github_url",
+    "portfolio_url",
+    "current_employer",
+    "current_title",
+    "years_experience",
+    "notice_period",
+    "work_authorization",
+    "requires_sponsorship",
+)
+PROFILE_REQUIRED_FIELDS = ("contact_name", "email", "phone", "current_location")
+MASTER_RESUME_DIRECTORY = PROJECT_ROOT / "data" / "master_resume"
+SUPPORTED_MASTER_RESUME_SUFFIXES = {".pdf", ".txt", ".md", ".markdown"}
+
+
+class CandidateProfileVaultUpdate(BaseModel):
+    contact_name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=80)
+    current_location: str | None = Field(default=None, max_length=200)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    github_url: str | None = Field(default=None, max_length=500)
+    portfolio_url: str | None = Field(default=None, max_length=500)
+    current_employer: str | None = Field(default=None, max_length=200)
+    current_title: str | None = Field(default=None, max_length=200)
+    years_experience: str | None = Field(default=None, max_length=100)
+    notice_period: str | None = Field(default=None, max_length=120)
+    work_authorization: str | None = Field(default=None, max_length=240)
+    requires_sponsorship: Literal["yes", "no", "unknown"] | None = None
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if cleaned and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cleaned):
+            raise ValueError("Enter a valid email address.")
+        return cleaned or None
+
+    @field_validator("linkedin_url", "github_url", "portfolio_url")
+    @classmethod
+    def validate_profile_urls(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            return None
+        parts = urlsplit(cleaned)
+        if parts.scheme not in {"http", "https"} or not parts.netloc:
+            raise ValueError("Profile links must be valid HTTP(S) URLs.")
+        return cleaned
+
+
+class CandidateProfileImportRequest(BaseModel):
+    filename: str | None = Field(default=None, max_length=255)
+    overwrite: bool = False
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        cleaned = value.strip()
+        candidate = PurePath(cleaned)
+        if (
+            candidate.name != cleaned
+            or "/" in cleaned
+            or "\\" in cleaned
+            or candidate.suffix.lower() not in SUPPORTED_MASTER_RESUME_SUFFIXES
+        ):
+            raise ValueError("Choose a PDF, TXT, or Markdown filename from the master resume folder.")
+        return cleaned
+
+
 def _database_path() -> Path:
     configured = os.getenv("JOBPILOT_DATABASE_PATH")
 
@@ -326,6 +402,36 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             FOREIGN KEY(application_id)
                 REFERENCES applications(id)
                 ON DELETE CASCADE
+        )
+        """
+    )
+
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS candidate_profile_vault (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            contact_name TEXT,
+            email TEXT,
+            phone TEXT,
+            current_location TEXT,
+            linkedin_url TEXT,
+            github_url TEXT,
+            portfolio_url TEXT,
+            current_employer TEXT,
+            current_title TEXT,
+            years_experience TEXT,
+            notice_period TEXT,
+            work_authorization TEXT,
+            requires_sponsorship TEXT CHECK (
+                requires_sponsorship IS NULL OR requires_sponsorship IN ('yes', 'no', 'unknown')
+            ),
+            resume_facts_json TEXT NOT NULL DEFAULT '{}',
+            profile_source TEXT NOT NULL DEFAULT 'empty',
+            source_resume_filename TEXT,
+            imported_at TEXT,
+            import_warning TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
         """
     )
@@ -963,6 +1069,459 @@ def _preparation_blockers(
     return blockers
 
 
+def _resume_facts_from_parsed(parsed: Any) -> dict[str, Any]:
+    """Return auditable resume facts without storing the full raw resume text."""
+    return {
+        "education": [
+            {
+                "degree": item.degree,
+                "field_of_study": item.field_of_study,
+                "institution": item.institution,
+                "cgpa": item.cgpa,
+                "start_date": item.start_date,
+                "end_date": item.end_date,
+                "location": item.location,
+                "raw_text": item.raw_text,
+            }
+            for item in parsed.education
+        ],
+        "skills": list(parsed.skills),
+        "programming_languages": list(parsed.programming_languages),
+        "frameworks": list(parsed.frameworks),
+        "tools": list(parsed.tools),
+        "concepts": list(parsed.concepts),
+        "projects": [
+            {
+                "name": item.name,
+                "description": item.description,
+                "technologies": list(item.technologies),
+                "bullets": list(item.bullets),
+            }
+            for item in parsed.projects
+        ],
+        "experience": [
+            {
+                "company": item.company,
+                "role": item.role,
+                "start_date": item.start_date,
+                "end_date": item.end_date,
+                "location": item.location,
+                "bullets": list(item.bullets),
+            }
+            for item in parsed.experience
+        ],
+        "certifications": [
+            {"name": item.name, "issuer": item.issuer}
+            for item in parsed.certifications
+        ],
+        "achievements": list(parsed.achievements),
+    }
+
+
+def _master_resume_candidates() -> list[Path]:
+    folder = MASTER_RESUME_DIRECTORY.expanduser().resolve()
+    if not folder.is_dir():
+        return []
+    return sorted(
+        (path for path in folder.iterdir()
+         if path.is_file() and path.suffix.casefold() in SUPPORTED_MASTER_RESUME_SUFFIXES),
+        key=lambda path: path.name.casefold(),
+    )
+
+
+def _parse_master_resume(filename: str | None = None) -> tuple[Path, Any]:
+    candidates = _master_resume_candidates()
+    folder = MASTER_RESUME_DIRECTORY.expanduser().resolve()
+
+    if filename:
+        target = (folder / filename).resolve()
+        if target.parent != folder or not target.is_file() or target.suffix.casefold() not in SUPPORTED_MASTER_RESUME_SUFFIXES:
+            raise HTTPException(status_code=404, detail="The selected master resume file was not found in data/master_resume.")
+    else:
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail="No PDF, TXT, or Markdown master resume was found in data/master_resume.",
+            )
+        if len(candidates) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "More than one master resume was found. Choose the file to import.",
+                    "available_files": [path.name for path in candidates],
+                },
+            )
+        target = candidates[0]
+
+    try:
+        from app.resume.resume_parser import parse_resume_file
+        parsed = parse_resume_file(target)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not parse the selected master resume: {exc}",
+        ) from exc
+    return target, parsed
+
+
+def _insert_profile_row(
+    connection: sqlite3.Connection,
+    values: dict[str, Any] | None = None,
+    *,
+    source: str = "empty",
+    resume_facts: dict[str, Any] | None = None,
+    filename: str | None = None,
+    imported_at: str | None = None,
+    warning: str | None = None,
+) -> None:
+    now = _utc_now()
+    values = values or {}
+    columns = list(PROFILE_FIELDS)
+    connection.execute(
+        f"""
+        INSERT OR IGNORE INTO candidate_profile_vault (
+            id, {', '.join(columns)}, resume_facts_json, profile_source,
+            source_resume_filename, imported_at, import_warning, created_at, updated_at
+        ) VALUES (
+            1, {', '.join('?' for _ in columns)}, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        [
+            *[values.get(column) for column in columns],
+            json.dumps(resume_facts or {}, ensure_ascii=False),
+            source,
+            filename,
+            imported_at,
+            warning,
+            now,
+            now,
+        ],
+    )
+    connection.commit()
+
+
+def _copy_latest_preparation_to_profile(connection: sqlite3.Connection) -> dict[str, Any] | None:
+    nonempty_clauses = " OR ".join(
+        f"NULLIF(TRIM(COALESCE({field}, '')), '') IS NOT NULL"
+        for field in PROFILE_FIELDS
+    )
+    row = connection.execute(
+        f"""
+        SELECT {', '.join(PROFILE_FIELDS)}
+        FROM application_preparations
+        WHERE {nonempty_clauses}
+        ORDER BY COALESCE(updated_at, created_at) DESC, application_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    values = {field: row[field] for field in PROFILE_FIELDS}
+    if not any((value or "").strip() if isinstance(value, str) else value for value in values.values()):
+        return None
+    return values
+
+
+def _profile_row(connection: sqlite3.Connection) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM candidate_profile_vault WHERE id = 1"
+    ).fetchone()
+
+
+def _contact_fields_from_resume(parsed: Any) -> dict[str, str | None]:
+    """Supplement parser contact fields for common pipe-separated resume headers."""
+    contact = parsed.contact
+    result: dict[str, str | None] = {
+        "contact_name": contact.name,
+        "email": contact.email,
+        "phone": contact.phone,
+        "current_location": contact.location,
+        "linkedin_url": contact.linkedin,
+        "github_url": contact.github,
+        "portfolio_url": None,
+    }
+    raw_text = str(getattr(parsed, "raw_text", "") or "")
+    header_lines = raw_text.splitlines()[:12]
+    header_chunks: list[str] = []
+    for line in header_lines:
+        header_chunks.extend(
+            chunk.strip(" \t|,;•·")
+            for chunk in re.split(r"[|•·]", line)
+            if chunk.strip(" \t|,;•·")
+        )
+
+    if not result["email"]:
+        match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "\n".join(header_chunks), re.I)
+        if match:
+            result["email"] = match.group(0)
+
+    if not result["phone"]:
+        phone_pattern = re.compile(r"\+?\d[\d\s().-]{7,}\d")
+        for chunk in header_chunks:
+            if "@" in chunk or "http" in chunk.casefold():
+                continue
+            if not re.fullmatch(phone_pattern, chunk):
+                continue
+            digits = re.sub(r"\D", "", chunk)
+            if 10 <= len(digits) <= 15:
+                result["phone"] = re.sub(r"\s+", " ", chunk).strip()
+                break
+
+    if not result["current_location"]:
+        for chunk in header_chunks:
+            folded = chunk.casefold()
+            if "," not in chunk or "@" in chunk or "http" in folded:
+                continue
+            if re.search(r"\b\d{4,}\b", chunk):
+                continue
+            digits = re.sub(r"\D", "", chunk)
+            if 10 <= len(digits) <= 15:
+                continue
+            # Location must be a literal header chunk; the importer doesn't infer it.
+            if len(chunk) <= 100 and len(chunk.split()) <= 12:
+                result["current_location"] = re.sub(r"\s*,\s*", ", ", chunk).strip(" ,")
+                break
+
+    if not result["linkedin_url"]:
+        match = re.search(r"(?:https?://)?(?:www\.)?linkedin\.com/[^\s|]+", "\n".join(header_chunks), re.I)
+        if match:
+            result["linkedin_url"] = "https://" + re.sub(r"^https?://", "", match.group(0), flags=re.I).rstrip(".,;)")
+
+    if not result["github_url"]:
+        match = re.search(r"(?:https?://)?(?:www\.)?github\.com/[^\s|]+", "\n".join(header_chunks), re.I)
+        if match:
+            result["github_url"] = "https://" + re.sub(r"^https?://", "", match.group(0), flags=re.I).rstrip(".,;)")
+
+    for chunk in header_chunks:
+        url = chunk.strip()
+        if not re.match(r"^https?://", url, flags=re.I):
+            continue
+        if "linkedin.com/" in url.casefold() or "github.com/" in url.casefold():
+            continue
+        if urlsplit(url).netloc:
+            result["portfolio_url"] = url.rstrip(".,;)")
+            break
+
+    return result
+
+
+def _update_profile_from_resume(
+    connection: sqlite3.Connection,
+    parsed: Any,
+    filename: str,
+    *,
+    overwrite: bool,
+) -> None:
+    row = _profile_row(connection)
+    if row is None:
+        _insert_profile_row(connection)
+        row = _profile_row(connection)
+
+    incoming: dict[str, Any] = _contact_fields_from_resume(parsed)
+
+    # Only set current employer/title when the resume explicitly marks an
+    # experience as current, rather than guessing from ordering alone.
+    current_experience = next(
+        (
+            item for item in parsed.experience
+            if (item.end_date or "").strip().casefold() in {
+                "present", "current", "currently", "ongoing", "now"
+            }
+        ),
+        None,
+    )
+    if current_experience is not None:
+        incoming["current_employer"] = current_experience.company
+        incoming["current_title"] = current_experience.role
+
+    assignments: list[str] = []
+    params: list[Any] = []
+    for field, value in incoming.items():
+        cleaned = value.strip() if isinstance(value, str) else value
+        if not cleaned:
+            continue
+        current_value = row[field] if row is not None else None
+        if overwrite or not (str(current_value or "").strip()):
+            assignments.append(f"{field} = ?")
+            params.append(cleaned)
+
+    now = _utc_now()
+    facts = _resume_facts_from_parsed(parsed)
+    assignments.extend([
+        "resume_facts_json = ?",
+        "profile_source = ?",
+        "source_resume_filename = ?",
+        "imported_at = ?",
+        "import_warning = NULL",
+        "updated_at = ?",
+    ])
+    params.extend([
+        json.dumps(facts, ensure_ascii=False),
+        "master_resume",
+        filename,
+        now,
+        now,
+    ])
+    connection.execute(
+        f"UPDATE candidate_profile_vault SET {', '.join(assignments)} WHERE id = 1",
+        params,
+    )
+    connection.commit()
+
+
+def _sync_profile_to_preparations(
+    connection: sqlite3.Connection,
+    fields: tuple[str, ...] | list[str] | None = None,
+) -> None:
+    """Sync shared fields across saved application packets without touching job-specific answers."""
+    row = _profile_row(connection)
+    if row is None:
+        return
+    selected_fields = tuple(fields or PROFILE_FIELDS)
+    now = _utc_now()
+    for field in selected_fields:
+        if field not in PROFILE_FIELDS:
+            continue
+        value = row[field]
+        connection.execute(
+            f"UPDATE application_preparations SET {field} = ?, updated_at = ? WHERE application_id IN (SELECT id FROM applications)",
+            (value, now),
+        )
+    connection.commit()
+
+
+def _ensure_candidate_profile(connection: sqlite3.Connection) -> sqlite3.Row:
+    """Initialize the shared profile from existing prep data, then the master resume."""
+    row = _profile_row(connection)
+    if row is None:
+        seeded_values = _copy_latest_preparation_to_profile(connection)
+        if seeded_values:
+            _insert_profile_row(
+                connection,
+                seeded_values,
+                source="existing_application_preparation",
+            )
+        else:
+            _insert_profile_row(connection)
+        row = _profile_row(connection)
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Candidate profile could not be initialized.")
+
+    # If the vault was populated from existing app-prep data, parse the master
+    # resume too when possible, keeping manually-entered values by default.
+    if not row["source_resume_filename"] or not (row["resume_facts_json"] or "{}").strip() or row["resume_facts_json"] == "{}":
+        try:
+            candidates = _master_resume_candidates()
+            if len(candidates) == 1:
+                path, parsed = _parse_master_resume(candidates[0].name)
+                _update_profile_from_resume(
+                    connection, parsed, path.name, overwrite=False
+                )
+            elif len(candidates) > 1:
+                connection.execute(
+                    "UPDATE candidate_profile_vault SET import_warning = ?, updated_at = ? WHERE id = 1",
+                    (
+                        "Multiple master resume files found. Use the import endpoint and specify the filename.",
+                        _utc_now(),
+                    ),
+                )
+                connection.commit()
+        except HTTPException as exc:
+            # Missing/unsupported master resume must not prevent profile use.
+            connection.execute(
+                "UPDATE candidate_profile_vault SET import_warning = ?, updated_at = ? WHERE id = 1",
+                (str(exc.detail), _utc_now()),
+            )
+            connection.commit()
+        except Exception as exc:
+            connection.execute(
+                "UPDATE candidate_profile_vault SET import_warning = ?, updated_at = ? WHERE id = 1",
+                (f"Master resume import was skipped: {exc}", _utc_now()),
+            )
+            connection.commit()
+        row = _profile_row(connection)
+
+    if row is None:
+        raise HTTPException(status_code=500, detail="Candidate profile could not be loaded.")
+    return row
+
+
+def _sync_profile_from_preparation(
+    connection: sqlite3.Connection,
+    application_id: int,
+    changed_fields: list[str] | tuple[str, ...],
+) -> None:
+    fields = tuple(field for field in changed_fields if field in PROFILE_FIELDS)
+    if not fields:
+        return
+    row = connection.execute(
+        f"SELECT {', '.join(PROFILE_FIELDS)} FROM application_preparations WHERE application_id = ?",
+        (application_id,),
+    ).fetchone()
+    if row is None:
+        return
+
+    _ensure_candidate_profile(connection)
+    now = _utc_now()
+    assignments = [f"{field} = ?" for field in fields]
+    values = [row[field] for field in fields]
+    assignments.extend(["profile_source = ?", "updated_at = ?"])
+    values.extend(["application_preparation", now])
+    connection.execute(
+        f"UPDATE candidate_profile_vault SET {', '.join(assignments)} WHERE id = 1",
+        values,
+    )
+    connection.commit()
+    _sync_profile_to_preparations(connection, fields)
+
+
+def _profile_response(connection: sqlite3.Connection) -> dict[str, Any]:
+    row = _ensure_candidate_profile(connection)
+    try:
+        facts = json.loads(row["resume_facts_json"] or "{}")
+        if not isinstance(facts, dict):
+            facts = {}
+    except (TypeError, json.JSONDecodeError):
+        facts = {}
+
+    profile = {field: row[field] for field in PROFILE_FIELDS}
+    missing = [
+        field for field in PROFILE_REQUIRED_FIELDS
+        if not (profile.get(field) or "").strip()
+    ]
+    return {
+        "profile": profile,
+        "resume_facts": facts,
+        "profile_source": row["profile_source"],
+        "source_resume_filename": row["source_resume_filename"],
+        "imported_at": row["imported_at"],
+        "updated_at": row["updated_at"],
+        "import_warning": row["import_warning"],
+        "complete": not missing,
+        "missing_required": missing,
+        "available_master_resumes": [path.name for path in _master_resume_candidates()],
+        "privacy_note": "Candidate profile and parsed resume facts are stored locally in JobPilot's SQLite database; raw resume text is not stored in the profile vault.",
+    }
+
+
+def _apply_profile_defaults_to_preparation(
+    connection: sqlite3.Connection,
+    application_id: int,
+) -> None:
+    row = _ensure_candidate_profile(connection)
+    now = _utc_now()
+    # Only blank fields are populated. Existing job-specific edits are preserved.
+    for field in PROFILE_FIELDS:
+        connection.execute(
+            f"""UPDATE application_preparations
+                SET {field} = ?, updated_at = ?
+                WHERE application_id = ? AND NULLIF(TRIM(COALESCE({field}, '')), '') IS NULL""",
+            (row[field], now, application_id),
+        )
+    connection.commit()
+
+
 def _preparation_response(
     connection: sqlite3.Connection,
     application_id: int,
@@ -1073,6 +1632,9 @@ def get_application_preparation(
     if row is None:
         raise HTTPException(status_code=404, detail="Application was not found.")
 
+    # Initialize the global profile first; existing manually-entered prep data
+    # can seed it, and new applications inherit reusable profile fields.
+    _ensure_candidate_profile(connection)
     now = _utc_now()
     connection.execute(
         """
@@ -1083,6 +1645,7 @@ def get_application_preparation(
         (application_id, now, now),
     )
     connection.commit()
+    _apply_profile_defaults_to_preparation(connection, application_id)
     result = _preparation_response(connection, application_id)
     if result is None:
         raise HTTPException(status_code=500, detail="Preparation data could not be loaded.")
@@ -1106,6 +1669,7 @@ def update_application_preparation(
     if not changes:
         raise HTTPException(status_code=422, detail="Provide at least one preparation field to save.")
 
+    _ensure_candidate_profile(connection)
     now = _utc_now()
     connection.execute(
         """
@@ -1115,6 +1679,8 @@ def update_application_preparation(
         """,
         (application_id, now, now),
     )
+    connection.commit()
+    _apply_profile_defaults_to_preparation(connection, application_id)
 
     prep_columns = {
         "contact_name", "email", "phone", "current_location", "linkedin_url",
@@ -1154,6 +1720,10 @@ def update_application_preparation(
     )
     connection.commit()
 
+    changed_profile_fields = [field for field in changes if field in PROFILE_FIELDS]
+    if changed_profile_fields:
+        _sync_profile_from_preparation(connection, application_id, changed_profile_fields)
+
     result = _preparation_response(connection, application_id)
     if result is None:
         raise HTTPException(status_code=500, detail="Saved preparation data could not be loaded.")
@@ -1166,6 +1736,63 @@ def update_application_preparation(
         connection.commit()
         result = _preparation_response(connection, application_id) or result
     return result
+
+
+@router.get("/candidate-profile")
+def get_candidate_profile_vault(
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    """Get the reusable local candidate profile, initialized from existing prep or master resume."""
+    return _profile_response(connection)
+
+
+@router.patch("/candidate-profile")
+def update_candidate_profile_vault(
+    request: CandidateProfileVaultUpdate,
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    changes = request.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=422, detail="Provide at least one profile field to update.")
+
+    _ensure_candidate_profile(connection)
+    assignments: list[str] = []
+    values: list[Any] = []
+    for field, value in changes.items():
+        if field not in PROFILE_FIELDS:
+            continue
+        if isinstance(value, str):
+            value = value.strip() or None
+        assignments.append(f"{field} = ?")
+        values.append(value)
+
+    assignments.extend(["profile_source = ?", "import_warning = NULL", "updated_at = ?"])
+    values.extend(["manual", _utc_now()])
+    connection.execute(
+        f"UPDATE candidate_profile_vault SET {', '.join(assignments)} WHERE id = 1",
+        values,
+    )
+    connection.commit()
+    _sync_profile_to_preparations(connection, tuple(changes.keys()))
+    return _profile_response(connection)
+
+
+@router.post("/candidate-profile/import-master-resume")
+def import_master_resume_to_profile(
+    request: CandidateProfileImportRequest,
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    """Import structured facts from one explicitly selected local master resume."""
+    path, parsed = _parse_master_resume(request.filename)
+    _ensure_candidate_profile(connection)
+    _update_profile_from_resume(
+        connection,
+        parsed,
+        path.name,
+        overwrite=request.overwrite,
+    )
+    _sync_profile_to_preparations(connection)
+    return _profile_response(connection)
 
 
 @router.get("/{application_id}")

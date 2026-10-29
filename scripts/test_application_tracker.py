@@ -25,8 +25,11 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         import app.applications.tracker as tracker_module
         cls.tracker_module = tracker_module
         cls.original_generated_resumes_dir = tracker_module.GENERATED_RESUMES_DIR
+        cls.original_master_resume_directory = tracker_module.MASTER_RESUME_DIRECTORY
         tracker_module.GENERATED_RESUMES_DIR = Path(cls.temp_dir.name) / "generated_resumes"
         tracker_module.GENERATED_RESUMES_DIR.mkdir(parents=True, exist_ok=True)
+        tracker_module.MASTER_RESUME_DIRECTORY = Path(cls.temp_dir.name) / "master_resumes"
+        tracker_module.MASTER_RESUME_DIRECTORY.mkdir(parents=True, exist_ok=True)
 
         connection.executescript(
             """
@@ -97,12 +100,15 @@ class ApplicationTrackerApiTests(unittest.TestCase):
         cls.temp_dir.cleanup()
         os.environ.pop("JOBPILOT_DATABASE_PATH", None)
         cls.tracker_module.GENERATED_RESUMES_DIR = cls.original_generated_resumes_dir
+        cls.tracker_module.MASTER_RESUME_DIRECTORY = cls.original_master_resume_directory
 
     def setUp(self) -> None:
         # Initialize the table through the API before clearing test data.
         self.client.get("/api/applications/stats")
 
         connection = sqlite3.connect(self.database_path)
+        connection.execute("DELETE FROM application_preparations")
+        connection.execute("DELETE FROM candidate_profile_vault")
         connection.execute("DELETE FROM applications")
         connection.execute("UPDATE jobs SET is_active = 1")
         connection.commit()

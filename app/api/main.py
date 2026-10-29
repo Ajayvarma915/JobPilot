@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import json
 import logging
 import math
 import os
 import re
+import sqlite3
 from collections.abc import Generator
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -125,10 +127,124 @@ def _maximum_early_career_years() -> int:
     return max(1, math.floor(_candidate_experience_years()) + 1)
 
 
+def _unique_strings(values: Any) -> tuple[str, ...]:
+    if not isinstance(values, (list, tuple)):
+        return ()
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        cleaned = value.strip()
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            result.append(cleaned)
+    return tuple(result)
+
+
 def _candidate_profile() -> Any:
-    return replace(
+    """Use parsed facts from the reusable local profile when available.
+
+    The code-based profile remains the fallback for older databases or when
+    the user has not imported a master resume yet.
+    """
+    base_profile = replace(
         CANDIDATE_PROFILE,
         years_of_experience=_candidate_experience_years(),
+    )
+
+    if not DATABASE_PATH.is_file():
+        return base_profile
+
+    connection: sqlite3.Connection | None = None
+    try:
+        # sqlite3.Connection's context manager commits or rolls back; it does
+        # not close the connection. Close explicitly so Windows can release
+        # temporary SQLite files immediately after profile matching tests.
+        connection = sqlite3.connect(str(DATABASE_PATH), timeout=1)
+        row = connection.execute(
+            "SELECT resume_facts_json FROM candidate_profile_vault WHERE id = 1"
+        ).fetchone()
+    except (sqlite3.Error, OSError):
+        return base_profile
+    finally:
+        if connection is not None:
+            connection.close()
+
+    if not row or not row[0]:
+        return base_profile
+
+    try:
+        facts = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError):
+        return base_profile
+    if not isinstance(facts, dict):
+        return base_profile
+
+    skills = _unique_strings(facts.get("skills")) or base_profile.technical_skills
+    programming_languages = (
+        _unique_strings(facts.get("programming_languages"))
+        or base_profile.programming_languages
+    )
+    frameworks = _unique_strings(facts.get("frameworks")) or base_profile.frameworks
+    tools = _unique_strings(facts.get("tools")) or base_profile.tools
+    concepts = _unique_strings(facts.get("concepts")) or base_profile.concepts
+
+    education_items: list[str] = []
+    for item in facts.get("education", []) if isinstance(facts.get("education"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        text = " — ".join(
+            value.strip()
+            for value in (item.get("degree"), item.get("field_of_study"), item.get("institution"))
+            if isinstance(value, str) and value.strip()
+        )
+        if not text and isinstance(item.get("raw_text"), str):
+            text = item["raw_text"].strip()
+        if text:
+            education_items.append(text)
+
+    certifications = _unique_strings([
+        item.get("name", "")
+        for item in facts.get("certifications", [])
+        if isinstance(item, dict)
+    ]) if isinstance(facts.get("certifications"), list) else ()
+
+    project_skills: list[str] = []
+    if isinstance(facts.get("projects"), list):
+        for project in facts["projects"]:
+            if isinstance(project, dict):
+                project_skills.extend(
+                    value for value in project.get("technologies", [])
+                    if isinstance(value, str)
+                )
+    project_skills = list(_unique_strings(project_skills))
+
+    experience = facts.get("experience", [])
+    has_internship = any(
+        isinstance(item, dict)
+        and "intern" in str(item.get("role") or "").casefold()
+        for item in experience
+    ) if isinstance(experience, list) else False
+
+    frontend_base = set(value.casefold() for value in base_profile.frontend_skills)
+    frontend_skills = tuple(skill for skill in skills if skill.casefold() in frontend_base)
+    if not frontend_skills:
+        frontend_skills = base_profile.frontend_skills
+
+    return replace(
+        base_profile,
+        education=_unique_strings(education_items) or base_profile.education,
+        technical_skills=skills,
+        programming_languages=programming_languages,
+        frontend_skills=frontend_skills,
+        frameworks=frameworks,
+        tools=tools,
+        concepts=concepts,
+        project_skills=tuple(project_skills) or base_profile.project_skills,
+        certifications=certifications or base_profile.certifications,
+        internship_experience=has_internship or base_profile.internship_experience,
     )
 
 
