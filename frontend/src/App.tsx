@@ -21,7 +21,6 @@ import {
   ChevronRight,
   Clock3,
   Command,
-  Copy,
   Download,
   ExternalLink,
   FileCheck2,
@@ -32,6 +31,7 @@ import {
   LayoutDashboard,
   LoaderCircle,
   MapPin,
+  Mail,
   Plus,
   RefreshCw,
   Save,
@@ -40,8 +40,6 @@ import {
   Sparkles,
   Target,
   TrendingUp,
-  Trash2,
-  AlertTriangle,
   WandSparkles,
   Zap,
   type LucideIcon,
@@ -51,10 +49,7 @@ const API_BASE = (
   import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"
 ).replace(/\/+$/, "");
 
-// Default the workspace to roles based in India and remote roles not tied to another country.
-const DEFAULT_JOB_LOCATION = "India";
-
-type Screen = "overview" | "jobs" | "applications" | "resume";
+type Screen = "overview" | "jobs" | "applications" | "resume" | "email";
 type ApiStatus = "checking" | "connected" | "offline";
 type CareerLevelFilter = "early" | "all";
 
@@ -225,12 +220,7 @@ interface TrackedApplication {
     location: string | null;
     url: string;
     source: string;
-    is_active: boolean;
   };
-  job_reviewed: boolean;
-  eligibility_confirmed: boolean;
-  resume_reviewed: boolean;
-  application_details_reviewed: boolean;
 }
 
 interface ApplicationListResponse {
@@ -246,129 +236,11 @@ interface ApplicationStats {
   by_status: Record<ApplicationStatus, number>;
 }
 
-interface TrackedJobIdsResponse {
-  job_ids: number[];
-}
-
-interface ApplicationDeleteResponse {
-  deleted: boolean;
-  application_id: number;
-  job_id: number;
-}
-
 interface ApplicationUpdatePayload {
   status: ApplicationStatus;
   notes: string | null;
   next_action: string | null;
   follow_up_date: string | null;
-  resume_filename?: string | null;
-  job_reviewed?: boolean;
-  eligibility_confirmed?: boolean;
-  resume_reviewed?: boolean;
-  application_details_reviewed?: boolean;
-}
-
-interface ApplicationReadinessCheck {
-  id: string;
-  label: string;
-  passed: boolean;
-  blocking: boolean;
-  detail: string;
-}
-
-interface ApplicationResumeOption {
-  filename: string;
-  format: "pdf" | "docx";
-  modified_at: string;
-  size_bytes: number;
-}
-
-interface ApplicationReadinessResponse {
-  application_id: number;
-  status: ApplicationStatus;
-  ready: boolean;
-  readiness_label: string;
-  completed_checks: number;
-  total_checks: number;
-  checks: ApplicationReadinessCheck[];
-  blockers: string[];
-  review: {
-    job_reviewed: boolean;
-    eligibility_confirmed: boolean;
-    resume_reviewed: boolean;
-    application_details_reviewed: boolean;
-  };
-  resume_filename: string | null;
-  resume_options: ApplicationResumeOption[];
-  submission_note: string;
-  job: { title: string; company: string };
-}
-
-
-interface ApplicationPreparationQuestion {
-  question: string;
-  answer: string;
-}
-
-interface ApplicationPreparationProfile {
-  contact_name: string | null;
-  email: string | null;
-  phone: string | null;
-  current_location: string | null;
-  linkedin_url: string | null;
-  github_url: string | null;
-  portfolio_url: string | null;
-  current_employer: string | null;
-  current_title: string | null;
-  years_experience: string | null;
-  notice_period: string | null;
-  work_authorization: string | null;
-  requires_sponsorship: "yes" | "no" | "unknown" | null;
-  salary_expectation: string | null;
-}
-
-interface ApplicationPreparationResponse {
-  application_id: number;
-  application_status: ApplicationStatus;
-  resume_filename: string | null;
-  cover_letter_filename: string | null;
-  profile: ApplicationPreparationProfile;
-  cover_letter_draft: string;
-  custom_questions: ApplicationPreparationQuestion[];
-  prepared: boolean;
-  blockers: string[];
-  resume_options: ApplicationResumeOption[];
-  prepared_at: string | null;
-  updated_at: string | null;
-  job: {
-    id: number;
-    title: string;
-    company: string;
-    location: string | null;
-    url: string;
-    description_available: boolean;
-    is_active: boolean;
-  };
-  submission_note: string;
-}
-
-interface ApplicationPreparationDraft {
-  contact_name: string;
-  email: string;
-  phone: string;
-  current_location: string;
-  linkedin_url: string;
-  github_url: string;
-  portfolio_url: string;
-  current_employer: string;
-  current_title: string;
-  years_experience: string;
-  notice_period: string;
-  work_authorization: string;
-  requires_sponsorship: "yes" | "no" | "unknown";
-  salary_expectation: string;
-  cover_letter_draft: string;
-  custom_questions: ApplicationPreparationQuestion[];
 }
 
 const APPLICATION_STATUSES: Array<{
@@ -500,7 +372,7 @@ interface GeneratedResume {
 }
 
 interface ApiError {
-  detail?: string | { message?: string; blockers?: string[] };
+  detail?: string;
 }
 
 const NAV_ITEMS: Array<{
@@ -532,6 +404,12 @@ const NAV_ITEMS: Array<{
     label: "Resume studio",
     description: "Tailor your resume",
     icon: FileCheck2,
+  },
+  {
+    id: "email",
+    label: "Email intelligence",
+    description: "Assessments and interviews",
+    icon: Mail,
   },
 ];
 
@@ -623,18 +501,12 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const detail = (data as ApiError)?.detail;
-    let message = `API request failed with HTTP ${response.status}.`;
 
-    if (typeof detail === "string") {
-      message = detail;
-    } else if (detail && typeof detail === "object") {
-      const summary = detail.message || message;
-      message = detail.blockers?.length
-        ? `${summary} ${detail.blockers.join("; ")}`
-        : summary;
-    }
-
-    throw new Error(message);
+    throw new Error(
+      typeof detail === "string"
+        ? detail
+        : `API request failed with HTTP ${response.status}.`,
+    );
   }
 
   return data as T;
@@ -1481,7 +1353,6 @@ function JobsView({
   onNext,
   onRefresh,
   onTrack,
-  onUntrack,
   isTracked,
   trackingJobIds,
   onTailor,
@@ -1510,7 +1381,6 @@ function JobsView({
   onNext: () => void;
   onRefresh: () => void;
   onTrack: (job: Job) => void;
-  onUntrack: (job: Job) => void;
   isTracked: (jobId: number) => boolean;
   trackingJobIds: Set<number>;
   onTailor: (job: Job) => void;
@@ -1801,23 +1671,22 @@ function JobsView({
                     <ExternalLink size={13} />
                   </a>
                   <button
-                    className={`secondary-button !px-3 !py-2 ${isTracked(job.id) ? "!border-rose-400/25 !text-rose-200 hover:!bg-rose-400/[0.08]" : ""}`}
-                    onClick={() => isTracked(job.id) ? onUntrack(job) : onTrack(job)}
-                    disabled={trackingJobIds.has(job.id)}
-                    title={isTracked(job.id) ? "Remove this job from your application pipeline" : "Add this job to your application pipeline"}
-                    aria-label={isTracked(job.id) ? `Untrack ${job.title} at ${job.company?.name || "this company"}` : `Track ${job.title} at ${job.company?.name || "this company"}`}
+                    className="secondary-button !px-3 !py-2"
+                    onClick={() => onTrack(job)}
+                    disabled={isTracked(job.id) || trackingJobIds.has(job.id)}
+                    title={isTracked(job.id) ? "Already tracked" : "Add this job to your application pipeline"}
                   >
                     {trackingJobIds.has(job.id) ? (
                       <LoaderCircle size={13} className="loading-ring" />
                     ) : isTracked(job.id) ? (
-                      <Trash2 size={13} />
+                      <CheckCircle2 size={13} />
                     ) : (
                       <Plus size={13} />
                     )}
                     {trackingJobIds.has(job.id)
                       ? "Saving..."
                       : isTracked(job.id)
-                        ? "Untrack"
+                        ? "Tracked"
                         : "Track"}
                   </button>
                   <button
@@ -1870,382 +1739,15 @@ function JobsView({
   );
 }
 
-function ApplicationPreparationPanel({
-  application,
-  onOpenReadiness,
-}: {
-  application: TrackedApplication;
-  onOpenReadiness: () => void;
-}) {
-  const blankDraft: ApplicationPreparationDraft = {
-    contact_name: "",
-    email: "",
-    phone: "",
-    current_location: "",
-    linkedin_url: "",
-    github_url: "",
-    portfolio_url: "",
-    current_employer: "",
-    current_title: "",
-    years_experience: "",
-    notice_period: "",
-    work_authorization: "",
-    requires_sponsorship: "unknown",
-    salary_expectation: "",
-    cover_letter_draft: "",
-    custom_questions: [],
-  };
-
-  const [data, setData] = useState<ApplicationPreparationResponse | null>(null);
-  const [draft, setDraft] = useState<ApplicationPreparationDraft>(blankDraft);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
-  const [copyMessage, setCopyMessage] = useState<string | null>(null);
-
-  const applyResponse = (response: ApplicationPreparationResponse) => {
-    setData(response);
-    setDraft({
-      contact_name: response.profile.contact_name ?? "",
-      email: response.profile.email ?? "",
-      phone: response.profile.phone ?? "",
-      current_location: response.profile.current_location ?? "",
-      linkedin_url: response.profile.linkedin_url ?? "",
-      github_url: response.profile.github_url ?? "",
-      portfolio_url: response.profile.portfolio_url ?? "",
-      current_employer: response.profile.current_employer ?? "",
-      current_title: response.profile.current_title ?? "",
-      years_experience: response.profile.years_experience ?? "",
-      notice_period: response.profile.notice_period ?? "",
-      work_authorization: response.profile.work_authorization ?? "",
-      requires_sponsorship: response.profile.requires_sponsorship ?? "unknown",
-      salary_expectation: response.profile.salary_expectation ?? "",
-      cover_letter_draft: response.cover_letter_draft ?? "",
-      custom_questions: response.custom_questions ?? [],
-    });
-  };
-
-  const loadPreparation = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const response = await apiRequest<ApplicationPreparationResponse>(
-        `/api/applications/${application.id}/preparation`,
-      );
-      applyResponse(response);
-    } catch (loadError) {
-      setError(errorText(loadError));
-    } finally {
-      setLoading(false);
-    }
-  }, [application.id]);
-
-  useEffect(() => {
-    const timerId = window.setTimeout(() => {
-      void loadPreparation();
-    }, 0);
-    return () => window.clearTimeout(timerId);
-  }, [loadPreparation]);
-
-  const updateDraft = <K extends keyof ApplicationPreparationDraft>(
-    key: K,
-    value: ApplicationPreparationDraft[K],
-  ) => {
-    setDraft((current) => ({ ...current, [key]: value }));
-    setMessage(null);
-    setCopyMessage(null);
-  };
-
-  const updateQuestion = (
-    index: number,
-    field: keyof ApplicationPreparationQuestion,
-    value: string,
-  ) => {
-    setDraft((current) => ({
-      ...current,
-      custom_questions: current.custom_questions.map((item, itemIndex) =>
-        itemIndex === index ? { ...item, [field]: value } : item,
-      ),
-    }));
-    setMessage(null);
-  };
-
-  const savePreparation = async () => {
-    if (saving) return;
-    setSaving(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const payload = {
-        contact_name: draft.contact_name,
-        email: draft.email,
-        phone: draft.phone,
-        current_location: draft.current_location,
-        linkedin_url: draft.linkedin_url,
-        github_url: draft.github_url,
-        portfolio_url: draft.portfolio_url,
-        current_employer: draft.current_employer,
-        current_title: draft.current_title,
-        years_experience: draft.years_experience,
-        notice_period: draft.notice_period,
-        work_authorization: draft.work_authorization,
-        requires_sponsorship: draft.requires_sponsorship,
-        salary_expectation: draft.salary_expectation,
-        cover_letter_draft: draft.cover_letter_draft,
-        custom_questions: draft.custom_questions
-          .map((item) => ({
-            question: item.question.trim(),
-            answer: item.answer.trim(),
-          }))
-          .filter((item) => item.question || item.answer),
-      };
-      const response = await apiRequest<ApplicationPreparationResponse>(
-        `/api/applications/${application.id}/preparation`,
-        { method: "PATCH", body: JSON.stringify(payload) },
-      );
-      applyResponse(response);
-      setMessage(
-        response.prepared
-          ? "Application packet is complete. Review the employer form before submitting."
-          : "Draft saved. Complete the blocking items below before considering the packet ready.",
-      );
-    } catch (saveErrorValue) {
-      setError(errorText(saveErrorValue));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const copyPacket = async () => {
-    if (!data) return;
-    const profileLines = [
-      ["Full name", draft.contact_name],
-      ["Email", draft.email],
-      ["Phone", draft.phone],
-      ["Current location", draft.current_location],
-      ["LinkedIn", draft.linkedin_url],
-      ["GitHub", draft.github_url],
-      ["Portfolio", draft.portfolio_url],
-      ["Current employer", draft.current_employer],
-      ["Current title", draft.current_title],
-      ["Years of experience", draft.years_experience],
-      ["Notice period", draft.notice_period],
-      ["Work authorization", draft.work_authorization],
-      ["Requires sponsorship", draft.requires_sponsorship],
-      ["Salary expectation", draft.salary_expectation],
-    ]
-      .filter(([, value]) => String(value ?? "").trim())
-      .map(([label, value]) => `${label}: ${value}`);
-    const questions = draft.custom_questions
-      .filter((item) => item.question.trim() || item.answer.trim())
-      .map((item, index) => `Employer question ${index + 1}: ${item.question}\nAnswer: ${item.answer}`);
-    const packet = [
-      `Application preparation — ${data.job.title} at ${data.job.company}`,
-      `Job posting: ${data.job.url}`,
-      `Selected resume: ${data.resume_filename || "Not selected — open Readiness review"}`,
-      "",
-      "Candidate details",
-      ...profileLines,
-      "",
-      "Employer questions and draft answers",
-      ...(questions.length ? questions : ["No custom employer questions entered."]),
-      "",
-      "Cover letter draft",
-      draft.cover_letter_draft.trim() || "No cover letter draft saved.",
-      "",
-      "Review all answers and documents against the employer's live form. Do not submit without checking accuracy.",
-    ].join("\n");
-
-    try {
-      if (!navigator.clipboard?.writeText) {
-        throw new Error("Clipboard access is unavailable in this browser context.");
-      }
-      await navigator.clipboard.writeText(packet);
-      setCopyMessage("Application packet copied to clipboard.");
-    } catch (copyError) {
-      setCopyMessage(errorText(copyError));
-    }
-  };
-
-  const field = (
-    label: string,
-    key: keyof ApplicationPreparationDraft,
-    placeholder: string,
-    required = false,
-    type = "text",
-  ) => {
-    const value = draft[key];
-    if (typeof value !== "string") return null;
-    return (
-      <label key={key} className="block text-[10px] font-medium text-slate-400">
-        {label}{required ? " *" : ""}
-        <input
-          className="field mt-1.5"
-          type={type}
-          value={value}
-          placeholder={placeholder}
-          maxLength={type === "email" ? 320 : 500}
-          onChange={(event) => updateDraft(key, event.target.value as ApplicationPreparationDraft[typeof key])}
-        />
-      </label>
-    );
-  };
-
-  return (
-    <section className="mt-4 rounded-xl border border-violet-400/20 bg-violet-400/[0.035] p-4" aria-label="Application preparation workspace">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[12px] font-semibold text-slate-100">Application preparation</p>
-          <p className="mt-1 max-w-2xl text-[10px] leading-4 text-slate-400">
-            Prepare reusable candidate details, employer-specific answers, and an optional cover letter. This stays in your local JobPilot database; it does not fill or submit the employer website.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="secondary-button !px-3 !py-2" onClick={() => void loadPreparation()} disabled={loading || saving}>
-            <RefreshCw size={12} className={loading ? "loading-ring" : ""} /> Refresh
-          </button>
-          <button type="button" className="secondary-button !px-3 !py-2" onClick={onOpenReadiness}>
-            <FileCheck2 size={12} /> Resume & readiness
-          </button>
-        </div>
-      </div>
-
-      {loading && (
-        <div className="mt-4 flex items-center gap-2 text-[11px] text-slate-400">
-          <LoaderCircle size={14} className="loading-ring" /> Loading application details...
-        </div>
-      )}
-      {error && <div role="alert" className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200">{error}</div>}
-
-      {data && !loading && (
-        <>
-          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700/50 bg-slate-950/40 p-3">
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold text-slate-100">{data.job.title} · {data.job.company}</p>
-              <p className="mt-1 truncate text-[10px] text-slate-400">{data.job.location || "Location not supplied"}</p>
-              <a className="mt-1 inline-flex items-center gap-1 text-[10px] text-blue-300 hover:text-blue-200" href={data.job.url} target="_blank" rel="noreferrer">Open employer posting <ExternalLink size={10} /></a>
-            </div>
-            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold ${data.prepared ? "border-emerald-400/20 bg-emerald-400/[0.06] text-emerald-200" : "border-amber-300/20 bg-amber-300/[0.06] text-amber-100"}`}>
-              {data.prepared ? "Packet complete" : `${data.blockers.length} items to resolve`}
-            </span>
-          </div>
-
-          {data.blockers.length > 0 && (
-            <div className="mt-3 rounded-lg border border-amber-300/20 bg-amber-300/[0.045] p-3">
-              <p className="text-[10px] font-semibold text-amber-100">Before using this application packet</p>
-              <ul className="mt-1.5 list-disc space-y-1 pl-4 text-[10px] leading-4 text-amber-100/80">
-                {data.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
-              </ul>
-            </div>
-          )}
-
-          <div className="mt-4">
-            <div className="flex flex-wrap items-end justify-between gap-2">
-              <div>
-                <p className="text-[11px] font-semibold text-slate-100">Candidate details</p>
-                <p className="mt-1 text-[10px] text-slate-500">Enter truthful details you would provide to an employer.</p>
-              </div>
-              <p className="text-[10px] text-slate-500">* Required for packet completeness</p>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {field("Full name", "contact_name", "As shown on your resume", true)}
-              {field("Email address", "email", "you@example.com", true, "email")}
-              {field("Phone number", "phone", "+91 ...", true, "tel")}
-              {field("Current location", "current_location", "City, country", true)}
-              {field("LinkedIn URL", "linkedin_url", "https://linkedin.com/in/...")}
-              {field("GitHub URL", "github_url", "https://github.com/...")}
-              {field("Portfolio URL", "portfolio_url", "https://...")}
-              {field("Current employer", "current_employer", "Employer name")}
-              {field("Current title", "current_title", "Role / designation")}
-              {field("Years of experience", "years_experience", "e.g. 1 year")}
-              {field("Notice period", "notice_period", "e.g. 30 days")}
-              {field("Work authorization", "work_authorization", "Answer according to your situation")}
-              <label className="block text-[10px] font-medium text-slate-400">
-                Requires employer sponsorship?
-                <select className="field mt-1.5" value={draft.requires_sponsorship} onChange={(event) => updateDraft("requires_sponsorship", event.target.value as ApplicationPreparationDraft["requires_sponsorship"])}>
-                  <option value="unknown">Not specified</option>
-                  <option value="yes">Yes</option>
-                  <option value="no">No</option>
-                </select>
-              </label>
-              {field("Salary expectation", "salary_expectation", "Optional; enter only if ready to share")}
-            </div>
-          </div>
-
-          <div className="mt-5 border-t border-slate-700/50 pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <p className="text-[11px] font-semibold text-slate-100">Employer-specific questions</p>
-                <p className="mt-1 text-[10px] text-slate-500">Add questions from the live application form and write answers in your own words.</p>
-              </div>
-              <button type="button" className="secondary-button !px-3 !py-2" disabled={draft.custom_questions.length >= 15} onClick={() => updateDraft("custom_questions", [...draft.custom_questions, { question: "", answer: "" }])}>
-                <Plus size={12} /> Add question
-              </button>
-            </div>
-            <div className="mt-3 space-y-3">
-              {draft.custom_questions.length === 0 && <p className="rounded-lg border border-dashed border-slate-700 p-3 text-[10px] text-slate-500">No custom questions added. You can add them after opening the employer's form.</p>}
-              {draft.custom_questions.map((item, index) => (
-                <div key={`application-question-${index}`} className="rounded-lg border border-slate-700/50 bg-slate-950/30 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-semibold text-slate-300">Question {index + 1}</p>
-                    <button type="button" className="text-[10px] text-rose-200 hover:text-rose-100" onClick={() => updateDraft("custom_questions", draft.custom_questions.filter((_, itemIndex) => itemIndex !== index))}>Remove</button>
-                  </div>
-                  <label className="mt-2 block text-[10px] font-medium text-slate-400">
-                    Employer question
-                    <input className="field mt-1.5" maxLength={500} placeholder="Paste the exact employer question" value={item.question} onChange={(event) => updateQuestion(index, "question", event.target.value)} />
-                  </label>
-                  <label className="mt-2 block text-[10px] font-medium text-slate-400">
-                    Draft answer
-                    <textarea className="field mt-1.5 min-h-20 resize-y" maxLength={6000} placeholder="Write an accurate answer based on your real experience" value={item.answer} onChange={(event) => updateQuestion(index, "answer", event.target.value)} rows={3} />
-                  </label>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-5 border-t border-slate-700/50 pt-4">
-            <label className="block text-[10px] font-medium text-slate-400">
-              Cover letter draft (optional)
-              <textarea className="field mt-1.5 min-h-32 resize-y" maxLength={16000} placeholder="Draft a role-specific cover letter. Verify each claim before using it." value={draft.cover_letter_draft} onChange={(event) => updateDraft("cover_letter_draft", event.target.value)} rows={5} />
-            </label>
-            <div className="mt-3 rounded-lg border border-slate-700/50 bg-slate-950/35 p-3 text-[10px] text-slate-400">
-              <p className="font-semibold text-slate-300">Resume file</p>
-              <p className="mt-1">{data.resume_filename || "No generated resume selected yet."}</p>
-              {!data.resume_filename && <p className="mt-1">Use Resume & readiness to select a generated PDF or DOCX. JobPilot won't invent a file or attach an unverified document.</p>}
-            </div>
-          </div>
-
-          {message && <p role="status" className="mt-3 text-[10px] text-emerald-300">{message}</p>}
-          {copyMessage && <p role="status" className="mt-2 text-[10px] text-slate-300">{copyMessage}</p>}
-          <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-3">
-            <button type="button" className="secondary-button !px-3 !py-2" onClick={() => void copyPacket()} disabled={!data}>
-              <Copy size={12} /> Copy application packet
-            </button>
-            <button type="button" className="primary-button !px-3 !py-2" onClick={() => void savePreparation()} disabled={saving || loading}>
-              {saving ? <LoaderCircle size={12} className="loading-ring" /> : <Save size={12} />}
-              {saving ? "Saving..." : "Save preparation"}
-            </button>
-          </div>
-          <p className="mt-2 text-right text-[10px] text-slate-500">{data.submission_note}</p>
-        </>
-      )}
-    </section>
-  );
-}
-
 function ApplicationCard({
   application,
   onUpdate,
-  onRequestRemove,
 }: {
   application: TrackedApplication;
   onUpdate: (
     applicationId: number,
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
-  onRequestRemove: (application: TrackedApplication) => void;
 }) {
   const [draftStatus, setDraftStatus] = useState<ApplicationStatus>(application.status);
   const [notes, setNotes] = useState(application.notes ?? "");
@@ -2254,114 +1756,6 @@ function ApplicationCard({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState(false);
-  const [readinessOpen, setReadinessOpen] = useState(false);
-  const [readiness, setReadiness] = useState<ApplicationReadinessResponse | null>(null);
-  const [readinessLoading, setReadinessLoading] = useState(false);
-  const [readinessSaving, setReadinessSaving] = useState(false);
-  const [readinessError, setReadinessError] = useState<string | null>(null);
-  const [readinessSavedMessage, setReadinessSavedMessage] = useState<string | null>(null);
-  const [applicationPreparationOpen, setApplicationPreparationOpen] = useState(false);
-  const [selectedResumeFilename, setSelectedResumeFilename] = useState(
-    application.resume_filename ?? "",
-  );
-
-  const loadReadiness = async () => {
-    setReadinessLoading(true);
-    setReadinessError(null);
-    try {
-      const response = await apiRequest<ApplicationReadinessResponse>(
-        `/api/applications/${application.id}/readiness`,
-      );
-      setReadiness(response);
-      setSelectedResumeFilename(response.resume_filename ?? "");
-    } catch (error) {
-      setReadinessError(errorText(error));
-    } finally {
-      setReadinessLoading(false);
-    }
-  };
-
-  const visibleReadinessChecks = (readiness?.checks ?? []).map((check) => {
-    if (!readiness) return check;
-    const reviewValueById: Record<string, boolean> = {
-      job_reviewed: readiness.review.job_reviewed,
-      eligibility_confirmed: readiness.review.eligibility_confirmed,
-      resume_reviewed: readiness.review.resume_reviewed,
-      application_details_reviewed: readiness.review.application_details_reviewed,
-      resume_selected: Boolean(
-        selectedResumeFilename && readiness.resume_options.some(
-          (option) => option.filename === selectedResumeFilename,
-        ),
-      ),
-    };
-    return Object.prototype.hasOwnProperty.call(reviewValueById, check.id)
-      ? { ...check, passed: reviewValueById[check.id] }
-      : check;
-  });
-  const readinessIsComplete = Boolean(
-    readiness && visibleReadinessChecks
-      .filter((check) => check.blocking)
-      .every((check) => check.passed),
-  );
-
-  const toggleReadiness = async () => {
-    const nextOpen = !readinessOpen;
-    setReadinessOpen(nextOpen);
-    if (nextOpen) {
-      // Always refresh on open so newly generated files and changed job status appear.
-      await loadReadiness();
-    }
-  };
-
-  const updateReadinessReview = (
-    field: keyof ApplicationReadinessResponse["review"],
-    value: boolean,
-  ) => {
-    setReadiness((current) => current ? {
-      ...current,
-      review: { ...current.review, [field]: value },
-    } : current);
-    setReadinessSavedMessage(null);
-    setReadinessError(null);
-  };
-
-  const saveReadinessReview = async (targetStatus: ApplicationStatus = draftStatus) => {
-    if (!readiness || readinessSaving) return;
-    setReadinessSaving(true);
-    setReadinessError(null);
-    setReadinessSavedMessage(null);
-    try {
-      const updated = await onUpdate(application.id, {
-        status: targetStatus,
-        notes: notes.trim() || null,
-        next_action: nextAction.trim() || null,
-        follow_up_date: followUpDate || null,
-        resume_filename: selectedResumeFilename || null,
-        job_reviewed: readiness.review.job_reviewed,
-        eligibility_confirmed: readiness.review.eligibility_confirmed,
-        resume_reviewed: readiness.review.resume_reviewed,
-        application_details_reviewed: readiness.review.application_details_reviewed,
-      });
-      setDraftStatus(updated.status);
-      setNotes(updated.notes ?? "");
-      setNextAction(updated.next_action ?? "");
-      setFollowUpDate(updated.follow_up_date ?? "");
-      const refreshed = await apiRequest<ApplicationReadinessResponse>(
-        `/api/applications/${application.id}/readiness`,
-      );
-      setReadiness(refreshed);
-      setSelectedResumeFilename(refreshed.resume_filename ?? "");
-      setReadinessSavedMessage(
-        targetStatus === "ready_to_apply"
-          ? "Readiness checks passed. This application is marked Ready to apply; submission is still manual."
-          : "Review checklist saved.",
-      );
-    } catch (error) {
-      setReadinessError(errorText(error));
-    } finally {
-      setReadinessSaving(false);
-    }
-  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -2427,206 +1821,15 @@ function ApplicationCard({
             </div>
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <a
-            className="secondary-button !px-3 !py-2"
-            href={application.job.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            Original posting <ExternalLink size={13} />
-          </a>
-          <button
-            type="button"
-            className={`secondary-button !px-3 !py-2 ${readiness?.ready ? "!border-emerald-400/25 !text-emerald-200" : ""}`}
-            onClick={() => void toggleReadiness()}
-            aria-expanded={readinessOpen}
-            aria-controls={`readiness-${application.id}`}
-            title="Review application readiness before proceeding"
-          >
-            <FileCheck2 size={13} /> {readiness?.ready ? "Ready checks passed" : "Readiness review"}
-          </button>
-          <button
-            type="button"
-            className={`secondary-button !px-3 !py-2 ${applicationPreparationOpen ? "!border-violet-400/25 !text-violet-200" : ""}`}
-            onClick={() => setApplicationPreparationOpen((open) => !open)}
-            aria-expanded={applicationPreparationOpen}
-            aria-controls={`application-preparation-${application.id}`}
-            title="Prepare candidate details and answers for the employer form"
-          >
-            <ClipboardList size={13} /> Application prep
-          </button>
-          <button
-            type="button"
-            className="secondary-button !border-rose-400/25 !px-3 !py-2 !text-rose-200 hover:!bg-rose-400/[0.08]"
-            onClick={() => onRequestRemove(application)}
-            disabled={saving}
-            title="Remove this entry from your JobPilot tracker"
-          >
-            <Trash2 size={13} /> Remove
-          </button>
-        </div>
-      </div>
-
-      {readinessOpen && (
-        <section
-          id={`readiness-${application.id}`}
-          className="mt-4 rounded-xl border border-blue-400/20 bg-blue-400/[0.035] p-4"
-          aria-label="Application readiness review"
+        <a
+          className="secondary-button shrink-0 !px-3 !py-2"
+          href={application.job.url}
+          target="_blank"
+          rel="noreferrer"
         >
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[12px] font-semibold text-slate-100">Application readiness review</p>
-              <p className="mt-1 text-[10px] text-slate-400">
-                Review the posting, confirm eligibility, and select the exact document you intend to upload.
-              </p>
-            </div>
-            <button
-              type="button"
-              className="secondary-button !px-3 !py-2"
-              onClick={() => void loadReadiness()}
-              disabled={readinessLoading}
-            >
-              <RefreshCw size={12} className={readinessLoading ? "loading-ring" : ""} /> Refresh checks
-            </button>
-          </div>
-
-          {readinessLoading && (
-            <div className="mt-4 flex items-center gap-2 text-[11px] text-slate-400">
-              <LoaderCircle size={14} className="loading-ring" /> Checking posting and available resume files...
-            </div>
-          )}
-          {readinessError && (
-            <div role="alert" className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200">
-              {readinessError}
-            </div>
-          )}
-
-          {readiness && !readinessLoading && (
-            <>
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-semibold ${readinessIsComplete ? "border-emerald-400/20 bg-emerald-400/[0.07] text-emerald-200" : "border-amber-300/20 bg-amber-300/[0.06] text-amber-100"}`}>
-                    {readinessIsComplete ? "Ready for your review" : "More review required"}
-                  </span>
-                  <span className="ml-2 text-[10px] text-slate-500">
-                    {visibleReadinessChecks.filter((check) => check.passed).length}/{visibleReadinessChecks.length} checks passed
-                  </span>
-                </div>
-                <div className="h-1.5 w-36 overflow-hidden rounded-full bg-slate-800">
-                  <div
-                    className={`h-full rounded-full ${readinessIsComplete ? "bg-emerald-400" : "bg-blue-400"}`}
-                    style={{ width: `${visibleReadinessChecks.length ? (visibleReadinessChecks.filter((check) => check.passed).length / visibleReadinessChecks.length) * 100 : 0}%` }}
-                  />
-                </div>
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-2">
-                {visibleReadinessChecks.map((check) => (
-                  <div key={check.id} className="flex gap-2 rounded-lg border border-slate-700/50 bg-slate-950/30 p-3">
-                    {check.passed ? (
-                      <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-emerald-300" />
-                    ) : (
-                      <AlertTriangle size={14} className={`mt-0.5 shrink-0 ${check.blocking ? "text-amber-200" : "text-slate-500"}`} />
-                    )}
-                    <div className="min-w-0">
-                      <p className="text-[10px] font-semibold text-slate-200">{check.label}</p>
-                      <p className="mt-1 text-[10px] leading-4 text-slate-500">{check.detail}</p>
-                      {!check.blocking && !check.passed && <p className="mt-1 text-[9px] text-slate-500">Recommendation, not a blocker</p>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-                <label className="block text-[10px] font-medium text-slate-400">
-                  Tailored resume to attach
-                  <select
-                    className="field mt-1.5"
-                    value={selectedResumeFilename}
-                    onChange={(event) => {
-                      setSelectedResumeFilename(event.target.value);
-                      setReadinessSavedMessage(null);
-                      setReadinessError(null);
-                    }}
-                    aria-label={`Select tailored resume for ${application.job.title}`}
-                  >
-                    <option value="">Select a generated PDF or DOCX...</option>
-                    {readiness.resume_options.map((option) => (
-                      <option key={option.filename} value={option.filename}>
-                        {option.filename} · {option.format.toUpperCase()} · {new Date(option.modified_at).toLocaleDateString()}
-                      </option>
-                    ))}
-                  </select>
-                  {readiness.resume_options.length === 0 && (
-                    <span className="mt-1.5 block text-[10px] text-amber-100">
-                      No generated resumes found. Generate one in Resume Studio, then refresh these checks.
-                    </span>
-                  )}
-                </label>
-
-                <div className="space-y-2">
-                  {([
-                    ["job_reviewed", "I reviewed the job description and required qualifications."],
-                    ["eligibility_confirmed", "I confirmed location, experience, education, and work-authorization eligibility."],
-                    ["resume_reviewed", "I reviewed the selected resume's content, dates, links, and PDF layout."],
-                    ["application_details_reviewed", "I can answer the employer's application questions accurately and have required materials ready."],
-                  ] as const).map(([key, label]) => (
-                    <label key={key} className="flex cursor-pointer items-start gap-2 text-[10px] leading-4 text-slate-300">
-                      <input
-                        className="mt-0.5 accent-blue-400"
-                        type="checkbox"
-                        checked={readiness.review[key]}
-                        onChange={(event) => updateReadinessReview(key, event.target.checked)}
-                      />
-                      <span>{label}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <p className="mt-3 text-[10px] text-slate-500">{readiness.submission_note}</p>
-              {readinessSavedMessage && (
-                <p role="status" className="mt-3 inline-flex items-center gap-1.5 text-[10px] text-emerald-300">
-                  <CheckCircle2 size={12} /> {readinessSavedMessage}
-                </p>
-              )}
-              <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-3">
-                <button
-                  type="button"
-                  className="secondary-button !px-3 !py-2"
-                  onClick={() => void saveReadinessReview(draftStatus)}
-                  disabled={readinessSaving || readinessLoading}
-                >
-                  {readinessSaving ? <LoaderCircle size={12} className="loading-ring" /> : <Save size={12} />}
-                  {readinessSaving ? "Saving..." : "Save review"}
-                </button>
-                <button
-                  type="button"
-                  className="primary-button !px-3 !py-2"
-                  onClick={() => void saveReadinessReview("ready_to_apply")}
-                  disabled={!readinessIsComplete || readinessSaving || readinessLoading || application.status === "applied"}
-                  title={!readinessIsComplete ? "Complete all required checks first" : "Mark this application ready to apply; this does not submit it"}
-                >
-                  <ShieldCheck size={13} /> Mark Ready to Apply
-                </button>
-              </div>
-            </>
-          )}
-        </section>
-      )}
-
-      {applicationPreparationOpen && (
-        <div id={`application-preparation-${application.id}`}>
-          <ApplicationPreparationPanel
-            application={application}
-            onOpenReadiness={() => {
-              if (!readinessOpen) void toggleReadiness();
-              setApplicationPreparationOpen(false);
-            }}
-          />
-        </div>
-      )}
+          Original posting <ExternalLink size={13} />
+        </a>
+      </div>
 
       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <label className="block text-[10px] font-medium text-slate-400">
@@ -2707,7 +1910,6 @@ function ApplicationsView({
   setStatusFilter,
   onRefresh,
   onUpdate,
-  onRequestRemove,
   onDiscoverJobs,
 }: {
   applications: TrackedApplication[];
@@ -2724,7 +1926,6 @@ function ApplicationsView({
     applicationId: number,
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
-  onRequestRemove: (application: TrackedApplication) => void;
   onDiscoverJobs: () => void;
 }) {
   const visibleApplications = applications.filter((application) => {
@@ -2826,7 +2027,6 @@ function ApplicationsView({
               key={`${application.id}-${application.updated_at}`}
               application={application}
               onUpdate={onUpdate}
-              onRequestRemove={onRequestRemove}
             />
           ))}
         </div>
@@ -3283,6 +2483,388 @@ function ResumeView({
   );
 }
 
+interface EmailConnectionStatus {
+  provider: "gmail";
+  oauth_configured: boolean;
+  connected: boolean;
+  email_address: string | null;
+  connected_at: string | null;
+  last_sync_at: string | null;
+  last_sync_imported: number;
+  last_sync_scanned: number;
+  last_error: string | null;
+  requested_scope: string;
+  stores_full_email_body: boolean;
+}
+
+type EmailEventType =
+  | "application_confirmation"
+  | "assessment_invitation"
+  | "interview_invitation"
+  | "offer"
+  | "rejection";
+
+interface ApplicationEmailEvent {
+  id: number;
+  gmail_message_id: string;
+  gmail_thread_id: string | null;
+  received_at: string | null;
+  sender: string;
+  subject: string;
+  snippet: string;
+  event_type: EmailEventType;
+  classification_confidence: number;
+  matched_application_id: number | null;
+  match_confidence: number;
+  proposed_status: ApplicationStatus;
+  review_status: "pending" | "approved" | "ignored";
+  review_note: string | null;
+  before_status: string | null;
+  after_status: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  matched_job: {
+    application_id: number;
+    company: string;
+    title: string;
+    current_status: ApplicationStatus;
+  } | null;
+}
+
+interface EmailEventListResponse {
+  items: ApplicationEmailEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+interface EmailSyncResult {
+  status: string;
+  query_days_back: number;
+  scanned: number;
+  imported: number;
+  duplicates: number;
+  unclassified: number;
+  errors: number;
+  review_required: number;
+  more_pages_pending: boolean;
+  full_email_bodies_stored: boolean;
+  note: string;
+}
+
+function emailEventLabel(eventType: EmailEventType): string {
+  const labels: Record<EmailEventType, string> = {
+    application_confirmation: "Application confirmation",
+    assessment_invitation: "Online assessment",
+    interview_invitation: "Interview invitation",
+    offer: "Offer",
+    rejection: "Rejection",
+  };
+  return labels[eventType];
+}
+
+function emailDateLabel(value: string | null): string {
+  if (!value) return "Date unavailable";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "Date unavailable";
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(parsed);
+}
+
+function EmailIntelligenceView({
+  connection,
+  events,
+  applications,
+  loading,
+  syncing,
+  error,
+  notice,
+  selectedApplicationIds,
+  onRefresh,
+  onConnect,
+  onSync,
+  onDisconnect,
+  onReview,
+  onSelectApplication,
+}: {
+  connection: EmailConnectionStatus | null;
+  events: ApplicationEmailEvent[];
+  applications: TrackedApplication[];
+  loading: boolean;
+  syncing: boolean;
+  error: string | null;
+  notice: string | null;
+  selectedApplicationIds: Record<number, string>;
+  onRefresh: () => void;
+  onConnect: () => void;
+  onSync: () => void;
+  onDisconnect: () => void;
+  onReview: (
+    eventId: number,
+    decision: "approve" | "ignore",
+    applicationId?: number,
+  ) => void;
+  onSelectApplication: (eventId: number, applicationId: string) => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-blue-300/80">
+            Inbox intelligence
+          </p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
+            Employer email events
+          </h1>
+          <p className="mt-2 max-w-2xl text-xs leading-6 text-slate-400 sm:text-sm">
+            Detect application confirmations, assessments, interviews, offers and rejections, then review each proposed tracker update.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+            <RefreshCw size={13} className={loading ? "loading-ring" : ""} />
+            Refresh
+          </button>
+          <button
+            className="primary-button"
+            onClick={onSync}
+            disabled={!connection?.connected || syncing}
+            title={!connection?.connected ? "Connect Gmail before syncing" : "Read recent recruiting-related email"}
+          >
+            {syncing ? <LoaderCircle size={14} className="loading-ring" /> : <Mail size={14} />}
+            {syncing ? "Syncing inbox…" : "Sync Gmail"}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-rose-400/20 bg-rose-400/[0.06] px-4 py-3 text-xs leading-5 text-rose-200">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] px-4 py-3 text-xs leading-5 text-emerald-200">
+          {notice}
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/70 p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">Gmail connection</span>
+            <span className={`h-2 w-2 rounded-full ${connection?.connected ? "bg-emerald-400" : "bg-amber-300"}`} />
+          </div>
+          <p className="mt-3 truncate text-sm font-semibold text-slate-100">
+            {connection?.connected ? connection.email_address || "Connected" : "Not connected"}
+          </p>
+          <p className="mt-1 text-[10px] leading-4 text-slate-500">
+            {connection?.connected ? "Read-only access" : "Connect your own Google account"}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/70 p-4">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">Pending review</span>
+          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-100">{formatNumber(events.length)}</p>
+          <p className="mt-1 text-[10px] leading-4 text-slate-500">No tracker changes until approval</p>
+        </div>
+        <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/70 p-4">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">Last successful sync</span>
+          <p className="mt-3 text-sm font-semibold text-slate-100">
+            {connection?.last_sync_at ? emailDateLabel(connection.last_sync_at) : "Not synced yet"}
+          </p>
+          <p className="mt-1 text-[10px] leading-4 text-slate-500">
+            {connection?.last_sync_at
+              ? `${formatNumber(connection.last_sync_imported)} events imported from ${formatNumber(connection.last_sync_scanned)} messages scanned`
+              : "Run a sync after connecting Gmail"}
+          </p>
+        </div>
+      </div>
+
+      {!connection?.oauth_configured && (
+        <section className="rounded-2xl border border-amber-300/20 bg-amber-300/[0.045] p-5">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 rounded-lg bg-amber-300/10 p-2 text-amber-200"><ShieldCheck size={17} /></div>
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-semibold text-amber-100">Google OAuth setup required</h2>
+              <p className="mt-2 text-xs leading-5 text-slate-300">
+                Create a Google OAuth Web application client, enable the Gmail API, and save its downloaded JSON file at:
+              </p>
+              <code className="mt-2 block overflow-x-auto rounded-lg border border-slate-700/70 bg-black/20 px-3 py-2 text-[11px] text-slate-200">
+                credentials/gmail_oauth_client.json
+              </code>
+              <p className="mt-2 text-[10px] leading-5 text-slate-400">
+                Authorized redirect URI: <code className="text-slate-200">http://127.0.0.1:8000/api/email/oauth/callback</code>
+              </p>
+              <p className="mt-2 text-[10px] leading-5 text-slate-400">
+                JobPilot requests only Gmail read-only access. For personal development, configure your Google account as a test user when the OAuth app is in testing mode.
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {connection?.connected && (
+        <section className="rounded-2xl border border-slate-800/80 bg-[#101827]/50 p-4 sm:p-5">
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 rounded-lg bg-emerald-400/[0.08] p-2 text-emerald-200"><CheckCircle2 size={17} /></div>
+              <div>
+                <p className="text-xs font-semibold text-slate-100">Gmail is connected</p>
+                <p className="mt-1 text-[10px] leading-5 text-slate-400">
+                  Last sync imported {formatNumber(connection.last_sync_imported)} events. Use Refresh to reload pending reviews.
+                </p>
+                {connection.last_error && <p className="mt-1 text-[10px] text-amber-200">Last sync warning: {connection.last_error}</p>}
+              </div>
+            </div>
+            <button className="secondary-button self-start !border-rose-300/15 !text-rose-200 sm:self-center" onClick={onDisconnect}>
+              Disconnect Gmail
+            </button>
+          </div>
+        </section>
+      )}
+
+      {!connection?.connected && connection?.oauth_configured && (
+        <section className="rounded-2xl border border-slate-800/80 bg-[#101827]/50 p-5">
+          <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-100">Connect your Gmail account</h2>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-400">
+                Google will ask you to grant read-only permission. Authorization opens in a separate tab so you can return here afterwards.
+              </p>
+            </div>
+            <button className="primary-button self-start" onClick={onConnect}>
+              <ExternalLink size={14} /> Connect Gmail
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-100">Needs your review</h2>
+            <p className="mt-1 text-[10px] text-slate-500">Each message is deduplicated by Gmail message ID and stored without its full body.</p>
+          </div>
+          <span className="rounded-full border border-slate-700 px-2.5 py-1 text-[10px] text-slate-400">{formatNumber(events.length)} pending</span>
+        </div>
+
+        {loading ? (
+          <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/40 p-8 text-center text-xs text-slate-400">
+            <LoaderCircle size={18} className="loading-ring mx-auto mb-3" />
+            Loading email events…
+          </div>
+        ) : events.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-700/70 bg-white/[0.015] p-8 text-center">
+            <Mail size={22} className="mx-auto text-slate-600" />
+            <p className="mt-3 text-xs font-semibold text-slate-300">No pending email events</p>
+            <p className="mt-1 text-[10px] leading-5 text-slate-500">
+              {connection?.connected
+                ? "Sync Gmail to look for recent assessment, interview, offer and application messages."
+                : "Connect Gmail first, then sync your inbox."}
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {events.map((event) => {
+              const chosenValue = selectedApplicationIds[event.id] ?? (event.matched_application_id ? String(event.matched_application_id) : "");
+              const selectedApplicationId = chosenValue ? Number(chosenValue) : null;
+              const selectedApplication = selectedApplicationId
+                ? applications.find((application) => application.id === selectedApplicationId)
+                : null;
+              const autoMatched = event.matched_application_id !== null && event.matched_job !== null;
+              const hasManualOverride = selectedApplicationId !== null && selectedApplicationId !== event.matched_application_id;
+              const canApprove = selectedApplicationId !== null;
+              return (
+                <article key={event.id} className="rounded-2xl border border-slate-800/80 bg-[#101827]/55 p-4 sm:p-5">
+                  <div className="flex flex-col justify-between gap-3 md:flex-row md:items-start">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-blue-300/20 bg-blue-300/[0.07] px-2.5 py-1 text-[9px] font-semibold text-blue-200">{emailEventLabel(event.event_type)}</span>
+                        <span className="rounded-full border border-slate-700 px-2 py-1 text-[9px] text-slate-400">{Math.round(event.classification_confidence * 100)}% classification confidence</span>
+                      </div>
+                      <h3 className="mt-3 break-words text-sm font-semibold text-slate-100">{event.subject || "(No subject)"}</h3>
+                      <p className="mt-1 break-words text-[10px] leading-5 text-slate-400">{event.sender} · {emailDateLabel(event.received_at)}</p>
+                      {event.snippet && <p className="mt-3 rounded-xl bg-black/15 px-3 py-2 text-[11px] leading-5 text-slate-300">{event.snippet}</p>}
+                    </div>
+                    <div className="flex shrink-0 flex-col items-start gap-2 md:items-end">
+                      <span className="text-[9px] uppercase tracking-[0.15em] text-slate-500">Proposed status</span>
+                      <span className="rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-2.5 py-1.5 text-[10px] font-semibold text-amber-100">{event.proposed_status.replaceAll("_", " ")}</span>
+                      {event.gmail_thread_id && (
+                        <a className="inline-flex items-center gap-1 text-[10px] text-blue-300 hover:text-blue-200" href={`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(event.gmail_thread_id)}`} target="_blank" rel="noreferrer">
+                          Open in Gmail <ExternalLink size={11} />
+                        </a>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-4 rounded-xl border border-slate-800 bg-black/10 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-[10px] font-semibold text-slate-300">Match this email to an application</p>
+                      {autoMatched && !hasManualOverride && (
+                        <span className="text-[9px] text-emerald-200">Suggested match · {Math.round(event.match_confidence * 100)}%</span>
+                      )}
+                    </div>
+                    <select
+                      className="mt-2 w-full rounded-xl border border-slate-700 bg-[#0b1220] px-3 py-2.5 text-xs text-slate-200 outline-none focus:border-blue-400/50"
+                      value={chosenValue}
+                      onChange={(changeEvent) => onSelectApplication(event.id, changeEvent.target.value)}
+                    >
+                      <option value="">Choose an application…</option>
+                      {applications.map((application) => (
+                        <option key={application.id} value={String(application.id)}>
+                          {application.job.company} — {application.job.title} ({application.status.replaceAll("_", " ")})
+                        </option>
+                      ))}
+                    </select>
+                    {selectedApplication && (
+                      <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                        Selected: {selectedApplication.job.company} · {selectedApplication.job.title}. Current tracker status: {selectedApplication.status.replaceAll("_", " ")}.
+                      </p>
+                    )}
+                    {!autoMatched && (
+                      <p className="mt-2 text-[10px] leading-4 text-amber-200/80">JobPilot did not guess a specific application. Choose the correct one before approving.</p>
+                    )}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[9px] leading-4 text-slate-500">No status changes occur until you approve this event.</p>
+                    <div className="flex gap-2">
+                      <button className="secondary-button" onClick={() => onReview(event.id, "ignore")}>
+                        Ignore
+                      </button>
+                      <button
+                        className="primary-button"
+                        disabled={!canApprove}
+                        onClick={() => onReview(event.id, "approve", hasManualOverride ? selectedApplicationId! : undefined)}
+                        title={!canApprove ? "Choose an application first" : "Approve the proposed status update"}
+                      >
+                        <CheckCircle2 size={13} /> Approve update
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-slate-800/70 bg-white/[0.015] p-4">
+        <div className="flex items-start gap-3">
+          <ShieldCheck size={16} className="mt-0.5 shrink-0 text-slate-400" />
+          <div>
+            <p className="text-[10px] font-semibold text-slate-300">Privacy and control</p>
+            <p className="mt-1 text-[10px] leading-5 text-slate-500">
+              This integration requests Gmail read-only access, does not send or delete mail, does not download attachments, and stores event metadata/snippets rather than full email bodies. Disconnecting removes the local token but keeps previously imported event history.
+            </p>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>("overview");
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
@@ -3302,10 +2884,14 @@ function App() {
   const [applicationSearch, setApplicationSearch] = useState("");
   const [applicationStatusFilter, setApplicationStatusFilter] = useState<ApplicationStatus | "all">("all");
   const [trackingJobIds, setTrackingJobIds] = useState<Set<number>>(new Set());
-  const [trackedApplicationJobIds, setTrackedApplicationJobIds] = useState<Set<number>>(new Set());
-  const [applicationToRemove, setApplicationToRemove] = useState<TrackedApplication | null>(null);
-  const [removeApplicationLoading, setRemoveApplicationLoading] = useState(false);
-  const [removeApplicationError, setRemoveApplicationError] = useState<string | null>(null);
+
+  const [emailConnection, setEmailConnection] = useState<EmailConnectionStatus | null>(null);
+  const [emailEvents, setEmailEvents] = useState<ApplicationEmailEvent[]>([]);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailSyncing, setEmailSyncing] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [emailNotice, setEmailNotice] = useState<string | null>(null);
+  const [emailSelectedApplicationIds, setEmailSelectedApplicationIds] = useState<Record<number, string>>({});
 
   const [companyOptions, setCompanyOptions] = useState<CompanyOption[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
@@ -3325,14 +2911,14 @@ function App() {
 
   const [filterDraft, setFilterDraft] = useState<JobFilters>({
     company: "",
-    location: DEFAULT_JOB_LOCATION,
+    location: "",
     source: "",
     career_level: "early",
   });
 
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
     company: "",
-    location: DEFAULT_JOB_LOCATION,
+    location: "",
     source: "",
     career_level: "early",
   });
@@ -3366,7 +2952,7 @@ function App() {
       ] = await Promise.all([
         apiRequest<{ status: string }>("/api/health"),
         apiRequest<DashboardStats>("/api/dashboard/stats"),
-        apiRequest<JobListResponse>(`/api/jobs?limit=5&offset=0&location=${encodeURIComponent(DEFAULT_JOB_LOCATION)}`),
+        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0"),
         apiRequest<EvidenceSummary>("/api/evidence/summary"),
         apiRequest<CompanyDirectoryResponse>("/api/companies?limit=1000"),
         apiRequest<LocationDirectoryResponse>("/api/locations?limit=1000"),
@@ -3433,20 +3019,114 @@ function App() {
     setApplicationsError(null);
 
     try {
-      const [list, summary, trackedJobs] = await Promise.all([
+      const [list, summary] = await Promise.all([
         apiRequest<ApplicationListResponse>("/api/applications?limit=100&offset=0"),
         apiRequest<ApplicationStats>("/api/applications/stats"),
-        apiRequest<TrackedJobIdsResponse>("/api/applications/tracked-job-ids"),
       ]);
       setApplications(list.items);
       setApplicationsTotal(list.total);
       setApplicationStats(summary);
-      setTrackedApplicationJobIds(new Set(trackedJobs.job_ids));
     } catch (error) {
       setApplicationsError(errorText(error));
     } finally {
       setApplicationsLoading(false);
     }
+  }, []);
+
+
+  const loadEmailIntelligence = useCallback(async () => {
+    setEmailLoading(true);
+    setEmailError(null);
+    try {
+      const [connection, eventList] = await Promise.all([
+        apiRequest<EmailConnectionStatus>("/api/email/status"),
+        apiRequest<EmailEventListResponse>("/api/email/events?review_status=pending&limit=100"),
+      ]);
+      setEmailConnection(connection);
+      setEmailEvents(eventList.items);
+    } catch (error) {
+      setEmailError(errorText(error));
+    } finally {
+      setEmailLoading(false);
+    }
+  }, []);
+
+  const handleEmailConnect = useCallback(() => {
+    window.open(`${API_BASE}/api/email/oauth/start`, "_blank", "noopener,noreferrer");
+  }, []);
+
+  const handleEmailSync = useCallback(async () => {
+    setEmailSyncing(true);
+    setEmailError(null);
+    setEmailNotice(null);
+    try {
+      const result = await apiRequest<EmailSyncResult>("/api/email/sync", {
+        method: "POST",
+        body: JSON.stringify({ days_back: 180, max_messages: 100 }),
+      });
+      setEmailNotice(
+        `Sync complete: scanned ${result.scanned}, imported ${result.imported}, skipped ${result.duplicates} duplicates, and left ${result.review_required} event(s) for review.${result.more_pages_pending ? " More pages remain; run Sync again to continue through older messages." : ""}`,
+      );
+      await Promise.all([loadEmailIntelligence(), loadApplications()]);
+    } catch (error) {
+      setEmailError(errorText(error));
+    } finally {
+      setEmailSyncing(false);
+    }
+  }, [loadApplications, loadEmailIntelligence]);
+
+  const handleEmailDisconnect = useCallback(async () => {
+    const confirmed = window.confirm(
+      "Disconnect Gmail from JobPilot? Previously imported event history will remain in your local database.",
+    );
+    if (!confirmed) return;
+    setEmailError(null);
+    setEmailNotice(null);
+    try {
+      await apiRequest<{ connected: boolean; message: string }>("/api/email/disconnect", {
+        method: "POST",
+      });
+      setEmailNotice("Gmail was disconnected. Previously imported event history was retained.");
+      await loadEmailIntelligence();
+    } catch (error) {
+      setEmailError(errorText(error));
+    }
+  }, [loadEmailIntelligence]);
+
+  const handleEmailEventReview = useCallback(async (
+    eventId: number,
+    decision: "approve" | "ignore",
+    applicationId?: number,
+  ) => {
+    setEmailError(null);
+    setEmailNotice(null);
+    const payload: { decision: "approve" | "ignore"; application_id?: number; note?: string } = { decision };
+    if (applicationId !== undefined) payload.application_id = applicationId;
+    try {
+      const result = await apiRequest<{
+        review_status: string;
+        before_status?: string;
+        after_status?: string;
+        application_status_changed?: boolean;
+      }>(`/api/email/events/${eventId}/review`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (decision === "ignore") {
+        setEmailNotice("Email event ignored. The application status was not changed.");
+      } else if (result.application_status_changed) {
+        setEmailNotice(`Email event approved. Application status changed from ${result.before_status} to ${result.after_status}.`);
+      } else {
+        setEmailNotice(`Email event approved. The application remains ${result.after_status || "at its existing status"}; no backward status change was made.`);
+      }
+      await Promise.all([loadEmailIntelligence(), loadApplications()]);
+    } catch (error) {
+      setEmailError(errorText(error));
+    }
+  }, [loadApplications, loadEmailIntelligence]);
+
+  const handleEmailApplicationSelect = useCallback((eventId: number, applicationId: string) => {
+    setEmailSelectedApplicationIds((current) => ({ ...current, [eventId]: applicationId }));
   }, []);
 
   useEffect(() => {
@@ -3470,7 +3150,7 @@ function App() {
   }, [screen, loadJobs]);
 
   useEffect(() => {
-    if (screen !== "applications" && screen !== "jobs") {
+    if (screen !== "applications" && screen !== "jobs" && screen !== "email") {
       return;
     }
 
@@ -3480,6 +3160,15 @@ function App() {
 
     return () => window.clearTimeout(timerId);
   }, [screen, loadApplications]);
+
+
+  useEffect(() => {
+    if (screen !== "email") return;
+    const timerId = window.setTimeout(() => {
+      void loadEmailIntelligence();
+    }, 0);
+    return () => window.clearTimeout(timerId);
+  }, [screen, loadEmailIntelligence]);
 
   useEffect(() => {
     const query = queryInput.trim();
@@ -3624,7 +3313,6 @@ function App() {
         created,
         ...current.filter((item) => item.id !== created.id && item.job_id !== job.id),
       ].slice(0, 100));
-      setTrackedApplicationJobIds((current) => new Set(current).add(job.id));
       setApplicationsTotal((current) => current + 1);
       setApplicationStats((current) => current ? {
         ...current,
@@ -3648,68 +3336,6 @@ function App() {
         next.delete(job.id);
         return next;
       });
-    }
-  };
-
-  const requestRemoveApplication = (application: TrackedApplication) => {
-    setRemoveApplicationError(null);
-    setApplicationToRemove(application);
-  };
-
-  const handleUntrackJob = async (job: Job) => {
-    let application = applications.find((item) => item.job_id === job.id);
-
-    if (!application) {
-      try {
-        application = await apiRequest<TrackedApplication>(
-          `/api/applications/by-job/${job.id}`,
-        );
-      } catch (error) {
-        setJobsError(errorText(error));
-        await loadApplications();
-        return;
-      }
-    }
-
-    requestRemoveApplication(application);
-  };
-
-  const handleConfirmRemoveApplication = async () => {
-    if (!applicationToRemove || removeApplicationLoading) return;
-
-    const target = applicationToRemove;
-    setRemoveApplicationLoading(true);
-    setRemoveApplicationError(null);
-
-    try {
-      await apiRequest<ApplicationDeleteResponse>(
-        `/api/applications/${target.id}`,
-        { method: "DELETE" },
-      );
-
-      setApplications((current) => current.filter((item) => item.id !== target.id));
-      setApplicationsTotal((current) => Math.max(0, current - 1));
-      setTrackedApplicationJobIds((current) => {
-        const next = new Set(current);
-        next.delete(target.job_id);
-        return next;
-      });
-      setApplicationStats((current) => {
-        if (!current) return current;
-        const counts = { ...current.by_status };
-        counts[target.status] = Math.max(0, (counts[target.status] ?? 0) - 1);
-        return {
-          ...current,
-          total: Math.max(0, current.total - 1),
-          needs_action: counts.saved + counts.preparing + counts.ready_to_apply,
-          by_status: counts,
-        };
-      });
-      setApplicationToRemove(null);
-    } catch (error) {
-      setRemoveApplicationError(errorText(error));
-    } finally {
-      setRemoveApplicationLoading(false);
     }
   };
 
@@ -4126,8 +3752,7 @@ function App() {
                       void loadApplications();
                     }}
                     onTrack={(job) => void handleTrackApplication(job)}
-                    onUntrack={(job) => void handleUntrackJob(job)}
-                    isTracked={(jobId) => trackedApplicationJobIds.has(jobId)}
+                    isTracked={(jobId) => applications.some((item) => item.job_id === jobId)}
                     trackingJobIds={trackingJobIds}
                     onTailor={openResumeForJob}
                   />
@@ -4146,7 +3771,6 @@ function App() {
                     setStatusFilter={setApplicationStatusFilter}
                     onRefresh={() => void loadApplications()}
                     onUpdate={handleUpdateApplication}
-                    onRequestRemove={requestRemoveApplication}
                     onDiscoverJobs={openJobs}
                   />
                 )}
@@ -4171,6 +3795,29 @@ function App() {
                     onGenerate={() => void handleGenerateResume()}
                   />
                 )}
+
+
+                {screen === "email" && (
+                  <EmailIntelligenceView
+                    connection={emailConnection}
+                    events={emailEvents}
+                    applications={applications}
+                    loading={emailLoading}
+                    syncing={emailSyncing}
+                    error={emailError}
+                    notice={emailNotice}
+                    selectedApplicationIds={emailSelectedApplicationIds}
+                    onRefresh={() => {
+                      void loadEmailIntelligence();
+                      void loadApplications();
+                    }}
+                    onConnect={handleEmailConnect}
+                    onSync={handleEmailSync}
+                    onDisconnect={handleEmailDisconnect}
+                    onReview={handleEmailEventReview}
+                    onSelectApplication={handleEmailApplicationSelect}
+                  />
+                )}
               </motion.div>
             </AnimatePresence>
 
@@ -4191,89 +3838,6 @@ function App() {
             </footer>
           </main>
         </div>
-
-        <AnimatePresence>
-          {applicationToRemove && (
-            <motion.div
-              className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              role="presentation"
-              onMouseDown={(event) => {
-                if (event.target === event.currentTarget && !removeApplicationLoading) {
-                  setApplicationToRemove(null);
-                  setRemoveApplicationError(null);
-                }
-              }}
-            >
-              <motion.section
-                initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 8, scale: 0.98 }}
-                transition={{ duration: 0.16 }}
-                className="panel w-full max-w-lg rounded-2xl border border-rose-400/20 p-5 shadow-2xl"
-                role="alertdialog"
-                aria-modal="true"
-                aria-labelledby="remove-application-title"
-                aria-describedby="remove-application-description"
-              >
-                <div className="flex items-start gap-3">
-                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rose-400/20 bg-rose-400/[0.08] text-rose-200">
-                    <AlertTriangle size={18} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h2 id="remove-application-title" className="text-base font-semibold text-slate-100">
-                      Remove from your tracker?
-                    </h2>
-                    <p className="mt-1 text-[11px] leading-5 text-slate-400">
-                      {applicationToRemove.job.title} · {applicationToRemove.job.company}
-                    </p>
-                  </div>
-                </div>
-                <p id="remove-application-description" className="mt-4 text-[12px] leading-6 text-slate-300">
-                  This removes the tracking entry, status, notes and follow-up details from JobPilot. It does not delete the original job listing or withdraw an application you already submitted. This action cannot be undone.
-                </p>
-                {applicationToRemove.status !== "saved" && applicationToRemove.status !== "preparing" && applicationToRemove.status !== "ready_to_apply" && (
-                  <div className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.05] p-3 text-[11px] leading-5 text-amber-100">
-                    This record is marked as {APPLICATION_STATUSES.find((item) => item.value === applicationToRemove.status)?.label.toLowerCase()}. Removing it only changes JobPilot's records; it does not change the employer's application status.
-                  </div>
-                )}
-                {removeApplicationError && (
-                  <div className="mt-3 rounded-lg border border-rose-400/20 bg-rose-400/[0.06] p-3 text-[11px] text-rose-200" role="alert">
-                    {removeApplicationError}
-                  </div>
-                )}
-                <div className="mt-5 flex flex-wrap justify-end gap-2 border-t border-slate-700/50 pt-4">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => {
-                      setApplicationToRemove(null);
-                      setRemoveApplicationError(null);
-                    }}
-                    disabled={removeApplicationLoading}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button !border-rose-400/30 !bg-rose-500/15 !text-rose-100 hover:!bg-rose-500/25"
-                    onClick={() => void handleConfirmRemoveApplication()}
-                    disabled={removeApplicationLoading}
-                  >
-                    {removeApplicationLoading ? (
-                      <LoaderCircle size={14} className="loading-ring" />
-                    ) : (
-                      <Trash2 size={14} />
-                    )}
-                    {removeApplicationLoading ? "Removing..." : "Remove tracking"}
-                  </button>
-                </div>
-              </motion.section>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   );

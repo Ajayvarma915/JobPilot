@@ -17,6 +17,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from app.applications.tracker import router as applications_router
+from app.email.gmail_integration import router as email_router
 from pydantic import BaseModel, Field
 from sqlalchemy import case, create_engine, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
@@ -278,6 +279,7 @@ app = FastAPI(
 )
 
 app.include_router(applications_router)
+app.include_router(email_router)
 
 app.add_middleware(
     CORSMiddleware,
