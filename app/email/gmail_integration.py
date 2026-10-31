@@ -136,7 +136,8 @@ def _ensure_email_schema(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS email_oauth_states (
             state TEXT PRIMARY KEY,
             created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
+            expires_at TEXT NOT NULL,
+            code_verifier TEXT
         );
 
         CREATE TABLE IF NOT EXISTS email_sync_state (
@@ -199,6 +200,12 @@ def _ensure_email_schema(connection: sqlite3.Connection) -> None:
 
     # Additive migration for databases created by earlier iterations of the
     # Gmail integration. CREATE TABLE IF NOT EXISTS does not add new columns.
+    oauth_state_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(email_oauth_states)").fetchall()
+    }
+    if "code_verifier" not in oauth_state_columns:
+        connection.execute("ALTER TABLE email_oauth_states ADD COLUMN code_verifier TEXT")
+
     sync_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(email_sync_state)").fetchall()
     }
@@ -224,7 +231,11 @@ def _credentials_file_configured() -> bool:
     return _client_secrets_path().is_file()
 
 
-def _google_flow(state: str | None = None) -> Any:
+def _google_flow(
+    state: str | None = None,
+    *,
+    code_verifier: str | None = None,
+) -> Any:
     secrets_path = _client_secrets_path()
     if not secrets_path.is_file():
         raise HTTPException(
@@ -252,6 +263,10 @@ def _google_flow(state: str | None = None) -> Any:
             str(secrets_path),
             scopes=GMAIL_SCOPES,
             state=state,
+            code_verifier=code_verifier,
+            # Generate a verifier only when starting a new authorization.
+            # During the callback, reuse the verifier saved with the OAuth state.
+            autogenerate_code_verifier=code_verifier is None,
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(
@@ -826,6 +841,20 @@ def start_gmail_oauth(
         include_granted_scopes="true",
         prompt="consent",
     )
+    # google-auth-oauthlib 1.5.x generates a PKCE verifier when creating the
+    # authorization URL. Persist that exact verifier for the callback request;
+    # creating a new Flow in the callback must not generate a different one.
+    if not flow.code_verifier:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Google OAuth did not create a PKCE verifier. Check the installed OAuth library.",
+        )
+    connection.execute(
+        "UPDATE email_oauth_states SET code_verifier = ? WHERE state = ?",
+        (flow.code_verifier, state),
+    )
+    connection.commit()
+
     response = RedirectResponse(authorization_url, status_code=302)
     response.set_cookie(
         key="jobpilot_gmail_oauth_state",
@@ -867,7 +896,7 @@ def complete_gmail_oauth(
         )
 
     state_row = connection.execute(
-        "SELECT expires_at FROM email_oauth_states WHERE state = ?",
+        "SELECT expires_at, code_verifier FROM email_oauth_states WHERE state = ?",
         (state,),
     ).fetchone()
     connection.execute("DELETE FROM email_oauth_states WHERE state = ?", (state,))
@@ -878,13 +907,19 @@ def complete_gmail_oauth(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="The Gmail OAuth request expired. Start the connection again.",
         )
+    code_verifier = str(state_row["code_verifier"] or "").strip()
+    if not code_verifier:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="The Gmail OAuth PKCE verifier is missing. Start the Gmail connection again.",
+        )
     if not code:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Google did not return an authorization code.",
         )
 
-    flow = _google_flow(state)
+    flow = _google_flow(state, code_verifier=code_verifier)
     try:
         flow.fetch_token(code=code)
         credentials = flow.credentials
