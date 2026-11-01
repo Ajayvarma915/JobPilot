@@ -224,6 +224,41 @@ def _ensure_email_schema(connection: sqlite3.Connection) -> None:
         FROM application_email_events
         """
     )
+
+    # One-time cleanup: older classifier versions could import newsletters and
+    # campus-placement advertisements as lifecycle events. Preserve those rows
+    # for audit, but remove them from the actionable pending queue.
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS email_processing_migrations (
+            name TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+        """
+    )
+    strict_migration = "strict_submitted_application_events_v1"
+    migration_done = connection.execute(
+        "SELECT 1 FROM email_processing_migrations WHERE name = ?",
+        (strict_migration,),
+    ).fetchone()
+    if not migration_done:
+        connection.execute(
+            """
+            UPDATE application_email_events
+            SET review_status = 'ignored',
+                review_note = COALESCE(
+                    review_note,
+                    'Automatically ignored during the submitted-application-only Gmail filtering upgrade.'
+                ),
+                reviewed_at = COALESCE(reviewed_at, ?)
+            WHERE review_status = 'pending'
+            """,
+            (_utc_now(),),
+        )
+        connection.execute(
+            "INSERT INTO email_processing_migrations(name, applied_at) VALUES (?, ?)",
+            (strict_migration, _utc_now()),
+        )
     connection.commit()
 
 
@@ -386,93 +421,106 @@ def classify_email(
     snippet: str = "",
     body_text: str = "",
 ) -> dict[str, Any] | None:
-    """Classify a small set of recruiting events without sending email data to an LLM."""
+    """Identify explicit application-lifecycle messages, not general job ads.
+
+    This classifier is intentionally conservative. A message must contain a
+    direct transactional phrase; generic mentions of jobs, offers, interviews,
+    assessments, hiring, or recruiting are not enough. The caller additionally
+    requires a matching application that has been marked as submitted in JobPilot.
+    """
     text = _normalise_text(" ".join((subject, sender, snippet, body_text)))
     if not text:
+        return None
+
+    promotional_markers = (
+        "placement drive",
+        "campus hiring",
+        "career and placement program",
+        "career placement program",
+        "training and mentorship",
+        "internship with placement support",
+        "placement support",
+        "job alert",
+        "job digest",
+        "newsletter",
+        "groww digest",
+        "you may know",
+        "leaving our previous mails on read",
+        "gratuity",
+        "foreign capital inflow",
+        "register for microsoft training",
+    )
+    if any(marker in text for marker in promotional_markers):
         return None
 
     rules: tuple[tuple[str, tuple[str, ...], float], ...] = (
         (
             "offer",
             (
-                "pleased to offer you",
-                "offer of employment",
-                "employment offer",
-                "offer letter",
-                "formal offer",
-                "congratulations on your offer",
-                "we would like to offer",
+                "we are pleased to offer you",
+                "we re pleased to offer you",
+                "we are delighted to offer you",
+                "we would like to offer you the position",
+                "formal offer of employment for",
+                "offer of employment for the",
+                "employment offer for the position",
             ),
-            0.96,
+            0.98,
         ),
         (
             "rejection",
             (
-                "not moving forward",
-                "decided to move forward with other candidates",
-                "moving forward with other candidates",
-                "unable to move forward",
-                "not selected for",
-                "will not be moving forward",
-                "will not be proceeding",
-                "application was unsuccessful",
-                "regret to inform you",
-                "we have decided not to proceed",
-                "your application has been declined",
+                "we regret to inform you that your application",
+                "we are not moving forward with your application",
+                "we will not be moving forward with your application",
+                "we have decided not to move forward with your application",
+                "your application was not selected",
+                "your application has not been selected",
+                "your application was unsuccessful",
+                "we have decided to move forward with other candidates for",
             ),
-            0.94,
+            0.97,
         ),
         (
             "assessment_invitation",
             (
-                "online assessment",
-                "coding assessment",
-                "technical assessment",
-                "assessment invitation",
-                "complete the assessment",
-                "complete your assessment",
-                "coding challenge",
-                "take home assignment",
-                "take home assessment",
-                "hackerrank",
-                "codility",
-                "online test",
-                "assessment link",
+                "please complete the online assessment",
+                "please complete your online assessment",
+                "please complete the coding assessment",
+                "invitation to complete the assessment",
+                "you are invited to complete the assessment",
+                "we invite you to complete the assessment",
+                "complete the assessment for your application",
+                "take the coding assessment for",
             ),
-            0.91,
+            0.95,
         ),
         (
             "interview_invitation",
             (
-                "interview invitation",
-                "invite you to interview",
-                "invited to interview",
-                "schedule an interview",
-                "schedule your interview",
-                "interview availability",
-                "technical interview",
-                "phone screen",
-                "recruiter screen",
-                "interview for the",
-                "interview for your",
-                "would like to interview",
-                "first round interview",
-                "next round interview",
+                "we would like to invite you to interview",
+                "we would like to invite you for an interview",
+                "invite you to interview for",
+                "invitation to interview for",
+                "interview invitation for",
+                "schedule your interview for",
+                "schedule an interview for the",
+                "please select a time for your interview",
+                "arrange an interview for the",
             ),
-            0.91,
+            0.96,
         ),
         (
             "application_confirmation",
             (
-                "thank you for applying",
-                "thank you for your application",
-                "application received",
-                "received your application",
-                "application confirmation",
-                "successfully submitted your application",
-                "we have your application",
+                "thank you for applying to",
+                "we have received your application for",
+                "we received your application for",
+                "application received for the",
+                "successfully submitted your application for",
+                "your application to the position has been received",
             ),
-            0.90,
+            0.95,
         ),
     )
 
@@ -484,24 +532,7 @@ def classify_email(
                 "proposed_status": PROPOSED_STATUS_BY_EVENT[event_type],
             }
 
-    # Lower-confidence patterns catch common variations without treating every
-    # email that merely mentions a job as an event.
-    if "interview" in text and any(word in text for word in ("invite", "invitation", "schedule", "availability")):
-        event_type = "interview_invitation"
-        return {
-            "event_type": event_type,
-            "confidence": 0.76,
-            "proposed_status": PROPOSED_STATUS_BY_EVENT[event_type],
-        }
-    if "assessment" in text and any(word in text for word in ("complete", "deadline", "invitation", "link", "due")):
-        event_type = "assessment_invitation"
-        return {
-            "event_type": event_type,
-            "confidence": 0.75,
-            "proposed_status": PROPOSED_STATUS_BY_EVENT[event_type],
-        }
     return None
-
 
 def _extract_body_text(payload: dict[str, Any] | None) -> str:
     if not payload:
@@ -574,12 +605,16 @@ def _received_at(message: dict[str, Any], headers: dict[str, str]) -> str | None
 
 
 def _title_overlap(title: str, corpus: str) -> float:
+    # Generic seniority/function words are not discriminative enough to link
+    # two roles. Retain meaningful terms such as software, backend, Java, or data.
     stop_words = {
         "the", "and", "for", "with", "from", "your", "you", "our", "this",
         "that", "job", "role", "position", "opening", "career", "careers",
-        "engineer", "engineering", "developer", "development", "intern", "internship",
-        "senior", "junior", "associate", "lead", "staff", "principal", "level",
-        "apply", "application", "team", "remote", "hybrid", "onsite", "india",
+        "engineer", "engineering", "developer", "development", "analyst",
+        "specialist", "manager", "architect", "designer", "consultant",
+        "tester", "intern", "internship", "senior", "junior", "associate",
+        "lead", "staff", "principal", "level", "apply", "application",
+        "team", "remote", "hybrid", "onsite", "india", "i", "ii", "iii", "iv",
     }
     tokens = {
         token
@@ -592,6 +627,18 @@ def _title_overlap(title: str, corpus: str) -> float:
     return len(tokens & corpus_tokens) / len(tokens)
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def _application_match(
     connection: sqlite3.Connection,
     *,
@@ -599,65 +646,81 @@ def _application_match(
     sender: str,
     snippet: str,
     body_text: str,
+    received_at: str | None = None,
 ) -> tuple[int | None, float]:
+    """Match only to a JobPilot application the user has marked as submitted.
+
+    Company-name presence alone is deliberately insufficient. A role-title
+    overlap is mandatory, and messages substantially older than submission are
+    rejected to avoid matching historical college-placement mail.
+    """
     corpus = _normalise_text(" ".join((subject, sender, snippet, body_text)))
     if not corpus:
         return None, 0.0
 
     rows = connection.execute(
         """
-        SELECT a.id AS application_id, a.status, j.title AS job_title,
-               c.name AS company_name
+        SELECT a.id AS application_id, a.status, a.applied_at,
+               j.title AS job_title, c.name AS company_name
         FROM applications a
         JOIN jobs j ON j.id = a.job_id
         JOIN companies c ON c.id = j.company_id
-        WHERE a.status NOT IN ('withdrawn') AND j.is_active = 1
+        WHERE a.status IN ('applied', 'assessment', 'interview', 'offer', 'rejected')
+          AND a.applied_at IS NOT NULL
+          AND j.is_active = 1
         ORDER BY a.updated_at DESC, a.id DESC
         """
     ).fetchall()
 
+    message_time = _parse_iso_datetime(received_at)
     candidates: list[tuple[int, float, float, str]] = []
     corpus_words = set(corpus.split())
+
     for row in rows:
+        applied_time = _parse_iso_datetime(row["applied_at"])
+        if message_time and applied_time and message_time < applied_time - timedelta(days=3):
+            continue
+
         company = _normalise_text(row["company_name"] or "")
         if not company:
             continue
         company_tokens = [token for token in company.split() if len(token) > 2]
         exact_company = f" {company} " in f" {corpus} "
         if exact_company:
-            company_score = 0.70
+            company_score = 0.68
         elif company_tokens and len(company_tokens) > 1:
             covered = sum(token in corpus_words for token in company_tokens) / len(company_tokens)
-            if covered < 0.75:
+            if covered < 0.80:
                 continue
-            company_score = 0.52 * covered
+            company_score = 0.50 * covered
         elif len(company) >= 4 and company in corpus_words:
-            company_score = 0.54
+            company_score = 0.68
         else:
             continue
 
-        overlap = _title_overlap(row["job_title"] or "", corpus)
-        score = min(0.98, company_score + (0.26 * overlap))
-        candidates.append((int(row["application_id"]), score, overlap, company))
+        title_score = _title_overlap(row["job_title"] or "", corpus)
+        # Require at least half of the distinctive role tokens. Generic company
+        # mentions or generic words like "interview" cannot satisfy this rule.
+        if title_score < 0.50:
+            continue
+
+        score = min(0.99, company_score + (0.32 * title_score))
+        candidates.append((int(row["application_id"]), score, title_score, company))
 
     if not candidates:
         return None, 0.0
 
-    # If multiple saved roles belong to the same company, require job-title
-    # evidence before proposing a specific application.
     candidates.sort(key=lambda item: (item[1], item[2]), reverse=True)
     best = candidates[0]
-    same_company_candidates = [item for item in candidates if item[3] == best[3]]
-    if len(same_company_candidates) > 1:
-        if best[2] < 0.5:
-            return None, 0.0
-        if len(same_company_candidates) > 1 and abs(best[1] - same_company_candidates[1][1]) < 0.08:
+    if len(candidates) > 1:
+        second = candidates[1]
+        # Do not guess when two submitted applications are similarly plausible.
+        if abs(best[1] - second[1]) < 0.08:
             return None, 0.0
 
-    if best[1] < 0.60:
+    if best[1] < 0.78:
         return None, best[1]
     return best[0], best[1]
-
 
 def _event_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {
@@ -724,13 +787,31 @@ def _record_message(
     sender = headers.get("from", "")[:500]
     snippet = str(message.get("snippet", ""))[:MAX_STORED_SNIPPET_CHARS]
     body_text = _extract_body_text(payload)
+    received_at = _received_at(message, headers)
     classification = classify_email(
         subject=subject,
         sender=sender,
         snippet=snippet,
         body_text=body_text,
     )
-    if classification is None:
+
+    matched_application_id: int | None = None
+    match_confidence = 0.0
+    if classification is not None:
+        matched_application_id, match_confidence = _application_match(
+            connection,
+            subject=subject,
+            sender=sender,
+            snippet=snippet,
+            body_text=body_text,
+            received_at=received_at,
+        )
+
+    # The Gmail lifecycle queue is intentionally limited to confirmed JobPilot
+    # submissions. Job advertisements, newsletters, unmatched events, and mail
+    # for jobs not marked Applied in JobPilot are recorded as scanned but never
+    # become application events. Job discovery remains the collectors' job.
+    if classification is None or matched_application_id is None:
         connection.execute(
             """
             INSERT OR IGNORE INTO email_scanned_messages (
@@ -741,14 +822,6 @@ def _record_message(
         )
         return "unclassified"
 
-    matched_application_id, match_confidence = _application_match(
-        connection,
-        subject=subject,
-        sender=sender,
-        snippet=snippet,
-        body_text=body_text,
-    )
-    received_at = _received_at(message, headers)
     connection.execute(
         """
         INSERT INTO application_email_events (
@@ -782,7 +855,6 @@ def _record_message(
         (message_id, str(message.get("threadId", ""))[:255] or None, _utc_now()),
     )
     return "imported"
-
 
 def _gmail_query(days_back: int) -> str:
     # Gmail search syntax is deliberately kept narrow to avoid importing the
@@ -1191,6 +1263,14 @@ def _apply_proposed_status(
         )
 
     current = str(application["status"])
+    if current not in {"applied", "assessment", "interview", "offer", "rejected"} or not application["applied_at"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Gmail events can update only applications that you have marked Applied "
+                "in JobPilot. Confirm the employer submission in the Applications tracker first."
+            ),
+        )
     next_status = current
     if current not in TERMINAL_APPLICATION_STATUSES:
         if APPLICATION_STATUS_ORDER.get(proposed_status, -1) > APPLICATION_STATUS_ORDER.get(current, -1):

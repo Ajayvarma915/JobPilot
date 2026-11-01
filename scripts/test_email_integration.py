@@ -5,6 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -85,7 +86,7 @@ def _message(*, message_id: str = "gmail-message-1", subject: str | None = None,
     return {
         "id": message_id,
         "threadId": "gmail-thread-1",
-        "internalDate": "1790000000000",
+        "internalDate": str(int(datetime.now(timezone.utc).timestamp() * 1000)),
         "snippet": body[:200],
         "payload": {
             "mimeType": "text/plain",
@@ -174,14 +175,18 @@ class GmailIntegrationTests(unittest.TestCase):
             connection.commit()
         finally:
             connection.close()
-        self.application = self.client.post("/api/applications", json={"job_id": 1}).json()
+        # Gmail may only update applications that the user has explicitly
+        # marked as submitted in JobPilot.
+        self.application = self.client.post(
+            "/api/applications", json={"job_id": 1, "status": "applied"}
+        ).json()
 
     def test_classifier_detects_core_events(self) -> None:
         classify = self.email_module.classify_email
         cases = [
             ("Thank you for applying", "Thank you for applying to ExampleCo.", "application_confirmation", "applied"),
-            ("Online assessment invitation", "Please complete the online assessment.", "assessment_invitation", "assessment"),
-            ("Interview invitation", "We would like to invite you to interview.", "interview_invitation", "interview"),
+            ("Online assessment invitation", "Please complete the online assessment for your ExampleCo application.", "assessment_invitation", "assessment"),
+            ("Interview invitation", "We would like to invite you to interview for the Software Engineer role.", "interview_invitation", "interview"),
             ("Offer letter", "We are pleased to offer you the position.", "offer", "offer"),
             ("Application update", "We are not moving forward with your application.", "rejection", "rejected"),
         ]
@@ -198,6 +203,156 @@ class GmailIntegrationTests(unittest.TestCase):
             body_text="Your account statement is now available.",
         )
         self.assertIsNone(result)
+
+    def test_job_ads_newsletters_and_college_notifications_are_not_lifecycle_events(self) -> None:
+        classify = self.email_module.classify_email
+        # Regression fixtures are based on the 12 messages found in the user's
+        # first live Gmail sync. None is proof of an application submitted
+        # through JobPilot, so none may become a lifecycle event.
+        samples = [
+            (
+                "₹1.44 lakh gratuity on a ₹50,000 basic, after year 5",
+                "Naukri MINIs <info@minis.naukri.com>",
+                "A gratuity explainer mentioning an employment offer letter.",
+            ),
+            (
+                "Urgent Placement Drive - MOBIS India Ltd. | GET Role",
+                "KLU Placements <placements4klu@gmail.com>",
+                "Placement drive for ECE and EEE 2025 and 2026 batches. Register now.",
+            ),
+            (
+                "Leaving our previous mails on read is costing you ₹25L",
+                "LinkedIn x Unstop <noreply@unstop.news>",
+                "Promotional message about previous emails and career opportunities.",
+            ),
+            (
+                "Someone at Tata Consultancy Services you may know",
+                "LinkedIn <messages-noreply@linkedin.com>",
+                "You may know this person at Tata Consultancy Services.",
+            ),
+            (
+                "Ready for your next big challenge? Trent Limited is hiring",
+                "Sneha Kapoor <noreply@unstop.news>",
+                "Trent Limited has a job opportunity. Apply now.",
+            ),
+            (
+                "New Notice - !",
+                "Superset <notifications@joinsuperset.com>",
+                "Java developer who enjoys building real systems and solving real-world problems, this is your chance to put your skills to work and turn them into a career opportunity.",
+            ),
+            (
+                "New Notice - !",
+                "Superset <notifications@joinsuperset.com>",
+                "Java developer who enjoys building real systems and solving real-world problems, this is your chance to put your skills to work and turn them into a career opportunity.",
+            ),
+            (
+                "The AI that can't make things up.",
+                "Why Join <whyjoin@substack.com>",
+                "A newsletter about AI, hiring and assessment technology.",
+            ),
+            (
+                "Important Opportunity: Microsoft and Meta Career & Placement Program",
+                "Harshith G <harshith_g@shikshavertex.in>",
+                "Career and placement program for college students. Register for the program.",
+            ),
+            (
+                "Student Notice - Microsoft Training & Mentorship, AICTE & MSME Internship",
+                "Harshith G <harshith_g@shikshavertex.in>",
+                "Training and mentorship, internship with placement support. Register now.",
+            ),
+            (
+                "upGrad Campus Hiring - Data Labeler - Remote",
+                "KLU Placements <placements4klu@gmail.com>",
+                "Campus hiring for 2025 and 2026 batches. Registration details inside.",
+            ),
+            (
+                "$32 billion foreign capital inflow, L&T orders and more - Groww Digest",
+                "Groww Digest <noreply@digest.groww.in>",
+                "Your weekly financial newsletter and market digest.",
+            ),
+        ]
+        for subject, sender, snippet in samples:
+            with self.subTest(subject=subject):
+                self.assertIsNone(
+                    classify(subject=subject, sender=sender, snippet=snippet)
+                )
+
+    def test_saved_or_ready_application_cannot_be_matched(self) -> None:
+        saved = self.client.post("/api/applications", json={"job_id": 2}).json()
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            match_id, confidence = self.email_module._application_match(
+                connection,
+                subject="Interview invitation for Backend Engineer at ExampleCo",
+                sender="ExampleCo Recruiting <recruiting@exampleco.com>",
+                snippet="We would like to invite you to interview for the Backend Engineer role.",
+                body_text="We would like to invite you to interview for the Backend Engineer role at ExampleCo.",
+            )
+        finally:
+            connection.close()
+        self.assertIsNone(match_id)
+        self.assertEqual(confidence, 0.0)
+        self.assertEqual(saved["status"], "saved")
+
+    def test_company_name_without_role_evidence_does_not_match(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            match_id, confidence = self.email_module._application_match(
+                connection,
+                subject="Interview invitation at ExampleCo",
+                sender="ExampleCo Recruiting <recruiting@exampleco.com>",
+                snippet="We would like to invite you to interview. Please choose a time.",
+                body_text="We would like to invite you to interview. Please choose a time.",
+            )
+        finally:
+            connection.close()
+        self.assertIsNone(match_id)
+        self.assertEqual(confidence, 0.0)
+
+    def test_email_received_before_jobpilot_submission_cannot_match(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            match_id, confidence = self.email_module._application_match(
+                connection,
+                subject="Interview invitation for Software Engineer at ExampleCo",
+                sender="ExampleCo Recruiting <recruiting@exampleco.com>",
+                snippet="We would like to invite you to interview for the Software Engineer role.",
+                body_text="We would like to invite you to interview for the Software Engineer role at ExampleCo.",
+                received_at="2024-01-01T10:00:00+00:00",
+            )
+        finally:
+            connection.close()
+        self.assertIsNone(match_id)
+        self.assertEqual(confidence, 0.0)
+
+    def test_unmatched_lifecycle_email_is_not_added_to_pending_queue(self) -> None:
+        message = _message(
+            message_id="gmail-unmatched-role",
+            subject="Interview invitation for Data Analyst at ExampleCo",
+            body="We would like to invite you to interview for the Data Analyst role at ExampleCo.",
+        )
+        fake = _FakeGmailService(message)
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            sync = self.client.post("/api/email/sync", json={"max_messages": 10})
+        self.assertEqual(sync.status_code, 200, sync.text)
+        self.assertEqual(sync.json()["imported"], 0)
+        self.assertEqual(sync.json()["unclassified"], 1)
+        self.assertEqual(self.client.get("/api/email/events").json()["total"], 0)
+
+    def test_review_cannot_apply_event_to_an_unsubmitted_application(self) -> None:
+        saved = self.client.post("/api/applications", json={"job_id": 2}).json()
+        fake = _FakeGmailService(_message(message_id="gmail-review-submitted-only"))
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"max_messages": 10})
+        event = self.client.get("/api/email/events").json()["items"][0]
+        response = self.client.post(
+            f"/api/email/events/{event['id']}/review",
+            json={"decision": "approve", "application_id": saved["id"]},
+        )
+        self.assertEqual(response.status_code, 409)
 
     def test_status_is_not_connected_without_token_and_oauth_config(self) -> None:
         response = self.client.get("/api/email/status")
@@ -236,7 +391,7 @@ class GmailIntegrationTests(unittest.TestCase):
             json={"decision": "approve", "note": "Confirmed from the email."},
         )
         self.assertEqual(approved.status_code, 200, approved.text)
-        self.assertEqual(approved.json()["before_status"], "saved")
+        self.assertEqual(approved.json()["before_status"], "applied")
         self.assertEqual(approved.json()["after_status"], "interview")
         self.assertTrue(approved.json()["application_status_changed"])
 
@@ -298,7 +453,7 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(ignored.status_code, 200, ignored.text)
         self.assertEqual(ignored.json()["review_status"], "ignored")
         tracked = self.client.get(f"/api/applications/{self.application['id']}").json()
-        self.assertEqual(tracked["status"], "saved")
+        self.assertEqual(tracked["status"], "applied")
 
     def test_ambiguous_same_company_roles_are_not_guessed(self) -> None:
         second_application = self.client.post("/api/applications", json={"job_id": 2}).json()
@@ -312,9 +467,9 @@ class GmailIntegrationTests(unittest.TestCase):
             sync = self.client.post("/api/email/sync", json={"max_messages": 10})
         self.assertEqual(sync.status_code, 200, sync.text)
         events = self.client.get("/api/email/events").json()["items"]
-        self.assertEqual(len(events), 1)
-        self.assertIsNone(events[0]["matched_application_id"])
-        self.assertEqual(events[0]["match_confidence"], 0)
+        # A lifecycle-like email without enough role evidence is not added to
+        # the actionable queue at all.
+        self.assertEqual(len(events), 0)
         self.assertNotEqual(self.application["id"], second_application["id"])
 
     def test_event_must_be_reviewed_before_status_changes_and_cannot_be_approved_twice(self) -> None:
@@ -322,7 +477,7 @@ class GmailIntegrationTests(unittest.TestCase):
         with patch.object(self.email_module, "_gmail_service", return_value=fake):
             self.client.post("/api/email/sync", json={"max_messages": 10})
         event = self.client.get("/api/email/events").json()["items"][0]
-        self.assertEqual(self.client.get(f"/api/applications/{self.application['id']}").json()["status"], "saved")
+        self.assertEqual(self.client.get(f"/api/applications/{self.application['id']}").json()["status"], "applied")
         payload = {"decision": "approve"}
         first = self.client.post(f"/api/email/events/{event['id']}/review", json=payload)
         self.assertEqual(first.status_code, 200, first.text)
