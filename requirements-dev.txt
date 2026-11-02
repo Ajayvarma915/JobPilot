@@ -1,0 +1,6 @@
+# Install the runtime stack plus local development/test tools.
+-r requirements.txt
+
+pytest>=8,<10
+# Starlette 1.x uses httpx2 in TestClient; plain httpx is deprecated.
+httpx2>=2,<3

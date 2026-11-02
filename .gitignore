@@ -1,22 +1,39 @@
+# Python environments and caches
 venv/
-.env
-
+.venv/
 __pycache__/
-*.pyc
+*.py[cod]
+.pytest_cache/
 
-*.db
-*.sqlite
-*.sqlite3
-
-data/generated_resumes/
-data/generated_cover_letters/
-data/raw_jobs/
-
-playwright/.cache/
-
+# Local secrets and environment configuration
+.env
+.env.*
+!.env.example
 credentials/
 tokens/
 
+# Local databases and runtime data
+*.db
+*.sqlite
+*.sqlite3
+data/generated_resumes/
+data/generated_cover_letters/
+data/raw_jobs/
+data/master_resume/
+
+# Frontend dependencies and build output
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Browser automation caches
+playwright/.cache/
+
+# Editor / OS files
 .vscode/
 .idea/
-data/master_resume
+.DS_Store
+Thumbs.db
+
+# Local backups
+*.bak

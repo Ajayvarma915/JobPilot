@@ -7,7 +7,7 @@ from app.db.models import Job
 from app.profile.candidate_profile import (
     get_candidate_profile,
 )
-from app.services.job_matcher import match_job
+from app.services.job_matcher import JobMatcher
 from app.services.job_normalizer import normalize_job
 
 
@@ -17,6 +17,7 @@ def run_unit_examples() -> None:
     print("========================================")
 
     candidate = get_candidate_profile()
+    matcher = JobMatcher(candidate_profile=candidate)
 
     examples = [
         {
@@ -84,11 +85,7 @@ def run_unit_examples() -> None:
             example
         )
 
-        result = match_job(
-            job=normalized,
-            candidate=candidate,
-            description=example["description"],
-        )
+        result = matcher.match_job(job=normalized)
 
         print(
             f"{index:02d}. {example['title']}"
@@ -184,6 +181,7 @@ def run_database_scoring() -> None:
     print("========================================")
 
     candidate = get_candidate_profile()
+    matcher = JobMatcher(candidate_profile=candidate)
 
     db = SessionLocal()
 
@@ -214,11 +212,7 @@ def run_database_scoring() -> None:
                 job
             )
 
-            result = match_job(
-                job=normalized,
-                candidate=candidate,
-                description=job.description,
-            )
+            result = matcher.match_job(job=normalized)
 
             scored_jobs.append(
                 (

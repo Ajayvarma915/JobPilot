@@ -25,6 +25,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import Company, Job
 from app.profile.candidate_profile import CANDIDATE_PROFILE
+from app.ai.jd_insights import analyze_job_description_with_ollama
+from app.config import OLLAMA_MODEL
+from app.ai.ollama_client import (
+    OllamaError,
+    OllamaModelNotFoundError,
+    OllamaUnavailableError,
+    get_status as get_ollama_status,
+)
+from app.services.jd_analyzer import analyze_job_description as analyze_job_description_rules
 from app.resume.evidence_selector import ResumeEvidenceSelector
 from app.resume.evidence_store import (
     DEFAULT_STORE_PATH,
@@ -1305,6 +1314,80 @@ def get_job(
         ),
         "is_active": job.is_active,
         "match": match_data,
+    }
+
+
+# ---------------------------------------------------------------------
+# Optional local-AI job-description analysis
+# ---------------------------------------------------------------------
+
+@app.get("/api/ai/status")
+def ai_status() -> dict[str, Any]:
+    """Report whether the configured local Ollama model is available."""
+    return get_ollama_status()
+
+
+@app.post("/api/jobs/{job_id}/ai-analysis")
+def analyze_job_with_local_ai(
+    job_id: int,
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Run on-demand LLM extraction beside the deterministic JD analysis.
+
+    This endpoint does not alter the job, candidate profile, match cache, or
+    resume. The deterministic analyzer remains the baseline/source of truth.
+    """
+    job = db.scalar(select(Job).where(Job.id == job_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job with ID {job_id} was not found.")
+    company_obj = db.get(Company, job.company_id)
+    if company_obj is None:
+        raise HTTPException(status_code=500, detail="The job refers to a missing company record.")
+    if not job.description or len(job.description.strip()) < 40:
+        raise HTTPException(status_code=422, detail="This job does not have enough description text for AI analysis.")
+
+    deterministic = analyze_job_description_rules(
+        title=job.title,
+        description=job.description,
+        location=job.location,
+        employment_type=job.employment_type,
+    )
+    try:
+        ai_result = analyze_job_description_with_ollama(
+            title=job.title,
+            description=job.description,
+            location=job.location,
+            employment_type=job.employment_type,
+            required_years_evidence=deterministic.required_years_min,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OllamaModelNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OllamaUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OllamaError as exc:
+        logger.exception("Local AI job analysis failed for job %s", job_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return {
+        "job": {
+            "id": job.id,
+            "title": job.title,
+            "company": company_obj.name,
+            "location": job.location,
+            "source": job.source,
+        },
+        "provider": "ollama",
+        "model": OLLAMA_MODEL,
+        "deterministic_analysis": deterministic.to_dict(),
+        "ai_analysis": ai_result["insights"],
+        "input": {
+            "source_characters": ai_result["source_characters"],
+            "truncated": ai_result["input_truncated"],
+        },
+        "grounding_note": ai_result["grounding_note"],
+        "persisted": False,
     }
 
 
