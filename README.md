@@ -1,78 +1,44 @@
 # JobPilot
 
-JobPilot is a local-first job discovery, resume-personalization, application-preparation, and application-tracking platform.
+JobPilot is a local-first job discovery, evidence-based resume tailoring, application-preparation and application-tracking platform. It is designed to keep the candidate in control of employer submissions.
 
-The current application uses a **FastAPI backend**, **SQLite/SQLAlchemy**, and a **React + TypeScript + Vite frontend**. It also includes a Manifest V3 browser form assistant and a read-only Gmail integration.
+## Current architecture
 
-## Implemented in the current codebase
+- **Backend:** Python, FastAPI, SQLAlchemy and SQLite
+- **Frontend:** React, TypeScript and Vite
+- **Local AI:** Ollama (configured model: `gemma3:4b`) for on-demand structured job-description analysis
+- **Job sources:** Google Careers, Greenhouse and Lever collectors
+- **Resume workflow:** candidate evidence store, tailored DOCX/PDF generation and ATS evaluation
+- **Email intelligence:** Gmail read-only OAuth integration; application events remain subject to review
+- **Browser assistance:** browser-extension foundations for supported application-form workflows
 
-- Job-source adapters for Google Careers, Greenhouse, and Lever.
-- Configurable source ingestion, job normalization, deduplication, and SQLite upserts.
-- Rule-based job-description analysis and candidate/job matching.
-- Candidate-profile and master-resume evidence selection.
-- DOCX/PDF tailored-resume generation and resume evaluation.
-- Application tracking, readiness review, and application-preparation records.
-- Gmail OAuth, read-only message synchronization, lifecycle-event classification, application matching, and user-reviewed status updates.
-- A Manifest V3 browser extension that fills supported visible application fields. It does not submit forms or upload the resume automatically.
+## Default job-search policy
 
-## Known gaps / not yet complete
+The default opportunity feed is intentionally narrower than the raw job-board inventory:
 
-- `app/ai/ollama_client.py` is a basic local client; the current main job-analysis/matching flow does not call it yet. Do not describe the current matcher as LLM-powered.
-- Lever collection is implemented, but `data/job_sources.json` currently has no enabled Lever entries.
-- Gmail synchronization is currently initiated manually. A reliable scheduler and notification workflow are still to be built.
-- The browser extension is a form-assistance layer, not a general-purpose Playwright automation engine. CAPTCHA, MFA, uploads, and final submission remain manual.
-- CI, deployment, Docker, consolidated automated tests, and full application analytics remain future work.
+- Software-engineering title families only (SWE, SDE, backend, frontend, full-stack, platform, SRE/DevOps, AI/ML/data engineering, security software engineering and test automation).
+- Excludes support, customer service/success, sales, account executive, recruiting, marketing, finance, administrative and other non-software roles.
+- Defaults to India and India-eligible remote locations; location-restricted roles in other countries are excluded from the default feed.
+- Early-career mode uses the candidate's TCS start date (18 September 2025) and currently allows roles whose stated minimum experience requirement is up to two years.
+- Compensation defaults to **₹25 LPA or higher, or undisclosed**. Explicitly disclosed ranges below ₹25 LPA are hidden by default; unknown ranges stay visible because many postings do not publish salary. Listings with disclosed ranges are labelled as ₹25+ or ₹30+ when detectable.
 
-## Prerequisites
+Salary detection only reads explicit INR/LPA expressions in the saved job description. It does not infer pay, convert foreign currencies, or determine whether a disclosed figure is fixed pay, variable pay or equity. Verify the employer's compensation structure before applying.
 
-- Windows 10/11 or another supported desktop OS.
-- Python 3.11 or newer (the current development environment used Python 3.13).
-- Node.js 20.19+ or 22.12+ and npm for the Vite frontend.
-- Git and VS Code are recommended.
-- Ollama is optional at this stage; the application does not yet use it in the main analysis workflow.
+The configured source registry currently contains Google Careers, Coinbase's Greenhouse board and KnowBe4's Greenhouse board; Lever is implemented but has no company entries configured yet. A source board can publish every department's vacancies, so the role policy filters board output before it reaches the default feed. Expand `data/job_sources.json` with verified target-company career/ATS identifiers to increase coverage.
 
-## Backend setup (Windows PowerShell)
+## Windows development setup
 
-Run from the repository root:
+### Backend
 
 ```powershell
-python --version
-
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-For development and tests:
-
-```powershell
 pip install -r requirements-dev.txt
+uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Initialize the database only for a new local setup:
-
-```powershell
-python -m app.db.init_db
-```
-
-`create_all()` creates missing tables and does not delete existing tables or records. Still, back up `jobpilot.db` before making schema or migration changes.
-
-Start the API:
-
-```powershell
-python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-API health check:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/api/health
-```
-
-## Frontend setup
-
-Open a second PowerShell terminal:
+### Frontend
 
 ```powershell
 cd frontend
@@ -80,93 +46,38 @@ npm ci
 npm run dev
 ```
 
-Vite serves the app at `http://127.0.0.1:5173` (the port is configured as strict in `vite.config.ts`). The frontend defaults to the API at `http://127.0.0.1:8000`; set `VITE_API_BASE_URL` in a local `frontend/.env.local` only when you need a different API address.
+### Local AI
 
-Production build check:
-
-```powershell
-npm run build
-npm run lint
-```
-
-## Job-source configuration
-
-Edit `data/job_sources.json` to enable the sources you want to collect. Current adapters are:
-
-- `google`: Google Careers query and location settings.
-- `greenhouse`: one entry per public Greenhouse board, using its board token.
-- `lever`: one entry per public Lever site, with the supported region.
-
-Run a collection without writing to the database:
+Install Ollama, pull the configured model and check it:
 
 ```powershell
-python -m scripts.sync_job_sources --dry-run
+ollama pull gemma3:4b
+python -m scripts.check_ollama
 ```
 
-Only run a non-dry sync after checking the selected sources and database backup:
+## Useful verification commands
+
+Run tests from the project root using module invocation:
 
 ```powershell
-python -m scripts.sync_job_sources
-```
-
-The number of companies collected depends on the sources explicitly configured in `data/job_sources.json`; the adapters do not automatically discover every product company on the internet.
-
-## Gmail setup
-
-Gmail uses read-only OAuth. Keep these files local and private:
-
-```text
-credentials/gmail_oauth_client.json
- tokens/gmail_token.json
-```
-
-The OAuth client must be a Google Cloud **Web application** client with this exact local redirect URI:
-
-```text
-http://127.0.0.1:8000/api/email/oauth/callback
-```
-
-Connect Gmail from JobPilot's Employer Email Events page. The token is generated after authorization. Never commit or share the OAuth client secret or token file.
-
-Gmail sync can produce pending lifecycle events, but events must be reviewed before they update an application. Only applications that you actually submitted and marked `Applied` in JobPilot are eligible for lifecycle matching.
-
-## Browser form assistant
-
-The extension source is in `browser_extension/jobpilot-form-assistant/`.
-
-1. Open `brave://extensions` or `chrome://extensions`.
-2. Enable Developer mode.
-3. Choose **Load unpacked**.
-4. Select the `browser_extension/jobpilot-form-assistant` folder.
-5. Open an employer application form, then use the extension to fill supported fields.
-
-Review every field. The extension does not click Submit, bypass CAPTCHA/MFA, or upload a resume automatically.
-
-## Tests and local checks
-
-Run from the repository root:
-
-```powershell
-python -m scripts.test_email_integration
+python -m scripts.test_job_filter_policy
 python -m scripts.test_multi_source_collectors
+python -m scripts.test_ollama_jd_analysis
+python -m scripts.test_email_integration
 ```
 
-The Gmail integration suite currently contains 15 regression tests. The collector script currently contains two deterministic Greenhouse/Lever adapter tests. Other `scripts/test_*.py` files include a mixture of unit tests, database-dependent checks, and manual diagnostics; not every script is a self-contained test suite yet.
-
-Run the environment preflight:
+Build the frontend:
 
 ```powershell
-python -m scripts.check_environment
+cd frontend
+npm run build
 ```
 
-## Local files that must not be committed or shared
+## Secrets and local data
 
-Keep the following local:
+Never commit or share `.env`, `credentials/`, `tokens/`, Gmail OAuth client secrets, Gmail token files, personal resumes, generated resumes, `jobpilot.db`, `venv/`, `node_modules/` or `.git/`. Keep private credentials local. The Gmail integration requests read-only access and does not store full email bodies or attachments.
 
-- `.env` and `frontend/.env.local` (the latter may contain local configuration).
-- `credentials/` and `tokens/`.
-- `jobpilot.db` and other local SQLite databases.
-- `data/master_resume/` and generated resumes/cover letters.
-- `venv/`, `frontend/node_modules/`, and `.git/` are not needed in a source ZIP.
+## Application-submission boundary
 
-The `.gitignore` covers these paths for future Git commits. If a private file was committed previously, `.gitignore` alone does not remove it from Git history; check the repository's tracked files separately.
+JobPilot discovers roles and prepares application materials. The user must review the employer form and explicitly submit it. A job marked `ready_to_apply` is not a submitted application; mark it `Applied` only after the employer has accepted the submission. Gmail lifecycle matching is restricted to confirmed JobPilot submissions.
+    

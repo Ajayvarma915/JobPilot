@@ -52,6 +52,8 @@ const API_BASE = (
 type Screen = "overview" | "jobs" | "applications" | "resume" | "email";
 type ApiStatus = "checking" | "connected" | "offline";
 type CareerLevelFilter = "early" | "all";
+type RoleScopeFilter = "software_engineering" | "all";
+type CompensationFilter = "target_or_unknown" | "target_only" | "all";
 
 interface Company {
   id: number;
@@ -90,6 +92,8 @@ interface JobFilters {
   location: string;
   source: string;
   career_level: CareerLevelFilter;
+  role_scope: RoleScopeFilter;
+  compensation_filter: CompensationFilter;
 }
 
 interface JobMatch {
@@ -119,6 +123,13 @@ interface JobMatch {
   concerns: string[];
 }
 
+interface JobCompensation {
+  min_lpa: number | null;
+  max_lpa: number | null;
+  status: "target_30_plus" | "target_25_plus" | "target_possible" | "below_target" | "not_disclosed";
+  target_floor_lpa: number;
+}
+
 interface Job {
   id: number;
   external_id: string | null;
@@ -131,6 +142,7 @@ interface Job {
   source: string;
   experience_level: string | null;
   employment_type: string | null;
+  compensation?: JobCompensation;
   posted_at: string | null;
   first_seen_at: string | null;
   last_seen_at: string | null;
@@ -984,6 +996,33 @@ function EmptyState({
   );
 }
 
+function CompensationBadge({ compensation }: { compensation?: JobCompensation }) {
+  if (!compensation) return null;
+  const formatRange = () => {
+    if (compensation.min_lpa === null || compensation.max_lpa === null) return "Pay not disclosed";
+    if (compensation.min_lpa === compensation.max_lpa) return `₹${compensation.min_lpa} LPA`;
+    return `₹${compensation.min_lpa}–${compensation.max_lpa} LPA`;
+  };
+  const label = compensation.status === "target_30_plus"
+    ? `₹30+ LPA listed · ${formatRange()}`
+    : compensation.status === "target_25_plus"
+      ? `₹25+ LPA listed · ${formatRange()}`
+      : compensation.status === "target_possible"
+        ? `Range overlaps ₹25+ · ${formatRange()}`
+        : compensation.status === "below_target"
+          ? `Below ₹${compensation.target_floor_lpa}+ target`
+          : "Pay not disclosed · verify";
+  const tone = compensation.status === "target_30_plus"
+    ? "border-emerald-400/25 bg-emerald-400/[0.09] text-emerald-200"
+    : compensation.status === "target_25_plus"
+      ? "border-emerald-400/15 bg-emerald-400/[0.04] text-emerald-100"
+      : compensation.status === "target_possible"
+        ? "border-amber-300/20 bg-amber-300/[0.06] text-amber-100"
+        : "border-slate-700 bg-slate-800/50 text-slate-400";
+  return <span className={`inline-flex rounded-full border px-2 py-1 text-[9px] ${tone}`}>{label}</span>;
+}
+
+
 function JobMiniCard({
   job,
   onTailor,
@@ -1022,6 +1061,7 @@ function JobMiniCard({
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
+        <CompensationBadge compensation={job.compensation} />
         <MatchBadge match={job.match} />
         <button
           className="secondary-button shrink-0 !px-3 !py-2"
@@ -1192,7 +1232,7 @@ function OverviewView({
           <SectionHeading
             eyebrow="Opportunity feed"
             title="Recently collected jobs"
-            description="Open a role to inspect its original description or prepare a tailored resume."
+            description="India-based and India-eligible remote software-engineering roles from configured target companies. Listed pay appears when available; undisclosed pay is retained for verification."
             right={
               <button
                 className="secondary-button !px-3 !py-2"
@@ -1392,7 +1432,7 @@ function JobsView({
       <SectionHeading
         eyebrow="Discover"
         title="Explore opportunities"
-        description="Search job titles, skills or keywords, then narrow the results by company, location and experience."
+        description="Default feed: software-engineering roles in India/India-eligible remote locations, early-career suitable, prioritizing disclosed compensation of ₹25 LPA or more."
         right={
           <button
             className="secondary-button"
@@ -1485,7 +1525,7 @@ function JobsView({
           </button>
         </div>
 
-        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <SearchableFilter
             label="Company"
             value={filterDraft.company}
@@ -1530,7 +1570,7 @@ function JobsView({
           <select
             className="field"
             value={filterDraft.career_level}
-            aria-label="Role level filter"
+            aria-label="Experience level filter"
             onChange={(event) =>
               setFilterDraft({
                 ...filterDraft,
@@ -1538,8 +1578,39 @@ function JobsView({
               })
             }
           >
-            <option value="early">Early-career suitable</option>
-            <option value="all">All role levels</option>
+            <option value="early">Up to 2 years required</option>
+            <option value="all">All experience levels</option>
+          </select>
+
+          <select
+            className="field"
+            value={filterDraft.role_scope}
+            aria-label="Role family filter"
+            onChange={(event) =>
+              setFilterDraft({
+                ...filterDraft,
+                role_scope: event.target.value as RoleScopeFilter,
+              })
+            }
+          >
+            <option value="software_engineering">Software engineering roles</option>
+            <option value="all">All job functions</option>
+          </select>
+
+          <select
+            className="field"
+            value={filterDraft.compensation_filter}
+            aria-label="Compensation target filter"
+            onChange={(event) =>
+              setFilterDraft({
+                ...filterDraft,
+                compensation_filter: event.target.value as CompensationFilter,
+              })
+            }
+          >
+            <option value="target_or_unknown">₹25+ LPA or undisclosed</option>
+            <option value="target_only">Confirmed ₹25+ LPA only</option>
+            <option value="all">All salary levels</option>
           </select>
 
           <button className="secondary-button" type="submit">
@@ -1623,8 +1694,9 @@ function JobsView({
                       {job.company?.name || "Unknown company"}
                     </p>
 
-                    <div className="mt-2">
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
                       <MatchBadge match={job.match} />
+                      <CompensationBadge compensation={job.compensation} />
                     </div>
 
                     <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[10px] text-slate-500">
@@ -2911,16 +2983,20 @@ function App() {
 
   const [filterDraft, setFilterDraft] = useState<JobFilters>({
     company: "",
-    location: "",
+    location: "India",
     source: "",
     career_level: "early",
+    role_scope: "software_engineering",
+    compensation_filter: "target_or_unknown",
   });
 
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
     company: "",
-    location: "",
+    location: "India",
     source: "",
     career_level: "early",
+    role_scope: "software_engineering",
+    compensation_filter: "target_or_unknown",
   });
 
   const [jobTitle, setJobTitle] = useState("");
@@ -2952,7 +3028,7 @@ function App() {
       ] = await Promise.all([
         apiRequest<{ status: string }>("/api/health"),
         apiRequest<DashboardStats>("/api/dashboard/stats"),
-        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0"),
+        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0&location=India&role_scope=software_engineering&compensation_filter=target_or_unknown"),
         apiRequest<EvidenceSummary>("/api/evidence/summary"),
         apiRequest<CompanyDirectoryResponse>("/api/companies?limit=1000"),
         apiRequest<LocationDirectoryResponse>("/api/locations?limit=1000"),
@@ -2987,6 +3063,8 @@ function App() {
         offset: String(jobsPage * 10),
         active_only: "true",
         career_level: appliedFilters.career_level,
+        role_scope: appliedFilters.role_scope,
+        compensation_filter: appliedFilters.compensation_filter,
       });
 
       if (appliedQuery) params.set("q", appliedQuery);
@@ -3187,6 +3265,7 @@ function App() {
         q: query,
         limit: "8",
         career_level: filterDraft.career_level,
+        role_scope: filterDraft.role_scope,
       });
 
       if (filterDraft.company.trim()) {
@@ -3257,6 +3336,8 @@ function App() {
       location: filterDraft.location.trim(),
       source: filterDraft.source.trim(),
       career_level: filterDraft.career_level,
+      role_scope: filterDraft.role_scope,
+      compensation_filter: filterDraft.compensation_filter,
     });
     setSuggestionsOpen(false);
   };
@@ -3267,6 +3348,8 @@ function App() {
       location: filterDraft.location.trim(),
       source: filterDraft.source.trim(),
       career_level: filterDraft.career_level,
+      role_scope: filterDraft.role_scope,
+      compensation_filter: filterDraft.compensation_filter,
     };
 
     // When the query matched a company name rather than the title, and the

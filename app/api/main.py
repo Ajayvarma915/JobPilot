@@ -102,6 +102,49 @@ SENIOR_ROLE_PATTERN = re.compile(
 )
 INTERN_ROLE_PATTERN = re.compile(r"\b(intern|internship)\b", re.IGNORECASE)
 PHD_PATTERN = re.compile(r"\bph\.?\s*d\.?\b|\bdoctorate\b", re.IGNORECASE)
+
+# JobPilot's default feed is intentionally limited to software-engineering roles.
+# Greenhouse/Lever boards contain every department, so early-career seniority
+# checks alone are not enough to keep sales/support/recruiting roles out.
+TARGET_SOFTWARE_ROLE_PATTERN = re.compile(
+    r"\b(?:"
+    r"software engineer|software developer|software development engineer|"
+    r"sde(?:\s*[1-3])?|"
+    r"backend engineer|backend developer|back[- ]end engineer|back[- ]end developer|"
+    r"frontend engineer|frontend developer|front[- ]end engineer|front[- ]end developer|"
+    r"full[- ]stack engineer|full[- ]stack developer|"
+    r"platform engineer|infrastructure software engineer|systems software engineer|"
+    r"site reliability engineer|sre|devops engineer|"
+    r"machine learning engineer|ml engineer|ai engineer|data engineer|"
+    r"security software engineer|software security engineer|"
+    r"qa automation engineer|test automation engineer|software development engineer in test|sdet"
+    r")\b",
+    re.IGNORECASE,
+)
+NON_SOFTWARE_ROLE_PATTERN = re.compile(
+    r"\b(?:"
+    r"support|customer success|customer service|help desk|service desk|"
+    r"account executive|account manager|sales|business development|"
+    r"talent acquisition|recruit(?:er|ing|ment)|human resources|hr|"
+    r"marketing|communications|content|public relations|"
+    r"commission|payroll|finance|financial analyst|accounting|"
+    r"administrative|office manager|executive assistant|"
+    r"technician|field service|inside sales|solutions consultant"
+    r")\b",
+    re.IGNORECASE,
+)
+
+TARGET_COMPENSATION_FLOOR_LPA = 25.0
+_LPA_UNIT = r"(?:lpa|lakhs?\s*(?:per\s+annum|p\.?a\.?|pa))"
+_LPA_RANGE_PATTERN = re.compile(
+    rf"(?:₹|inr\s*)?\s*(\d{{1,3}}(?:\.\d+)?)\s*(?:-|–|to)\s*"
+    rf"(?:₹|inr\s*)?\s*(\d{{1,3}}(?:\.\d+)?)\s*{_LPA_UNIT}",
+    re.IGNORECASE,
+)
+_LPA_SINGLE_PATTERN = re.compile(
+    rf"(?:₹|inr\s*)?\s*(\d{{1,3}}(?:\.\d+)?)\s*{_LPA_UNIT}",
+    re.IGNORECASE,
+)
 QUALIFICATION_START_PATTERN = re.compile(
     r"\b(?:minimum|basic|required)\s+qualifications?\b",
     re.IGNORECASE,
@@ -456,6 +499,54 @@ def _extract_required_experience_years(
 
 def _requires_phd(description: str) -> bool:
     return bool(PHD_PATTERN.search(_minimum_qualification_text(description)))
+
+
+def _is_target_software_role(title: str) -> bool:
+    """Return true for software-engineering title families in the default feed."""
+    clean_title = re.sub(r"\s+", " ", title or "").strip()
+    if not clean_title or NON_SOFTWARE_ROLE_PATTERN.search(clean_title):
+        return False
+    return bool(TARGET_SOFTWARE_ROLE_PATTERN.search(clean_title))
+
+
+def _extract_salary_lpa(description: str) -> tuple[float, float] | None:
+    """Extract an explicitly stated INR LPA range; never infer undisclosed pay."""
+    text = description or ""
+    range_match = _LPA_RANGE_PATTERN.search(text)
+    if range_match:
+        low, high = (float(range_match.group(1)), float(range_match.group(2)))
+        return (min(low, high), max(low, high))
+    single_match = _LPA_SINGLE_PATTERN.search(text)
+    if single_match:
+        value = float(single_match.group(1))
+        return (value, value)
+    return None
+
+
+def _compensation_signal(description: str) -> dict[str, Any]:
+    salary = _extract_salary_lpa(description)
+    if salary is None:
+        return {
+            "min_lpa": None,
+            "max_lpa": None,
+            "status": "not_disclosed",
+            "target_floor_lpa": TARGET_COMPENSATION_FLOOR_LPA,
+        }
+    low, high = salary
+    if low >= 30.0:
+        signal = "target_30_plus"
+    elif low >= TARGET_COMPENSATION_FLOOR_LPA:
+        signal = "target_25_plus"
+    elif high >= TARGET_COMPENSATION_FLOOR_LPA:
+        signal = "target_possible"
+    else:
+        signal = "below_target"
+    return {
+        "min_lpa": low,
+        "max_lpa": high,
+        "status": signal,
+        "target_floor_lpa": TARGET_COMPENSATION_FLOOR_LPA,
+    }
 
 
 def _is_early_career_suitable(
@@ -877,6 +968,7 @@ def job_suggestions(
     q: str = Query(default="", max_length=200),
     limit: int = Query(default=8, ge=1, le=20),
     career_level: Literal["early", "all"] = Query(default="early"),
+    role_scope: Literal["software_engineering", "all"] = Query(default="software_engineering"),
     company: str | None = Query(default=None, max_length=200),
     location: str | None = Query(default=None, max_length=200),
     source: str | None = Query(default=None, max_length=100),
@@ -929,6 +1021,9 @@ def job_suggestions(
             job.title,
             job.description or "",
         ):
+            continue
+
+        if role_scope == "software_engineering" and not _is_target_software_role(job.title):
             continue
 
         clean_title = (job.title or "").strip()
@@ -999,6 +1094,8 @@ def list_jobs(
     source: str | None = Query(default=None, max_length=100),
     active_only: bool = True,
     career_level: Literal["early", "all"] = Query(default="early"),
+    role_scope: Literal["software_engineering", "all"] = Query(default="software_engineering"),
+    compensation_filter: Literal["target_or_unknown", "target_only", "all"] = Query(default="target_or_unknown"),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -1052,6 +1149,15 @@ def list_jobs(
             job.title,
             job.description or "",
         ):
+            continue
+
+        if role_scope == "software_engineering" and not _is_target_software_role(job.title):
+            continue
+
+        compensation = _compensation_signal(job.description or "")
+        if compensation_filter == "target_only" and compensation["status"] not in {"target_25_to_30", "target_30_plus"}:
+            continue
+        if compensation_filter == "target_or_unknown" and compensation["status"] == "below_target":
             continue
 
         direct_title_match = int(
@@ -1196,6 +1302,7 @@ def list_jobs(
                 "source": job.source,
                 "experience_level": job.experience_level,
                 "employment_type": job.employment_type,
+                "compensation": _compensation_signal(job.description or ""),
                 "posted_at": (
                     job.posted_at.isoformat() if job.posted_at else None
                 ),
@@ -1240,6 +1347,9 @@ def list_jobs(
             "source": source,
             "active_only": active_only,
             "career_level": career_level,
+            "role_scope": role_scope,
+            "compensation_filter": compensation_filter,
+            "target_compensation_floor_lpa": TARGET_COMPENSATION_FLOOR_LPA,
             "maximum_required_years": (
                 _maximum_early_career_years()
                 if career_level == "early"

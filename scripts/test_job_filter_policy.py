@@ -5,6 +5,9 @@ from app.api.main import (
     _extract_required_experience_years,
     _find_matching_location,
     _is_early_career_suitable,
+    _is_target_software_role,
+    _extract_salary_lpa,
+    _compensation_signal,
     _maximum_early_career_years,
     _matches_requested_city,
 )
@@ -217,6 +220,45 @@ PhD degree in Computer Science.
     )
 
 
+def test_target_role_scope() -> None:
+    allowed = [
+        "Software Engineer II, Corp Eng",
+        "Software Development Engineer I",
+        "Backend Engineer",
+        "Frontend Developer",
+        "Full Stack Software Engineer",
+        "Platform Engineer",
+        "Site Reliability Engineer",
+        "Machine Learning Engineer",
+        "Data Engineer",
+        "SDET - Test Automation Engineer",
+    ]
+    blocked = [
+        "Tech Support (Hybrid) (Fluent in English)",
+        "SMB Account Executive (Hybrid)",
+        "Talent Acquisition Partner",
+        "Senior Commissions Analyst (Remote)",
+        "Customer Support Engineer",
+        "Technical Support Specialist",
+        "Recruiter - Engineering",
+    ]
+    for title in allowed:
+        check(_is_target_software_role(title), f"Expected software role to pass: {title}")
+    for title in blocked:
+        check(not _is_target_software_role(title), f"Non-software role leaked into feed: {title}")
+
+
+def test_compensation_signal() -> None:
+    check(_extract_salary_lpa("Compensation: INR 25-35 LPA") == (25.0, 35.0), "LPA range should be extracted")
+    check(_extract_salary_lpa("CTC up to ₹30 LPA") == (30.0, 30.0), "Single LPA value should be extracted")
+    check(_extract_salary_lpa("Salary competitive; market aligned") is None, "Undisclosed pay must stay unknown")
+    check(_compensation_signal("Salary: 18-22 LPA")["status"] == "below_target", "Known below-target salary should be marked")
+    check(_compensation_signal("CTC: 25-29 LPA")["status"] == "target_25_plus", "The 25-30 band should be labeled")
+    check(_compensation_signal("CTC: 30-40 LPA")["status"] == "target_30_plus", "30+ band should be distinguished")
+    check(_compensation_signal("Salary: 20-28 LPA")["status"] == "target_possible", "Overlapping range should be marked possible")
+    check(_compensation_signal("Competitive compensation")["status"] == "not_disclosed", "Unknown salary should not be guessed")
+
+
 def main() -> int:
     tests = [
         (
@@ -234,6 +276,14 @@ def main() -> int:
         (
             "Early-career role suitability",
             test_early_career_suitability,
+        ),
+        (
+            "Target software-engineering role scope",
+            test_target_role_scope,
+        ),
+        (
+            "Target compensation extraction and labels",
+            test_compensation_signal,
         ),
     ]
 
