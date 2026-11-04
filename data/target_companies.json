@@ -1,0 +1,490 @@
+{
+  "version": 1,
+  "description": "JobPilot's curated 30-company India software-engineering target registry. A provider is marked active only when its official public board mapping has been verified; unknown board identifiers are intentionally not guessed.",
+  "candidate": {
+    "experience_start_date": "2025-09-18",
+    "maximum_required_years": 2,
+    "minimum_total_compensation_target_lpa": 25,
+    "preferred_total_compensation_target_lpa": 30,
+    "compensation_disclosure_required": false,
+    "primary_country": "India",
+    "include_india_eligible_remote": true,
+    "target_role_families": [
+      "software_engineering",
+      "backend",
+      "frontend",
+      "full_stack",
+      "platform",
+      "site_reliability",
+      "devops",
+      "data_engineering",
+      "machine_learning",
+      "ai_engineering",
+      "software_security",
+      "test_automation"
+    ]
+  },
+  "supported_ats_connectors": [
+    "google_careers",
+    "amazon_jobs",
+    "greenhouse",
+    "lever",
+    "ashby",
+    "smartrecruiters",
+    "workday",
+    "oracle_hcm"
+  ],
+  "companies": [
+    {
+      "id": "google",
+      "name": "Google",
+      "priority": 1,
+      "website": "https://www.google.com",
+      "careers_url": "https://www.google.com/about/careers/applications/jobs/results/",
+      "integration": {
+        "provider": "google_careers",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "queries": [
+            "Software Engineer",
+            "Software Development Engineer",
+            "Backend Engineer",
+            "Full Stack Engineer",
+            "Frontend Engineer",
+            "Data Engineer",
+            "Machine Learning Engineer",
+            "AI Engineer",
+            "DevOps Engineer",
+            "Site Reliability Engineer",
+            "Platform Engineer",
+            "Security Software Engineer"
+          ],
+          "location": "India",
+          "max_pages_per_query": 5,
+          "fetch_details": true
+        }
+      }
+    },
+    {
+      "id": "microsoft",
+      "name": "Microsoft",
+      "priority": 1,
+      "website": "https://www.microsoft.com",
+      "careers_url": "https://jobs.careers.microsoft.com/global/en/search",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "amazon",
+      "name": "Amazon",
+      "priority": 1,
+      "website": "https://www.amazon.com",
+      "careers_url": "https://www.amazon.jobs/en/search?country=IND",
+      "integration": {
+        "provider": "amazon_jobs",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "max_pages_per_band": 4,
+          "page_size": 100,
+          "fetch_details": true,
+          "max_detail_fetch": 200,
+          "experience_bands": [
+            "less_than_one_year",
+            "one_to_three_years"
+          ],
+          "note": "Official Amazon.jobs India Software Development search JSON; role descriptions are rechecked against the 0-2 year policy."
+        },
+        "notes": "Official Amazon.jobs India Software Development search route configured; test with --include-unverified --dry-run before enabling normal sync."
+      }
+    },
+    {
+      "id": "meta",
+      "name": "Meta",
+      "priority": 1,
+      "website": "https://www.meta.com",
+      "careers_url": "https://www.metacareers.com/jobs/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "atlassian",
+      "name": "Atlassian",
+      "priority": 1,
+      "website": "https://www.atlassian.com",
+      "careers_url": "https://www.atlassian.com/company/careers/all-jobs",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false,
+        "notes": "Official all-jobs page supports India eligibility filters; no stable public job API/ATS board slug verified in this pass."
+      }
+    },
+    {
+      "id": "uber",
+      "name": "Uber",
+      "priority": 1,
+      "website": "https://www.uber.com",
+      "careers_url": "https://iaziqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/UberCareers/jobs",
+      "integration": {
+        "provider": "oracle_hcm",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "base_url": "https://iaziqy.fa.ocs.oraclecloud.com",
+          "site_number": "UberCareers",
+          "language": "en",
+          "country_code": "IN",
+          "page_size": 100,
+          "max_pages": 20
+        },
+        "notes": "Official Uber careers results resolve to an Oracle Candidate Experience site. Site-number/feed response must be confirmed with a read-only dry run."
+      }
+    },
+    {
+      "id": "apple",
+      "name": "Apple",
+      "priority": 1,
+      "website": "https://www.apple.com",
+      "careers_url": "https://jobs.apple.com/en-in/search",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false
+      }
+    },
+    {
+      "id": "adobe",
+      "name": "Adobe",
+      "priority": 1,
+      "website": "https://www.adobe.com",
+      "careers_url": "https://careers.adobe.com/us/en/search-results",
+      "integration": {
+        "provider": "workday",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "tenant": "adobe",
+          "site": "external_experienced",
+          "host": "https://adobe.wd5.myworkdayjobs.com",
+          "locale": "en-US"
+        },
+        "discovered_url": "https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Jose/Software-Engineer---Adobe-Experience-Platform_R160198-1/apply",
+        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+      }
+    },
+    {
+      "id": "salesforce",
+      "name": "Salesforce",
+      "priority": 1,
+      "website": "https://www.salesforce.com",
+      "careers_url": "https://careers.salesforce.com/en/jobs/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "linkedin",
+      "name": "LinkedIn",
+      "priority": 1,
+      "website": "https://www.linkedin.com",
+      "careers_url": "https://careers.linkedin.com/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "nvidia",
+      "name": "NVIDIA",
+      "priority": 1,
+      "website": "https://www.nvidia.com",
+      "careers_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+      "integration": {
+        "provider": "workday",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "tenant": "nvidia",
+          "site": "NVIDIAExternalCareerSite",
+          "host": "https://nvidia.wd5.myworkdayjobs.com",
+          "locale": "en-US",
+          "page_size": 20,
+          "max_pages": 25,
+          "fetch_details": true
+        }
+      }
+    },
+    {
+      "id": "intuit",
+      "name": "Intuit",
+      "priority": 1,
+      "website": "https://www.intuit.com",
+      "careers_url": "https://jobs.intuit.com/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "servicenow",
+      "name": "ServiceNow",
+      "priority": 1,
+      "website": "https://www.servicenow.com",
+      "careers_url": "https://careers.servicenow.com/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "databricks",
+      "name": "Databricks",
+      "priority": 1,
+      "website": "https://www.databricks.com",
+      "careers_url": "https://www.databricks.com/company/careers/open-positions",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false,
+        "notes": "A historical Greenhouse URL now redirects to the official careers page; do not use the stale board mapping."
+      }
+    },
+    {
+      "id": "rubrik",
+      "name": "Rubrik",
+      "priority": 1,
+      "website": "https://www.rubrik.com",
+      "careers_url": "https://www.rubrik.com/company/careers",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "confluent",
+      "name": "Confluent",
+      "priority": 1,
+      "website": "https://www.confluent.io",
+      "careers_url": "https://careers.confluent.io/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "flipkart",
+      "name": "Flipkart",
+      "priority": 2,
+      "website": "https://www.flipkart.com",
+      "careers_url": "https://www.flipkartcareers.com/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "phonepe",
+      "name": "PhonePe",
+      "priority": 2,
+      "website": "https://www.phonepe.com",
+      "careers_url": "https://www.phonepe.com/careers/",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false
+      }
+    },
+    {
+      "id": "razorpay",
+      "name": "Razorpay",
+      "priority": 2,
+      "website": "https://razorpay.com",
+      "careers_url": "https://razorpay.com/jobs/",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "razorpaysoftwareprivatelimited"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/razorpaysoftwareprivatelimited",
+        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+      }
+    },
+    {
+      "id": "cred",
+      "name": "CRED",
+      "priority": 2,
+      "website": "https://cred.club",
+      "careers_url": "https://jobs.lever.co/cred",
+      "integration": {
+        "provider": "lever",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "site": "cred",
+          "region": "global"
+        }
+      }
+    },
+    {
+      "id": "meesho",
+      "name": "Meesho",
+      "priority": 2,
+      "website": "https://www.meesho.com",
+      "careers_url": "https://jobs.lever.co/meesho",
+      "integration": {
+        "provider": "lever",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "site": "meesho",
+          "region": "global"
+        }
+      }
+    },
+    {
+      "id": "swiggy",
+      "name": "Swiggy",
+      "priority": 2,
+      "website": "https://www.swiggy.com",
+      "careers_url": "https://careers.swiggy.in/explore-jobs",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false,
+        "notes": "Official career page exposes live roles, but the underlying public feed/API needs identification."
+      }
+    },
+    {
+      "id": "zomato",
+      "name": "Zomato",
+      "priority": 2,
+      "website": "https://www.zomato.com",
+      "careers_url": "https://www.zomato.com/careers",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "zepto",
+      "name": "Zepto",
+      "priority": 2,
+      "website": "https://www.zeptonow.com",
+      "careers_url": "https://www.zeptonow.com/careers",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "groww",
+      "name": "Groww",
+      "priority": 2,
+      "website": "https://groww.in",
+      "careers_url": "https://groww.in/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "groww"
+        },
+        "discovered_url": "https://job-boards.eu.greenhouse.io/groww",
+        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+      }
+    },
+    {
+      "id": "dream11",
+      "name": "Dream11",
+      "priority": 2,
+      "website": "https://www.dream11.com",
+      "careers_url": "https://www.dream11.com/about-us/careers",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "postman",
+      "name": "Postman",
+      "priority": 2,
+      "website": "https://www.postman.com",
+      "careers_url": "https://www.postman.com/company/careers/open-positions/",
+      "integration": {
+        "provider": null,
+        "status": "pending_ats_discovery",
+        "verified": false
+      }
+    },
+    {
+      "id": "freshworks",
+      "name": "Freshworks",
+      "priority": 2,
+      "website": "https://www.freshworks.com",
+      "careers_url": "https://www.freshworks.com/company/careers/",
+      "integration": {
+        "provider": "smartrecruiters",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "company_identifier": "Freshworks"
+        },
+        "discovered_url": "https://careers.smartrecruiters.com/Freshworks/cxg",
+        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+      }
+    },
+    {
+      "id": "zoho",
+      "name": "Zoho",
+      "priority": 2,
+      "website": "https://www.zoho.com",
+      "careers_url": "https://www.zoho.com/careers/",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false
+      }
+    },
+    {
+      "id": "browserstack",
+      "name": "BrowserStack",
+      "priority": 2,
+      "website": "https://www.browserstack.com",
+      "careers_url": "https://www.browserstack.com/careers",
+      "integration": {
+        "provider": "workday",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "tenant": "browserstack",
+          "site": "External",
+          "host": "https://browserstack.wd3.myworkdayjobs.com",
+          "locale": "en-US"
+        },
+        "discovered_url": "https://browserstack.wd3.myworkdayjobs.com/External",
+        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+      }
+    }
+  ]
+}

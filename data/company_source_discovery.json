@@ -1,0 +1,397 @@
+{
+  "generated_at": "2026-11-03T03:43:43+00:00",
+  "source_registry": "target_companies.json",
+  "results": [
+    {
+      "company_id": "google",
+      "company": "Google",
+      "careers_url": "https://www.google.com/about/careers/applications/jobs/results/",
+      "resolved_url": "https://www.google.com/about/careers/applications/jobs/results/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "microsoft",
+      "company": "Microsoft",
+      "careers_url": "https://jobs.careers.microsoft.com/global/en/search",
+      "resolved_url": "https://apply.careers.microsoft.com/careers",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "amazon",
+      "company": "Amazon",
+      "careers_url": "https://www.amazon.jobs/en/search?country=IND",
+      "resolved_url": "https://www.amazon.jobs/en/search?country=IND",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "meta",
+      "company": "Meta",
+      "careers_url": "https://www.metacareers.com/jobs/",
+      "resolved_url": "https://www.metacareers.com/jobsearch/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "atlassian",
+      "company": "Atlassian",
+      "careers_url": "https://www.atlassian.com/company/careers/all-jobs",
+      "resolved_url": "https://www.atlassian.com/company/careers/all-jobs",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "icims",
+          "identifier": "campus-americas",
+          "url": "https://campus-americas.icims.com/jobs/25813/software-engineer%2c-2027-graduate-u.s./job?mode=apply"
+        },
+        {
+          "provider": "icims",
+          "identifier": "campus-globalcareers-atlassian",
+          "url": "https://campus-globalcareers-atlassian.icims.com/jobs/26070/software-engineer%2c-2027-graduate-canada/job?mode=apply"
+        },
+        {
+          "provider": "icims",
+          "identifier": "careers-americas",
+          "url": "https://careers-americas.icims.com/jobs/27558/senior-product-marketing-manager---teamwork-graph-adoption/job?mode=apply"
+        },
+        {
+          "provider": "icims",
+          "identifier": "careers-apac-atlassian",
+          "url": "https://careers-apac-atlassian.icims.com/jobs/26578/principal-software-engineer-jira-platform-search/job?mode=apply"
+        },
+        {
+          "provider": "icims",
+          "identifier": "globalcareers-atlassian",
+          "url": "https://globalcareers-atlassian.icims.com/jobs/25536/head-of-deal-desk%2c-apac/job?mode=apply"
+        },
+        {
+          "provider": "icims",
+          "identifier": "globalmobility-careers-atlassian",
+          "url": "https://globalmobility-careers-atlassian.icims.com/jobs/25398/sales-development-representative%2c-mid-market-jsm-dach/job?mode=apply"
+        }
+      ]
+    },
+    {
+      "company_id": "uber",
+      "company": "Uber",
+      "careers_url": "https://iaziqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/UberCareers/jobs",
+      "resolved_url": "https://iaziqy.fa.ocs.oraclecloud.com/hcmUI/CandidateExperience/en/sites/UberCareers/jobs",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "apple",
+      "company": "Apple",
+      "careers_url": "https://jobs.apple.com/en-in/search",
+      "resolved_url": "https://jobs.apple.com/en-in/search?location=india-INDC",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "adobe",
+      "company": "Adobe",
+      "careers_url": "https://careers.adobe.com/us/en/search-results",
+      "resolved_url": "https://careers.adobe.com/us/en/search-results",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "phenom",
+          "identifier": "assets",
+          "url": "https://assets.phenompeople.com/CareerConnectResources/common/assets/images/gray.png"
+        },
+        {
+          "provider": "phenom",
+          "identifier": "cdn",
+          "url": "https://cdn.phenompeople.com/CareerConnectResources/prod/pcs/common/ot-priv-pol-3.0.js"
+        },
+        {
+          "provider": "phenom",
+          "identifier": "cdn-prod-static",
+          "url": "https://cdn-prod-static.phenompeople.com/CareerConnectResources/COMMON/js/applyStudioBundles/uex/V1/apply-utils.umd.min.js"
+        },
+        {
+          "provider": "phenom",
+          "identifier": "content-us",
+          "url": "https://content-us.phenompeople.com"
+        },
+        {
+          "provider": "phenom",
+          "identifier": "pp-cdn",
+          "url": "https://pp-cdn.phenompeople.com/CareerConnectResources/st/common/video-platform/js/form-renderer.css"
+        },
+        {
+          "provider": "workday",
+          "identifier": "adobe:external_experienced",
+          "host": "https://adobe.wd5.myworkdayjobs.com",
+          "tenant": "adobe",
+          "site": "external_experienced",
+          "url": "https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Jose/Software-Engineer---Adobe-Experience-Platform_R160198-1/apply"
+        }
+      ]
+    },
+    {
+      "company_id": "salesforce",
+      "company": "Salesforce",
+      "careers_url": "https://careers.salesforce.com/en/jobs/",
+      "resolved_url": "https://www.salesforce.com/company/careers/jobs/?bc=OTH",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "linkedin",
+      "company": "LinkedIn",
+      "careers_url": "https://careers.linkedin.com/",
+      "resolved_url": "https://careers.linkedin.com/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "nvidia",
+      "company": "NVIDIA",
+      "careers_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+      "resolved_url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "workday",
+          "identifier": "nvidia:NVIDIAExternalCareerSite",
+          "host": "https://nvidia.wd5.myworkdayjobs.com",
+          "tenant": "nvidia",
+          "site": "NVIDIAExternalCareerSite",
+          "url": "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/assets/logo"
+        }
+      ]
+    },
+    {
+      "company_id": "intuit",
+      "company": "Intuit",
+      "careers_url": "https://jobs.intuit.com/",
+      "resolved_url": "https://jobs.intuit.com/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "servicenow",
+      "company": "ServiceNow",
+      "careers_url": "https://careers.servicenow.com/",
+      "resolved_url": "https://careers.servicenow.com/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "databricks",
+      "company": "Databricks",
+      "careers_url": "https://www.databricks.com/company/careers/open-positions",
+      "resolved_url": "https://www.databricks.com/company/careers/open-positions",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "rubrik",
+      "company": "Rubrik",
+      "careers_url": "https://www.rubrik.com/company/careers",
+      "status": "request_failed",
+      "error": "HTTPError: 403 Client Error: Forbidden for url: https://www.rubrik.com/company/careers",
+      "sources": []
+    },
+    {
+      "company_id": "confluent",
+      "company": "Confluent",
+      "careers_url": "https://careers.confluent.io/",
+      "status": "request_failed",
+      "error": "HTTPError: 429 Client Error: Too Many Requests for url: https://careers.confluent.io/",
+      "sources": []
+    },
+    {
+      "company_id": "flipkart",
+      "company": "Flipkart",
+      "careers_url": "https://www.flipkartcareers.com/",
+      "resolved_url": "https://www.flipkartcareers.com/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "phonepe",
+      "company": "PhonePe",
+      "careers_url": "https://www.phonepe.com/careers/",
+      "resolved_url": "https://www.phonepe.com/careers/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "razorpay",
+      "company": "Razorpay",
+      "careers_url": "https://razorpay.com/jobs/",
+      "resolved_url": "https://razorpay.com/careers/",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "greenhouse",
+          "identifier": "razorpaysoftwareprivatelimited",
+          "url": "https://job-boards.greenhouse.io/razorpaysoftwareprivatelimited"
+        }
+      ]
+    },
+    {
+      "company_id": "cred",
+      "company": "CRED",
+      "careers_url": "https://jobs.lever.co/cred",
+      "resolved_url": "https://jobs.lever.co/cred",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "lever",
+          "identifier": "cred",
+          "url": "https://jobs.lever.co/cred?workplaceType=remote"
+        },
+        {
+          "provider": "lever",
+          "identifier": "js",
+          "url": "https://jobs.lever.co/js/bug-snag.js"
+        }
+      ]
+    },
+    {
+      "company_id": "meesho",
+      "company": "Meesho",
+      "careers_url": "https://jobs.lever.co/meesho",
+      "resolved_url": "https://jobs.lever.co/meesho",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "lever",
+          "identifier": "js",
+          "url": "https://jobs.lever.co/js/bug-snag.js"
+        },
+        {
+          "provider": "lever",
+          "identifier": "meesho",
+          "url": "https://jobs.lever.co/meesho/0759d672-8d92-496a-a7c9-22bc2ec45d61"
+        }
+      ]
+    },
+    {
+      "company_id": "swiggy",
+      "company": "Swiggy",
+      "careers_url": "https://careers.swiggy.in/explore-jobs",
+      "resolved_url": "https://careers.swiggy.in/explore-jobs",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "zomato",
+      "company": "Zomato",
+      "careers_url": "https://www.zomato.com/careers",
+      "resolved_url": "https://www.eternal.com/careers/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "zepto",
+      "company": "Zepto",
+      "careers_url": "https://www.zeptonow.com/careers",
+      "resolved_url": "https://www.zeptonow.com/careers",
+      "http_status": 202,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "groww",
+      "company": "Groww",
+      "careers_url": "https://groww.in/careers",
+      "resolved_url": "https://groww.in/careers",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "greenhouse",
+          "identifier": "groww",
+          "url": "https://job-boards.eu.greenhouse.io/groww"
+        }
+      ]
+    },
+    {
+      "company_id": "dream11",
+      "company": "Dream11",
+      "careers_url": "https://www.dream11.com/about-us/careers",
+      "status": "request_failed",
+      "error": "HTTPError: 404 Client Error: Not Found for url: https://www.dream11.com/about-us/careers",
+      "sources": []
+    },
+    {
+      "company_id": "postman",
+      "company": "Postman",
+      "careers_url": "https://www.postman.com/company/careers/open-positions/",
+      "resolved_url": "https://www.postman.com/company/careers/open-positions/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "freshworks",
+      "company": "Freshworks",
+      "careers_url": "https://www.freshworks.com/company/careers/",
+      "resolved_url": "https://www.freshworks.com/company/careers/",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "smartrecruiters",
+          "identifier": "Freshworks",
+          "url": "https://careers.smartrecruiters.com/Freshworks/cxg"
+        }
+      ]
+    },
+    {
+      "company_id": "zoho",
+      "company": "Zoho",
+      "careers_url": "https://www.zoho.com/careers/",
+      "resolved_url": "https://www.zoho.com/careers/",
+      "http_status": 200,
+      "status": "no_static_ats_link_found",
+      "sources": []
+    },
+    {
+      "company_id": "browserstack",
+      "company": "BrowserStack",
+      "careers_url": "https://www.browserstack.com/careers",
+      "resolved_url": "https://www.browserstack.com/careers",
+      "http_status": 200,
+      "status": "ats_detected",
+      "sources": [
+        {
+          "provider": "workday",
+          "identifier": "browserstack:External",
+          "host": "https://browserstack.wd3.myworkdayjobs.com",
+          "tenant": "browserstack",
+          "site": "External",
+          "url": "https://browserstack.wd3.myworkdayjobs.com/External"
+        }
+      ]
+    }
+  ],
+  "note": "Discovery is evidence only. Review official-domain ownership and board identifiers before enabling a source for ingestion."
+}
