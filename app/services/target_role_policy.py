@@ -44,6 +44,20 @@ _SECTION_END_RE = re.compile(
     r"(?:preferred qualifications|nice to have|preferred skills|bonus points|about the team|responsibilities|what you'll do|what you will do)",
     re.IGNORECASE,
 )
+_PHD_RE = re.compile(r"\b(?:ph\.?\s*d\.?|doctorate|doctoral degree)\b", re.IGNORECASE)
+
+
+def _minimum_qualification_text(description: str | None) -> tuple[str, bool]:
+    """Return the minimum-qualification section and whether it was found."""
+    text = str(description or "")
+    if not text.strip():
+        return "", False
+    start = _MINIMUM_SECTION_RE.search(text)
+    if not start:
+        return text[:6000], False
+    tail = text[start.end():]
+    end = _SECTION_END_RE.search(tail)
+    return (tail[:end.start()] if end else tail[:6000]), True
 
 
 def extract_minimum_experience_years(description: str | None) -> float | None:
@@ -53,16 +67,9 @@ def extract_minimum_experience_years(description: str | None) -> float | None:
     as '2-4 years', returns the lower bound rather than the upper bound.
     Returns None when the JD does not state a usable minimum.
     """
-    text = str(description or "")
+    text, _section_found = _minimum_qualification_text(description)
     if not text.strip():
         return None
-    start = _MINIMUM_SECTION_RE.search(text)
-    if start:
-        tail = text[start.end():]
-        end = _SECTION_END_RE.search(tail)
-        text = tail[:end.start()] if end else tail[:6000]
-    else:
-        text = text[:6000]
 
     range_match = re.search(
         r"\b(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
@@ -96,6 +103,11 @@ def is_target_software_role(
     clean_title = re.sub(r"\s+", " ", str(title or "")).strip()
     if not clean_title:
         return False, "missing_title"
+    if _PHD_RE.search(clean_title):
+        return False, "phd_required_or_phd_targeted_title"
+    minimum_text, has_minimum_section = _minimum_qualification_text(description)
+    if has_minimum_section and _PHD_RE.search(minimum_text):
+        return False, "phd_required_in_minimum_qualifications"
     if NON_SOFTWARE_ROLE_RE.search(clean_title):
         return False, "non_software_title"
     if INTERN_TITLE_RE.search(clean_title):

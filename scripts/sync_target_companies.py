@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -16,7 +18,11 @@ from app.collectors.amazon_jobs import AmazonJobsCollector
 from app.collectors.oracle_hcm import OracleHCMCollector
 from app.db.database import SessionLocal
 from app.db.job_repository import JobRepository
-from app.services.target_role_policy import is_target_software_role, is_india_or_remote_eligible
+from app.services.target_role_policy import (
+    extract_minimum_experience_years,
+    is_target_software_role,
+    is_india_or_remote_eligible,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "data" / "target_companies.json"
@@ -32,6 +38,7 @@ class SyncResult:
     inserted: int = 0
     updated: int = 0
     skipped: int = 0
+    review_required: int = 0
     error: str | None = None
 
 
@@ -155,12 +162,104 @@ def _make_collector(company: dict[str, Any]) -> Any:
     raise ValueError(f"No configured public API connector for provider: {provider!r}")
 
 
+_BROAD_TITLE_REVIEW_RE = re.compile(r"\b(?:application engineer|cloud engineer)\b", re.IGNORECASE)
+
+AUDIT_FIELDS = [
+    "company_id", "company", "provider", "mapping_status", "mapping_verified",
+    "external_id", "title", "url", "locations", "workplace_type", "employment_type",
+    "posted_at", "experience_level", "minimum_required_years", "experience_screen",
+    "role_eligible", "role_reason", "location_eligible", "location_reason",
+    "final_eligible", "audit_status", "review_flags", "description_present",
+    "description_length", "description_preview",
+]
+
+
+def _location_values(job: dict[str, Any]) -> list[str]:
+    value = job.get("location") or []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _make_audit_row(
+    company: dict[str, Any], job: dict[str, Any], maximum_required_years: float
+) -> dict[str, Any]:
+    integration = company.get("integration") or {}
+    provider = str(integration.get("provider") or "unconfigured")
+    title = str(job.get("title") or "").strip()
+    description = str(job.get("description") or "")
+    minimum_years = extract_minimum_experience_years(description)
+    role_ok, role_reason = is_target_software_role(
+        title, description, maximum_required_years=maximum_required_years
+    )
+    location_ok, location_reason = is_india_or_remote_eligible(job)
+    flags: list[str] = []
+    if not description.strip():
+        flags.append("description_missing")
+    if minimum_years is None:
+        flags.append("minimum_experience_not_found_review")
+    if location_reason == "remote_country_eligibility_unverified":
+        flags.append("remote_country_eligibility_unverified")
+    if _BROAD_TITLE_REVIEW_RE.search(title):
+        flags.append("broad_title_manual_review")
+    final_ok = role_ok and location_ok
+    status = "filtered"
+    if final_ok:
+        status = "eligible_needs_review" if flags else "eligible"
+    preview = re.sub(r"\s+", " ", description).strip()[:280]
+    return {
+        "company_id": str(company.get("id") or ""),
+        "company": str(company.get("name") or ""),
+        "provider": provider,
+        "mapping_status": str(integration.get("status") or ""),
+        "mapping_verified": bool(integration.get("verified")),
+        "external_id": str(job.get("external_id") or ""),
+        "title": title,
+        "url": str(job.get("url") or ""),
+        "locations": " | ".join(_location_values(job)),
+        "workplace_type": str(job.get("workplace_type") or ""),
+        "employment_type": str(job.get("employment_type") or ""),
+        "posted_at": str(job.get("posted_at") or job.get("date_posted") or ""),
+        "experience_level": str(job.get("experience_level") or ""),
+        "minimum_required_years": minimum_years if minimum_years is not None else "",
+        "experience_screen": (
+            "not_found_review" if minimum_years is None
+            else "within_limit" if minimum_years <= maximum_required_years
+            else "above_limit"
+        ),
+        "role_eligible": role_ok,
+        "role_reason": role_reason,
+        "location_eligible": location_ok,
+        "location_reason": location_reason,
+        "final_eligible": final_ok,
+        "audit_status": status,
+        "review_flags": ";".join(flags),
+        "description_present": bool(description.strip()),
+        "description_length": len(description),
+        "description_preview": preview,
+    }
+
+
+def write_audit_report(rows: list[dict[str, Any]], destination: Path) -> Path:
+    """Write a compact per-job CSV audit without changing the application database."""
+    destination = destination.expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=AUDIT_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    return destination
+
+
 def sync_company(
     company: dict[str, Any],
     *,
     dry_run: bool,
     maximum_required_years: float,
     allow_unverified: bool = False,
+    audit_rows: list[dict[str, Any]] | None = None,
 ) -> SyncResult:
     integration = company.get("integration") or {}
     provider = str(integration.get("provider") or "unconfigured")
@@ -175,18 +274,14 @@ def sync_company(
     result.collected = len(jobs)
     eligible_jobs = []
     for job in jobs:
-        accepted, _reason = is_target_software_role(
-            str(job.get("title") or ""),
-            str(job.get("description") or ""),
-            maximum_required_years=maximum_required_years,
-        )
-        if accepted:
-            location_ok, location_reason = is_india_or_remote_eligible(job)
-            if location_ok:
-                job["jobpilot_location_screen"] = location_reason
-                eligible_jobs.append(job)
-            else:
-                result.skipped += 1
+        audit = _make_audit_row(company, job, maximum_required_years)
+        if audit_rows is not None:
+            audit_rows.append(audit)
+        if audit["final_eligible"]:
+            job["jobpilot_location_screen"] = audit["location_reason"]
+            eligible_jobs.append(job)
+            if audit["audit_status"] == "eligible_needs_review":
+                result.review_required += 1
         else:
             result.skipped += 1
     result.eligible = len(eligible_jobs)
@@ -234,9 +329,12 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="Fetch and filter jobs without writing to SQLite.")
     parser.add_argument("--max-years", type=float, default=2.0, help="Maximum required experience years (default: 2).")
     parser.add_argument("--include-unverified", action="store_true", help="Try configured but not yet live-verified source mappings. Requires --dry-run.")
+    parser.add_argument("--audit-report", type=Path, help="Write a per-job CSV eligibility audit; requires --dry-run.")
     args = parser.parse_args()
     if args.include_unverified and not args.dry_run:
         parser.error("--include-unverified is read-only and can only be used together with --dry-run")
+    if args.audit_report and not args.dry_run:
+        parser.error("--audit-report is read-only and can only be used together with --dry-run")
 
     try:
         registry = load_registry()
@@ -265,6 +363,7 @@ def main() -> int:
     print()
 
     results: list[SyncResult] = []
+    audit_rows: list[dict[str, Any]] = []
     for company in companies:
         integration = company.get("integration") or {}
         is_active = bool(integration.get("verified")) and integration.get("status") == "active"
@@ -284,9 +383,10 @@ def main() -> int:
                 dry_run=args.dry_run,
                 maximum_required_years=args.max_years,
                 allow_unverified=args.include_unverified,
+                audit_rows=audit_rows if args.audit_report else None,
             )
             results.append(row)
-            print(f"  {row.status}: raw={row.collected}, eligible={row.eligible}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
+            print(f"  {row.status}: raw={row.collected}, eligible={row.eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
         except Exception as exc:
             row = SyncResult(company=company["name"], provider=provider, status="failed", error=f"{type(exc).__name__}: {exc}")
             results.append(row)
@@ -304,6 +404,15 @@ def main() -> int:
     print(f"Eligible software jobs: {sum(r.eligible for r in results)}")
     print(f"New database records  : {sum(r.inserted for r in results)}")
     print(f"Updated records       : {sum(r.updated for r in results)}")
+    print(f"Eligible needing review: {sum(r.review_required for r in results)}")
+    if args.audit_report:
+        try:
+            report_path = write_audit_report(audit_rows, args.audit_report)
+            print(f"Per-job audit report  : {report_path}")
+            print(f"Audit rows written    : {len(audit_rows)}")
+        except OSError as exc:
+            print(f"AUDIT REPORT ERROR: {type(exc).__name__}: {exc}")
+            return 2
     print("\nUnmapped company career pages are listed in data/target_companies.json. Run scripts/discover_company_ats.py from Windows, then verify candidate board IDs before enabling them.")
     return 1 if any(r.status == "failed" for r in results) else 0
 
