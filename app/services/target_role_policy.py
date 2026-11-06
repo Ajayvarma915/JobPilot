@@ -31,13 +31,14 @@ NON_SOFTWARE_ROLE_RE = re.compile(
 
 SENIORITY_TITLE_RE = re.compile(
     r"\b(?:senior|sr\.?|staff|principal|distinguished|fellow|lead|manager|"
-    r"director|head|chief|architect|vice president|vp)\b|\b(?:engineer|developer|sde)\s*(?:iii|iv|v|3|4|5)\b",
+    r"director|head|chief|architect|vice president|vp)\b|\b(?:engineer|developer|sde)\s*(?:iv|v|4|5)\b",
     re.IGNORECASE,
 )
 INTERN_TITLE_RE = re.compile(r"\b(?:intern|internship|apprentice|trainee)\b", re.IGNORECASE)
 
 _MINIMUM_SECTION_RE = re.compile(
-    r"(?:minimum qualifications|required qualifications|basic qualifications|what you'll need|what you will need|requirements)",
+    r"(?:minimum qualifications|required qualifications|basic qualifications|minimum requirements|"
+    r"required experience|what you'll need|what you will need|requirements)",
     re.IGNORECASE,
 )
 _SECTION_END_RE = re.compile(
@@ -81,9 +82,19 @@ def extract_minimum_experience_years(description: str | None) -> float | None:
 
     patterns = (
         r"\b(?:at least|minimum of|min\.?|minimum)\s*(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
-        r"\b(\d+(?:\.\d+)?)\s*\+\s*years?\s+(?:of\s+)?(?:non[- ]internship\s+)?(?:professional\s+)?experience\b",
-        r"\b(\d+(?:\.\d+)?)\s+years?\s+(?:of\s+)?(?:non[- ]internship\s+)?(?:professional\s+)?experience\b",
+        # Amazon-style wording: "3+ years of non-internship professional
+        # software development experience". Descriptors may occur before
+        # the final "experience" token.
+        r"\b(\d+(?:\.\d+)?)\s*\+\s*years?\s+(?:of\s+)?"
+        r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
+        r"\b(\d+(?:\.\d+)?)\s+years?\s+(?:of\s+)?"
+        r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
         r"\bexperience\s+of\s+(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
+        # Some listings express tenure as a duration in a named role rather
+        # than using the word "experience", e.g. "4 years in a Salesforce
+        # Developer or Architect role". Keep the search inside minimum
+        # qualifications so unrelated dates/tenure elsewhere are not used.
+        r"\b(\d+(?:\.\d+)?)\s*\+?\s*years?\s+(?:in|as)\s+[^.;\n]{1,140}?\b(?:role|position|capacity|developer|engineer|architect)\b",
     )
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -179,15 +190,46 @@ def is_india_or_remote_eligible(job: dict[str, Any]) -> tuple[bool, str]:
     if re.search(r"\bindia\b", normalized) or any(city in normalized for city in INDIA_CITY_ALIASES):
         return True, "india_location"
 
-    foreign_markers = (
-        "united states", " usa ", " uk ", "united kingdom", "canada", "germany",
-        "france", "ireland", "netherlands", "poland", "singapore", "australia",
-        "japan", "brazil", "mexico", "switzerland", "sweden", "spain",
-        "portugal", "romania", "serbia", "israel", "united arab emirates",
+    # Some ATS feeds encode countries with ISO alpha-2 prefixes, for example
+    # "US, WA, Seattle" or "IN, TS, Hyderabad". Treat a code as a country only
+    # at the start/end of a location component, not in the middle (where it
+    # could be a state abbreviation such as WA or CA).
+    iso_alpha2 = set("""
+        AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ
+        CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR
+        GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO
+        JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ
+        MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA
+        RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO
+        TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW
+    """.split())
+    country_name_markers = (
+        "united states", "united kingdom", "canada", "germany", "france",
+        "ireland", "netherlands", "poland", "singapore", "australia", "japan",
+        "brazil", "mexico", "switzerland", "sweden", "spain", "portugal",
+        "romania", "serbia", "israel", "united arab emirates", "taiwan", "chile",
+        "argentina", "belgium", "south africa", "korea", "colombia", "hong kong",
+        "türkiye", "turkey", "italy", "denmark", "costa rica", "philippines",
+        "estonia", "norway", "finland", "austria", "czechia", "czech republic",
+        "hungary", "greece", "indonesia", "malaysia", "thailand", "vietnam",
+        "new zealand", "ukraine", "saudi arabia", "egypt", "kenya", "nigeria",
+        "peru", "uruguay", "croatia", "slovenia", "slovakia", "bulgaria",
+        "latvia", "lithuania", "luxembourg", "cyprus", "qatar", "kuwait",
+        "bahrain", "oman", "nepal", "sri lanka", "bangladesh",
     )
     padded = f" {normalized} "
-    if any(marker in padded for marker in foreign_markers):
+    if any(marker in padded for marker in country_name_markers):
         return False, "outside_india"
+
+    for location in locations:
+        pieces = [piece.strip().upper() for piece in re.split(r"[,;|]", location) if piece.strip()]
+        if not pieces:
+            continue
+        for code in (pieces[0], pieces[-1]):
+            if code == "IN":
+                return True, "india_location"
+            if len(code) == 2 and code in iso_alpha2 and code != "IN":
+                return False, "outside_india"
 
     remote = bool(re.search(r"\bremote\b|work from anywhere|distributed anywhere", normalized))
     india_eligibility = bool(re.search(

@@ -54,6 +54,7 @@ class AmazonJobsCollector(JobCollector):
     def collect(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
         seen: set[str] = set()
+        detail_fetches_attempted = 0
         for band in self.experience_bands:
             offset = 0
             for _ in range(self.max_pages_per_band):
@@ -83,7 +84,18 @@ class AmazonJobsCollector(JobCollector):
                         continue
                     seen.add(key)
                     jobs.append(normalized)
-                    if self.fetch_details and len(jobs) <= self.max_detail_fetch:
+
+                    # Amazon's search JSON normally already contains the full
+                    # description and qualifications. Do not issue a second
+                    # page request when that content is already present.
+                    description = str(normalized.get("description") or "").strip()
+                    needs_detail = not description
+                    if (
+                        self.fetch_details
+                        and needs_detail
+                        and detail_fetches_attempted < self.max_detail_fetch
+                    ):
+                        detail_fetches_attempted += 1
                         detail = self._fetch_detail(normalized["url"])
                         if detail:
                             normalized.update(detail)

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -34,12 +36,17 @@ class GoogleCareersCollector(JobCollector):
         page: int = 1,
         fetch_details: bool = False,
         max_pages: int = 1,
+        detail_workers: int = 3,
     ) -> None:
         self.query = query
         self.location = location
         self.page = page
         self.fetch_details = fetch_details
         self.max_pages = max(1, max_pages)
+        # Conservative bounded concurrency: avoids the hundreds of sequential
+        # round trips that made multi-query syncs take several minutes.
+        self.detail_workers = max(1, min(int(detail_workers), 4))
+        self._detail_thread_local = threading.local()
 
         self.session = requests.Session()
 
@@ -56,9 +63,8 @@ class GoogleCareersCollector(JobCollector):
             }
         )
 
-        self.detail_fetcher = (
-            GoogleJobDetailFetcher()
-        )
+        # Fetchers are created per worker thread; requests.Session is not shared
+        # across concurrent workers.
 
     def _build_params(
         self,
@@ -167,6 +173,13 @@ class GoogleCareersCollector(JobCollector):
             )
 
         return jobs
+
+    def enrich_jobs(
+        self,
+        jobs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Fetch full details for an already deduplicated list of job cards."""
+        return self._enrich_with_details(jobs)
 
     def _collect_page(
         self,
@@ -523,87 +536,76 @@ class GoogleCareersCollector(JobCollector):
             unique_sections
         )
 
+    def _fetch_one_detail(
+        self,
+        job: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, Exception | None]:
+        """Fetch one detail page using a session owned by the current worker."""
+        try:
+            fetcher = getattr(
+                self._detail_thread_local,
+                "fetcher",
+                None,
+            )
+            if fetcher is None:
+                fetcher = GoogleJobDetailFetcher()
+                self._detail_thread_local.fetcher = fetcher
+
+            details = fetcher.fetch(
+                url=job["url"],
+                fallback_title=job.get("title"),
+            )
+            return details, None
+        except Exception as exc:
+            return None, exc
+
     def _enrich_with_details(
         self,
         jobs: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """
-        Fetch the individual Google Careers
-        detail page for every collected job.
+        Fetch detail pages concurrently with a small worker limit.
+
+        The composite collector calls this only after deduplicating all
+        keyword-search results, so each unique Google job is fetched once.
         """
+        if not jobs:
+            return jobs
 
-        enriched_jobs: list[
-            dict[str, Any]
-        ] = []
+        workers = min(self.detail_workers, len(jobs))
+        print(
+            f"Fetching details for {len(jobs)} unique Google jobs "
+            f"using {workers} workers..."
+        )
 
-        for index, job in enumerate(
-            jobs,
-            start=1,
-        ):
-            print(
-                f"Fetching details "
-                f"{index}/{len(jobs)}: "
-                f"{job['title']}"
-            )
-
-            try:
-                details = (
-                    self.detail_fetcher.fetch(
-                        url=job["url"],
-                        fallback_title=job[
-                            "title"
-                        ],
-                    )
+        enriched_jobs: list[dict[str, Any]] = []
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # executor.map preserves input order while fetching concurrently.
+            outcomes = executor.map(self._fetch_one_detail, jobs)
+            for index, (job, outcome) in enumerate(
+                zip(jobs, outcomes),
+                start=1,
+            ):
+                details, error = outcome
+                print(
+                    f"Detail progress {index}/{len(jobs)}: {job.get('title', '')}"
                 )
 
-                if details.get("title"):
-                    job["title"] = (
-                        details["title"]
+                if details:
+                    if details.get("title"):
+                        job["title"] = details["title"]
+                    if details.get("description"):
+                        job["description"] = details["description"]
+                    job["detail_sections"] = details.get("sections", {})
+                elif error is not None:
+                    print(
+                        f"WARNING: Could not fetch details for {job.get('url', '')}"
+                    )
+                    print(
+                        f"Reason: {type(error).__name__}: {error}"
                     )
 
-                if details.get(
-                    "description"
-                ):
-                    job["description"] = (
-                        details["description"]
-                    )
-
-                job["detail_sections"] = (
-                    details.get(
-                        "sections",
-                        {},
-                    )
-                )
-
+                # Keep search-card data even when a detail-page request fails.
                 enriched_jobs.append(job)
-
-            except requests.RequestException as exc:
-                print(
-                    "WARNING: Could not fetch "
-                    f"details for {job['url']}"
-                )
-
-                print(
-                    f"Reason: {exc}"
-                )
-
-                # Keep the search-card data.
-                enriched_jobs.append(job)
-
-            except Exception as exc:
-                print(
-                    "WARNING: Unexpected error "
-                    f"while fetching {job['url']}"
-                )
-
-                print(
-                    f"Reason: {exc}"
-                )
-
-                # Keep the search-card data.
-                enriched_jobs.append(job)
-
-            if index < len(jobs):
-                time.sleep(0.5)
 
         return enriched_jobs

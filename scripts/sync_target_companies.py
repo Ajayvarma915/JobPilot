@@ -39,6 +39,7 @@ class SyncResult:
     updated: int = 0
     skipped: int = 0
     review_required: int = 0
+    auto_sync_eligible: int = 0
     error: str | None = None
 
 
@@ -55,12 +56,20 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
 
 
 class _CompositeCollector:
-    """Combine multiple keyword searches into one deduplicated company feed."""
+    """Combine keyword searches, deduplicate cards, then enrich each job once."""
 
-    def __init__(self, collectors: list[Any]) -> None:
+    def __init__(
+        self,
+        collectors: list[Any],
+        *,
+        fetch_details: bool = True,
+    ) -> None:
         self.collectors = collectors
+        self.fetch_details = fetch_details
 
     def collect(self) -> list[dict[str, Any]]:
+        # Google search terms overlap heavily. Collect lightweight result cards
+        # first, then fetch full descriptions only once per unique job ID.
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         for collector in self.collectors:
@@ -70,6 +79,20 @@ class _CompositeCollector:
                     continue
                 seen.add(identity)
                 results.append(job)
+
+        print(
+            f"Google search batches produced {len(results)} unique jobs "
+            "after cross-query deduplication."
+        )
+
+        if self.fetch_details and results:
+            detail_collector = next(
+                (collector for collector in self.collectors
+                 if hasattr(collector, "enrich_jobs")),
+                None,
+            )
+            if detail_collector is not None:
+                results = detail_collector.enrich_jobs(results)
         return results
 
 
@@ -104,17 +127,23 @@ def _make_collector(company: dict[str, Any]) -> Any:
         queries = settings.get("queries")
         if not isinstance(queries, list) or not queries:
             queries = [str(settings.get("query") or "software engineer")]
+        # Detail fetching is deliberately deferred until all keyword results
+        # have been deduplicated by _CompositeCollector.
         collectors = [
             GoogleCareersCollector(
                 query=str(query),
                 location=str(settings.get("location") or "India"),
                 max_pages=int(settings.get("max_pages_per_query", settings.get("max_pages", 5))),
-                fetch_details=bool(settings.get("fetch_details", True)),
+                fetch_details=False,
+                detail_workers=int(settings.get("detail_workers", 3)),
             )
             for query in queries
             if str(query).strip()
         ]
-        return _CompositeCollector(collectors)
+        return _CompositeCollector(
+            collectors,
+            fetch_details=bool(settings.get("fetch_details", True)),
+        )
     if provider == "greenhouse":
         return GreenhouseCollector(
             board_token=str(settings["board_token"]),
@@ -162,15 +191,20 @@ def _make_collector(company: dict[str, Any]) -> Any:
     raise ValueError(f"No configured public API connector for provider: {provider!r}")
 
 
-_BROAD_TITLE_REVIEW_RE = re.compile(r"\b(?:application engineer|cloud engineer)\b", re.IGNORECASE)
+_BROAD_TITLE_REVIEW_RE = re.compile(
+    r"\b(?:application engineer|cloud engineer|cloud ai engineer|data and ai engineer|"
+    r"salesforce application engineer|solutions engineer)\b",
+    re.IGNORECASE,
+)
 
 AUDIT_FIELDS = [
     "company_id", "company", "provider", "mapping_status", "mapping_verified",
     "external_id", "title", "url", "locations", "workplace_type", "employment_type",
     "posted_at", "experience_level", "minimum_required_years", "experience_screen",
     "role_eligible", "role_reason", "location_eligible", "location_reason",
-    "final_eligible", "audit_status", "review_flags", "description_present",
-    "description_length", "description_preview",
+    "final_eligible", "auto_sync_eligible", "audit_status", "review_flags",
+    "possible_duplicate_group_size", "description_present", "description_length",
+    "description_preview", "minimum_qualification_excerpt",
 ]
 
 
@@ -181,6 +215,61 @@ def _location_values(job: dict[str, Any]) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _minimum_qualification_excerpt(description: str, limit: int = 1200) -> str:
+    """Return a bounded excerpt from the JD's minimum/basic qualifications."""
+    start_re = re.compile(
+        r"(?:minimum qualifications|required qualifications|basic qualifications|minimum requirements|"
+        r"required experience|requirements)",
+        re.IGNORECASE,
+    )
+    end_re = re.compile(
+        r"(?:preferred qualifications|nice to have|preferred skills|bonus points|"
+        r"about the team|responsibilities|what you'll do|what you will do)",
+        re.IGNORECASE,
+    )
+    start = start_re.search(description or "")
+    if not start:
+        return ""
+    tail = (description or "")[start.end():]
+    end = end_re.search(tail)
+    section = tail[:end.start()] if end else tail
+    return re.sub(r"\s+", " ", section).strip()[:limit]
+
+
+def _normalize_duplicate_text(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())).strip()
+
+
+def _mark_possible_duplicates(rows: list[dict[str, Any]]) -> None:
+    """Flag, but never delete, candidate postings with the same title/location/JD prefix."""
+    groups: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        if not row.get("final_eligible"):
+            continue
+        description_key = _normalize_duplicate_text(str(row.get("description_preview") or ""))
+        if not description_key:
+            continue
+        key = (
+            str(row.get("company") or "").casefold(),
+            _normalize_duplicate_text(str(row.get("title") or "")),
+            _normalize_duplicate_text(str(row.get("locations") or "")),
+            description_key,
+        )
+        groups.setdefault(key, []).append(row)
+
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        for row in group:
+            existing = [flag for flag in str(row.get("review_flags") or "").split(";") if flag]
+            if "possible_duplicate_posting_review" not in existing:
+                existing.append("possible_duplicate_posting_review")
+            row["review_flags"] = ";".join(existing)
+            row["possible_duplicate_group_size"] = len(group)
+            row["audit_status"] = "eligible_needs_review"
+            row["auto_sync_eligible"] = False
 
 
 def _make_audit_row(
@@ -204,7 +293,10 @@ def _make_audit_row(
         flags.append("remote_country_eligibility_unverified")
     if _BROAD_TITLE_REVIEW_RE.search(title):
         flags.append("broad_title_manual_review")
+    mapping_verified = bool(integration.get("verified")) and integration.get("status") == "active"
     final_ok = role_ok and location_ok
+    if final_ok and not mapping_verified:
+        flags.append("source_mapping_unverified_review")
     status = "filtered"
     if final_ok:
         status = "eligible_needs_review" if flags else "eligible"
@@ -234,11 +326,14 @@ def _make_audit_row(
         "location_eligible": location_ok,
         "location_reason": location_reason,
         "final_eligible": final_ok,
+        "auto_sync_eligible": bool(final_ok and status == "eligible" and mapping_verified),
         "audit_status": status,
         "review_flags": ";".join(flags),
+        "possible_duplicate_group_size": 1,
         "description_present": bool(description.strip()),
         "description_length": len(description),
         "description_preview": preview,
+        "minimum_qualification_excerpt": _minimum_qualification_excerpt(description),
     }
 
 
@@ -272,19 +367,31 @@ def sync_company(
 
     jobs = _make_collector(company).collect()
     result.collected = len(jobs)
+
+    # Build the audit rows as a batch so probable duplicate postings can be
+    # flagged before any records are considered for database upsert.
+    company_audits = [
+        _make_audit_row(company, job, maximum_required_years)
+        for job in jobs
+    ]
+    _mark_possible_duplicates(company_audits)
+    if audit_rows is not None:
+        audit_rows.extend(company_audits)
+
+    # Jobs that need human review remain in the CSV, but are never written to
+    # SQLite by the default live-sync path.
     eligible_jobs = []
-    for job in jobs:
-        audit = _make_audit_row(company, job, maximum_required_years)
-        if audit_rows is not None:
-            audit_rows.append(audit)
+    for job, audit in zip(jobs, company_audits):
         if audit["final_eligible"]:
-            job["jobpilot_location_screen"] = audit["location_reason"]
-            eligible_jobs.append(job)
-            if audit["audit_status"] == "eligible_needs_review":
+            result.eligible += 1
+            if audit["auto_sync_eligible"]:
+                result.auto_sync_eligible += 1
+                job["jobpilot_location_screen"] = audit["location_reason"]
+                eligible_jobs.append(job)
+            else:
                 result.review_required += 1
         else:
             result.skipped += 1
-    result.eligible = len(eligible_jobs)
 
     if dry_run:
         result.status = "dry_run" if is_active else "dry_run_unverified"
@@ -386,7 +493,7 @@ def main() -> int:
                 audit_rows=audit_rows if args.audit_report else None,
             )
             results.append(row)
-            print(f"  {row.status}: raw={row.collected}, eligible={row.eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
+            print(f"  {row.status}: raw={row.collected}, candidates={row.eligible}, auto_sync_eligible={row.auto_sync_eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
         except Exception as exc:
             row = SyncResult(company=company["name"], provider=provider, status="failed", error=f"{type(exc).__name__}: {exc}")
             results.append(row)
@@ -401,10 +508,11 @@ def main() -> int:
     print(f"Awaiting source mapping: {sum(r.status not in {'success','dry_run','dry_run_unverified','failed'} for r in results)}")
     print(f"Failed API sources    : {sum(r.status == 'failed' for r in results)}")
     print(f"Raw jobs collected    : {sum(r.collected for r in results)}")
-    print(f"Eligible software jobs: {sum(r.eligible for r in results)}")
-    print(f"New database records  : {sum(r.inserted for r in results)}")
+    print(f"Role/location candidates: {sum(r.eligible for r in results)}")
+    print(f"Auto-sync eligible jobs : {sum(r.auto_sync_eligible for r in results)}")
+    print(f"Eligible needing review : {sum(r.review_required for r in results)}")
+    print(f"New database records    : {sum(r.inserted for r in results)}")
     print(f"Updated records       : {sum(r.updated for r in results)}")
-    print(f"Eligible needing review: {sum(r.review_required for r in results)}")
     if args.audit_report:
         try:
             report_path = write_audit_report(audit_rows, args.audit_report)
