@@ -39,6 +39,8 @@
         <span>Overwrite fields that already contain text</span>
       </label>
       <button id="fillBtn" class="primary-button" disabled>Fill supported fields</button>
+      <button id="markAppliedBtn" class="confirm-button" disabled>Complete readiness before confirming submission</button>
+      <p class="muted submission-hint">After you manually submit and see the employer's confirmation page, use the button below to record the application. JobPilot never clicks Submit.</p>
       <div id="actionStatus" class="status" role="status" aria-live="polite"></div>
     </section>
 
@@ -54,7 +56,7 @@
     </section>
 
     <footer>
-      <strong>Human review required.</strong> This extension never clicks Submit, Apply, or any other form action. Verify every populated value and attach your resume manually.
+      <strong>Human review required.</strong> This extension never clicks Submit, Apply, or any other form action. Verify every populated value and attach your resume manually. The “Confirm I submitted” action only updates your local JobPilot tracker after you attest that the employer accepted your submission.
     </footer>
   </main>
 </body>

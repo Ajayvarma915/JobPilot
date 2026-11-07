@@ -6,6 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import ApplicationPreparationPanel from "./components/ApplicationPreparationPanel";
 import {
   Activity,
   ArrowRight,
@@ -1814,12 +1815,16 @@ function JobsView({
 function ApplicationCard({
   application,
   onUpdate,
+  onTailorResume,
+  onRefresh,
 }: {
   application: TrackedApplication;
   onUpdate: (
     applicationId: number,
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
+  onTailorResume: (jobId: number) => Promise<void>;
+  onRefresh: () => void;
 }) {
   const [draftStatus, setDraftStatus] = useState<ApplicationStatus>(application.status);
   const [notes, setNotes] = useState(application.notes ?? "");
@@ -1966,6 +1971,15 @@ function ApplicationCard({
           {saving ? "Saving..." : "Save changes"}
         </button>
       </div>
+
+      <ApplicationPreparationPanel
+        applicationId={application.id}
+        jobId={application.job_id}
+        jobTitle={application.job.title}
+        company={application.job.company}
+        onTailorResume={onTailorResume}
+        onRefresh={onRefresh}
+      />
     </motion.article>
   );
 }
@@ -1983,6 +1997,7 @@ function ApplicationsView({
   onRefresh,
   onUpdate,
   onDiscoverJobs,
+  onTailorResume,
 }: {
   applications: TrackedApplication[];
   total: number;
@@ -1999,6 +2014,7 @@ function ApplicationsView({
     update: ApplicationUpdatePayload,
   ) => Promise<TrackedApplication>;
   onDiscoverJobs: () => void;
+  onTailorResume: (jobId: number) => Promise<void>;
 }) {
   const visibleApplications = applications.filter((application) => {
     const matchesStatus = statusFilter === "all" || application.status === statusFilter;
@@ -2099,6 +2115,8 @@ function ApplicationsView({
               key={`${application.id}-${application.updated_at}`}
               application={application}
               onUpdate={onUpdate}
+              onTailorResume={onTailorResume}
+              onRefresh={onRefresh}
             />
           ))}
         </div>
@@ -2569,6 +2587,8 @@ interface EmailConnectionStatus {
   stores_full_email_body: boolean;
 }
 
+type EmailReviewFilter = "pending" | "approved" | "ignored";
+
 type EmailEventType =
   | "application_confirmation"
   | "assessment_invitation"
@@ -2654,6 +2674,10 @@ function EmailIntelligenceView({
   error,
   notice,
   selectedApplicationIds,
+  eventFilter,
+  pendingTotal,
+  eventTotal,
+  onFilterChange,
   onRefresh,
   onConnect,
   onSync,
@@ -2669,6 +2693,10 @@ function EmailIntelligenceView({
   error: string | null;
   notice: string | null;
   selectedApplicationIds: Record<number, string>;
+  eventFilter: EmailReviewFilter;
+  pendingTotal: number;
+  eventTotal: number;
+  onFilterChange: (filter: EmailReviewFilter) => void;
   onRefresh: () => void;
   onConnect: () => void;
   onSync: () => void;
@@ -2737,7 +2765,7 @@ function EmailIntelligenceView({
         </div>
         <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/70 p-4">
           <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-500">Pending review</span>
-          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-100">{formatNumber(events.length)}</p>
+          <p className="mt-3 text-2xl font-semibold tabular-nums text-slate-100">{formatNumber(pendingTotal)}</p>
           <p className="mt-1 text-[10px] leading-4 text-slate-500">No tracker changes until approval</p>
         </div>
         <div className="rounded-2xl border border-slate-800/80 bg-[#101827]/70 p-4">
@@ -2813,12 +2841,29 @@ function EmailIntelligenceView({
       )}
 
       <section className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-sm font-semibold text-slate-100">Needs your review</h2>
+            <h2 className="text-sm font-semibold text-slate-100">{eventFilter === "pending" ? "Needs your review" : "Review history"}</h2>
             <p className="mt-1 text-[10px] text-slate-500">Each message is deduplicated by Gmail message ID and stored without its full body.</p>
           </div>
-          <span className="rounded-full border border-slate-700 px-2.5 py-1 text-[10px] text-slate-400">{formatNumber(events.length)} pending</span>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Filter email events">
+            {(["pending", "approved", "ignored"] as const).map((filter) => {
+              const active = eventFilter === filter;
+              const label = filter === "pending" ? `Pending · ${formatNumber(pendingTotal)}` : filter === "approved" ? "Approved" : "Ignored";
+              return (
+                <button
+                  key={filter}
+                  type="button"
+                  className={active ? "primary-button" : "secondary-button"}
+                  aria-pressed={active}
+                  onClick={() => onFilterChange(filter)}
+                >
+                  {label}
+                </button>
+              );
+            })}
+            <span className="self-center text-[10px] text-slate-500">{formatNumber(eventTotal)} total</span>
+          </div>
         </div>
 
         {loading ? (
@@ -2829,11 +2874,15 @@ function EmailIntelligenceView({
         ) : events.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-700/70 bg-white/[0.015] p-8 text-center">
             <Mail size={22} className="mx-auto text-slate-600" />
-            <p className="mt-3 text-xs font-semibold text-slate-300">No pending email events</p>
+            <p className="mt-3 text-xs font-semibold text-slate-300">
+              {eventFilter === "pending" ? "No pending email events" : `No ${eventFilter} email events yet`}
+            </p>
             <p className="mt-1 text-[10px] leading-5 text-slate-500">
-              {connection?.connected
-                ? "Sync Gmail to look for recent assessment, interview, offer and application messages."
-                : "Connect Gmail first, then sync your inbox."}
+              {eventFilter === "pending"
+                ? connection?.connected
+                  ? "Sync Gmail to look for recent assessment, interview, offer and application messages."
+                  : "Connect Gmail first, then sync your inbox."
+                : "Reviewed messages will appear here after you approve or ignore them."}
             </p>
           </div>
         ) : (
@@ -2870,8 +2919,10 @@ function EmailIntelligenceView({
                     </div>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-slate-800 bg-black/10 p-3">
-                    <div className="flex items-center justify-between gap-3">
+                  {eventFilter === "pending" ? (
+                    <>
+                      <div className="mt-4 rounded-xl border border-slate-800 bg-black/10 p-3">
+                        <div className="flex items-center justify-between gap-3">
                       <p className="text-[10px] font-semibold text-slate-300">Match this email to an application</p>
                       {autoMatched && !hasManualOverride && (
                         <span className="text-[9px] text-emerald-200">Suggested match · {Math.round(event.match_confidence * 100)}%</span>
@@ -2899,22 +2950,44 @@ function EmailIntelligenceView({
                     )}
                   </div>
 
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[9px] leading-4 text-slate-500">No status changes occur until you approve this event.</p>
-                    <div className="flex gap-2">
-                      <button className="secondary-button" onClick={() => onReview(event.id, "ignore")}>
-                        Ignore
-                      </button>
-                      <button
-                        className="primary-button"
-                        disabled={!canApprove}
-                        onClick={() => onReview(event.id, "approve", hasManualOverride ? selectedApplicationId! : undefined)}
-                        title={!canApprove ? "Choose an application first" : "Approve the proposed status update"}
-                      >
-                        <CheckCircle2 size={13} /> Approve update
-                      </button>
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[9px] leading-4 text-slate-500">No status changes occur until you approve this event.</p>
+                        <div className="flex gap-2">
+                          <button className="secondary-button" onClick={() => onReview(event.id, "ignore")}>
+                            Ignore
+                          </button>
+                          <button
+                            className="primary-button"
+                            disabled={!canApprove}
+                            onClick={() => onReview(event.id, "approve", hasManualOverride ? selectedApplicationId! : undefined)}
+                            title={!canApprove ? "Choose an application first" : "Approve the proposed status update"}
+                          >
+                            <CheckCircle2 size={13} /> Approve update
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="mt-4 rounded-xl border border-slate-800 bg-black/10 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={`rounded-full border px-2.5 py-1 text-[9px] font-semibold ${event.review_status === "approved" ? "border-emerald-300/20 bg-emerald-300/[0.06] text-emerald-200" : "border-slate-600/40 bg-slate-700/20 text-slate-300"}`}>
+                          {event.review_status === "approved" ? "Approved by you" : "Ignored by you"}
+                        </span>
+                        {event.reviewed_at && <span className="text-[9px] text-slate-500">Reviewed {emailDateLabel(event.reviewed_at)}</span>}
+                      </div>
+                      {event.matched_job && (
+                        <p className="mt-3 text-[10px] text-slate-300">
+                          Linked application: <span className="font-semibold">{event.matched_job.company}</span> · {event.matched_job.title}
+                        </p>
+                      )}
+                      {event.review_status === "approved" && (
+                        <p className="mt-2 text-[10px] text-slate-400">
+                          Tracker status: {event.before_status || "unknown"} → {event.after_status || "unchanged"}
+                        </p>
+                      )}
+                      {event.review_note && <p className="mt-2 text-[10px] leading-5 text-slate-500">Review note: {event.review_note}</p>}
                     </div>
-                  </div>
+                  )}
                 </article>
               );
             })}
@@ -2959,6 +3032,9 @@ function App() {
 
   const [emailConnection, setEmailConnection] = useState<EmailConnectionStatus | null>(null);
   const [emailEvents, setEmailEvents] = useState<ApplicationEmailEvent[]>([]);
+  const [emailEventFilter, setEmailEventFilter] = useState<EmailReviewFilter>("pending");
+  const [emailPendingTotal, setEmailPendingTotal] = useState(0);
+  const [emailEventTotal, setEmailEventTotal] = useState(0);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailSyncing, setEmailSyncing] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -3112,22 +3188,28 @@ function App() {
   }, []);
 
 
-  const loadEmailIntelligence = useCallback(async () => {
+  const loadEmailIntelligence = useCallback(async (filter: EmailReviewFilter = emailEventFilter) => {
     setEmailLoading(true);
     setEmailError(null);
     try {
-      const [connection, eventList] = await Promise.all([
+      const eventParams = new URLSearchParams({ review_status: filter, limit: "100", offset: "0" });
+      const [connection, eventList, pendingList] = await Promise.all([
         apiRequest<EmailConnectionStatus>("/api/email/status"),
-        apiRequest<EmailEventListResponse>("/api/email/events?review_status=pending&limit=100"),
+        apiRequest<EmailEventListResponse>(`/api/email/events?${eventParams.toString()}`),
+        filter === "pending"
+          ? Promise.resolve<EmailEventListResponse | null>(null)
+          : apiRequest<EmailEventListResponse>("/api/email/events?review_status=pending&limit=1&offset=0"),
       ]);
       setEmailConnection(connection);
       setEmailEvents(eventList.items);
+      setEmailEventTotal(eventList.total);
+      setEmailPendingTotal(filter === "pending" ? eventList.total : pendingList?.total ?? 0);
     } catch (error) {
       setEmailError(errorText(error));
     } finally {
       setEmailLoading(false);
     }
-  }, []);
+  }, [emailEventFilter]);
 
   const handleEmailConnect = useCallback(() => {
     window.open(`${API_BASE}/api/email/oauth/start`, "_blank", "noopener,noreferrer");
@@ -3145,7 +3227,8 @@ function App() {
       setEmailNotice(
         `Sync complete: scanned ${result.scanned}, imported ${result.imported}, skipped ${result.duplicates} duplicates, and left ${result.review_required} event(s) for review.${result.more_pages_pending ? " More pages remain; run Sync again to continue through older messages." : ""}`,
       );
-      await Promise.all([loadEmailIntelligence(), loadApplications()]);
+      setEmailEventFilter("pending");
+      await Promise.all([loadEmailIntelligence("pending"), loadApplications()]);
     } catch (error) {
       setEmailError(errorText(error));
     } finally {
@@ -3325,6 +3408,15 @@ function App() {
     setGenerationError(null);
     setScreen("resume");
     setMobileNavOpen(false);
+  };
+
+  const handleTailorTrackedJob = async (jobId: number) => {
+    try {
+      const job = await apiRequest<Job>(`/api/jobs/${jobId}`);
+      openResumeForJob(job);
+    } catch (error) {
+      setApplicationsError(errorText(error));
+    }
   };
 
   const applyJobFilters = (event: FormEvent<HTMLFormElement>) => {
@@ -3855,6 +3947,7 @@ function App() {
                     onRefresh={() => void loadApplications()}
                     onUpdate={handleUpdateApplication}
                     onDiscoverJobs={openJobs}
+                    onTailorResume={handleTailorTrackedJob}
                   />
                 )}
 
@@ -3890,6 +3983,10 @@ function App() {
                     error={emailError}
                     notice={emailNotice}
                     selectedApplicationIds={emailSelectedApplicationIds}
+                    eventFilter={emailEventFilter}
+                    pendingTotal={emailPendingTotal}
+                    eventTotal={emailEventTotal}
+                    onFilterChange={setEmailEventFilter}
                     onRefresh={() => {
                       void loadEmailIntelligence();
                       void loadApplications();

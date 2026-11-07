@@ -8,6 +8,7 @@ const elements = {
   openPostingBtn: document.getElementById("openPostingBtn"),
   overwriteExisting: document.getElementById("overwriteExisting"),
   fillBtn: document.getElementById("fillBtn"),
+  markAppliedBtn: document.getElementById("markAppliedBtn"),
   actionStatus: document.getElementById("actionStatus"),
   questionCount: document.getElementById("questionCount"),
   questionsList: document.getElementById("questionsList"),
@@ -33,10 +34,15 @@ function safeHttpUrl(value) {
   }
 }
 
-async function apiRequest(path) {
+async function apiRequest(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
+    method: options.method || "GET",
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    body: options.body,
     cache: "no-store",
   });
 
@@ -168,6 +174,20 @@ function renderPreparation(prep) {
   elements.openPostingBtn.disabled = !postingUrl;
   elements.fillBtn.disabled = !prep || !selectedApplication;
 
+  const applicationStatus =
+    prep?.application_status || selectedApplication?.status || "";
+  const alreadySubmitted = [
+    "applied", "assessment", "interview", "offer", "rejected", "withdrawn",
+  ].includes(applicationStatus);
+  const canConfirmSubmission = applicationStatus === "ready_to_apply";
+
+  elements.markAppliedBtn.disabled = !canConfirmSubmission;
+  elements.markAppliedBtn.textContent = alreadySubmitted
+    ? "Submission already recorded"
+    : canConfirmSubmission
+      ? "Confirm I submitted this application"
+      : "Complete readiness before confirming submission";
+
   renderQuestions(prep.custom_questions);
 }
 
@@ -181,6 +201,8 @@ async function loadPreparation(applicationId) {
 
   elements.fillBtn.disabled = true;
   elements.openPostingBtn.disabled = true;
+  elements.markAppliedBtn.disabled = true;
+  elements.markAppliedBtn.textContent = "Loading application status…";
   elements.blockerSummary.classList.add("hidden");
   elements.jobMeta.textContent = "Loading preparation packet…";
 
@@ -202,6 +224,8 @@ async function loadPreparation(applicationId) {
   } catch (error) {
     elements.jobMeta.textContent =
       "Could not load this preparation packet.";
+    elements.markAppliedBtn.disabled = true;
+    elements.markAppliedBtn.textContent = "Preparation unavailable";
 
     setStatus(`API error: ${error.message}`, "error");
   }
@@ -237,6 +261,8 @@ async function loadApplications(preferredId = "") {
 
       elements.fillBtn.disabled = true;
       elements.openPostingBtn.disabled = true;
+      elements.markAppliedBtn.disabled = true;
+      elements.markAppliedBtn.textContent = "Select an application first";
 
       renderQuestions([]);
       setStatus("No tracked applications found.");
@@ -276,6 +302,8 @@ async function loadApplications(preferredId = "") {
 
     elements.fillBtn.disabled = true;
     elements.openPostingBtn.disabled = true;
+    elements.markAppliedBtn.disabled = true;
+    elements.markAppliedBtn.textContent = "JobPilot API unavailable";
 
     setStatus(
       `Can't reach ${API_BASE}: ${error.message}`,
@@ -652,6 +680,80 @@ function fillSupportedFields(
   };
 }
 
+
+async function confirmSuccessfulSubmission() {
+  if (!selectedApplication || !selectedPreparation) {
+    setStatus("Select a tracked application first.", "error");
+    return;
+  }
+
+  if (selectedApplication.status !== "ready_to_apply") {
+    setStatus(
+      "The application must pass JobPilot's readiness checks before submission can be recorded here.",
+      "error"
+    );
+    return;
+  }
+
+  const company = selectedApplication.job?.company || "this company";
+  const title = selectedApplication.job?.title || "this role";
+  const confirmed = window.confirm(
+    `Confirm successful submission?\n\n` +
+    `Company: ${company}\nRole: ${title}\n\n` +
+    "Only confirm if you personally completed the employer's form and saw its submission confirmation. " +
+    "JobPilot will record the application as Applied and set its applied timestamp. " +
+    "This does not submit anything on the employer website."
+  );
+
+  if (!confirmed) return;
+
+  elements.markAppliedBtn.disabled = true;
+  setStatus("Recording your confirmed submission in JobPilot…");
+
+  try {
+    const updated = await apiRequest(
+      `/api/applications/${Number(selectedApplication.id)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ status: "applied" }),
+      }
+    );
+
+    selectedApplication = { ...selectedApplication, ...updated };
+    applications = applications.map((item) =>
+      String(item.id) === String(selectedApplication.id)
+        ? { ...item, ...updated }
+        : item
+    );
+
+    const appliedAt = updated.applied_at
+      ? new Date(updated.applied_at).toLocaleString()
+      : "now";
+
+    // The PATCH is the authoritative status update. A later preparation
+    // refresh failure must not make a successful submission record look failed.
+    elements.markAppliedBtn.disabled = true;
+    elements.markAppliedBtn.textContent = "Submission already recorded";
+
+    try {
+      const prep = await apiRequest(
+        `/api/applications/${Number(selectedApplication.id)}/preparation`
+      );
+      renderPreparation(prep);
+    } catch {
+      // Keep the confirmed tracker status visible even if the prep refresh fails.
+    }
+
+    setStatus(
+      `Submission recorded as Applied (${appliedAt}). JobPilot has saved the confirmed application timestamp for subsequent lifecycle tracking.`,
+      "success"
+    );
+  } catch (error) {
+    elements.markAppliedBtn.disabled = false;
+    setStatus(`Could not record submission: ${error.message}`, "error");
+  }
+}
+
 async function fillCurrentTab() {
   if (!selectedPreparation || !selectedApplication) {
     setStatus("Select a tracked application first.", "error");
@@ -789,5 +891,6 @@ elements.openPostingBtn.addEventListener("click", async () => {
 });
 
 elements.fillBtn.addEventListener("click", fillCurrentTab);
+elements.markAppliedBtn.addEventListener("click", confirmSuccessfulSubmission);
 
 loadApplications();

@@ -269,3 +269,19 @@ footer {
 footer strong {
     color: #cbd8eb;
 }
+
+.confirm-button {
+    width: 100%;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    cursor: pointer;
+    font-weight: 750;
+    color: #c8f8e8;
+    border: 1px solid #24785e;
+    background: linear-gradient(100deg, #123d35, #14513f);
+}
+
+.submission-hint {
+    margin-bottom: 0;
+}

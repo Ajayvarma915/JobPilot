@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import csv
 import json
 import re
@@ -26,6 +27,22 @@ from app.services.target_role_policy import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "data" / "target_companies.json"
+
+# In v6 benchmarking, these three Google queries produced zero additional
+# unique cards after the other nine queries had been merged. They remain in
+# the full-coverage plan and are omitted only when --fast-google-scan is used.
+GOOGLE_LOW_YIELD_QUERIES = {
+    "frontend engineer",
+    "devops engineer",
+    "platform engineer",
+}
+
+def google_query_plan(queries: list[Any], *, fast_scan: bool = False) -> list[str]:
+    """Return Google queries, optionally omitting only the observed low-yield tier."""
+    normalized = [str(query).strip() for query in queries if str(query).strip()]
+    if not fast_scan:
+        return normalized
+    return [query for query in normalized if query.casefold() not in GOOGLE_LOW_YIELD_QUERIES]
 
 
 @dataclass
@@ -63,22 +80,47 @@ class _CompositeCollector:
         collectors: list[Any],
         *,
         fetch_details: bool = True,
+        search_workers: int = 3,
     ) -> None:
         self.collectors = collectors
         self.fetch_details = fetch_details
+        # Search batches are independent and each Google collector owns its
+        # own requests.Session. Keep concurrency bounded to avoid request bursts.
+        self.search_workers = max(1, min(int(search_workers), 4))
 
     def collect(self) -> list[dict[str, Any]]:
-        # Google search terms overlap heavily. Collect lightweight result cards
-        # first, then fetch full descriptions only once per unique job ID.
+        # Query batches overlap heavily. Run independent batches concurrently,
+        # while executor.map preserves configured query order in the merged set.
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for collector in self.collectors:
-            for job in collector.collect():
+        if self.collectors:
+            print(
+                f"Running {len(self.collectors)} Google search batches "
+                f"with {min(self.search_workers, len(self.collectors))} workers..."
+            )
+            with ThreadPoolExecutor(
+                max_workers=min(self.search_workers, len(self.collectors))
+            ) as executor:
+                batches = list(executor.map(lambda collector: collector.collect(), self.collectors))
+        else:
+            batches = []
+
+        for batch_index, (collector, batch) in enumerate(
+            zip(self.collectors, batches), start=1
+        ):
+            new_unique = 0
+            for job in batch:
                 identity = str(job.get("external_id") or job.get("url") or "").strip()
                 if not identity or identity in seen:
                     continue
                 seen.add(identity)
                 results.append(job)
+                new_unique += 1
+            query_label = str(getattr(collector, "query", "") or "(unlabelled query)")
+            print(
+                f"Google batch {batch_index}/{len(batches)} "
+                f"[{query_label}]: {len(batch)} cards, {new_unique} new unique jobs."
+            )
 
         print(
             f"Google search batches produced {len(results)} unique jobs "
@@ -86,13 +128,60 @@ class _CompositeCollector:
         )
 
         if self.fetch_details and results:
+            # A full job description cannot turn a title rejected by the same
+            # title-only role policy into a target software role. The precheck
+            # therefore avoids detail requests for clearly out-of-scope titles,
+            # but keeps every original card for the complete CSV audit. Titles
+            # with ambiguous/target software families (including Engineer III)
+            # remain in the detail-fetch set for the full qualification check.
+            detail_candidates = [
+                job for job in results
+                if is_target_software_role(str(job.get("title") or ""), "")[0]
+            ]
+            detail_candidate_ids = {
+                str(job.get("external_id") or job.get("url") or "").strip()
+                for job in detail_candidates
+            }
+            for job in results:
+                job["_jobpilot_detail_fetch_status"] = (
+                    "pending" if str(job.get("external_id") or job.get("url") or "").strip()
+                    in detail_candidate_ids else "skipped_title_prefilter"
+                )
+            skipped_details = len(results) - len(detail_candidates)
+            print(
+                f"Google title prefilter retained {len(detail_candidates)} of "
+                f"{len(results)} cards for detail enrichment; "
+                f"{skipped_details} out-of-scope titles need no detail request."
+            )
+
             detail_collector = next(
                 (collector for collector in self.collectors
                  if hasattr(collector, "enrich_jobs")),
                 None,
             )
-            if detail_collector is not None:
-                results = detail_collector.enrich_jobs(results)
+            if detail_collector is not None and detail_candidates:
+                enriched = detail_collector.enrich_jobs(detail_candidates)
+                enriched_by_identity = {
+                    str(job.get("external_id") or job.get("url") or "").strip(): job
+                    for job in enriched
+                    if str(job.get("external_id") or job.get("url") or "").strip()
+                }
+                # Preserve all cards and their original order for audit rows.
+                # Cards outside the title policy intentionally keep no JD.
+                results = [
+                    enriched_by_identity.get(
+                        str(job.get("external_id") or job.get("url") or "").strip(),
+                        job,
+                    )
+                    for job in results
+                ]
+                for job in results:
+                    if job.get("_jobpilot_detail_fetch_status") == "pending":
+                        job["_jobpilot_detail_fetch_status"] = "attempted"
+            elif detail_candidates:
+                for job in results:
+                    if job.get("_jobpilot_detail_fetch_status") == "pending":
+                        job["_jobpilot_detail_fetch_status"] = "detail_collector_unavailable"
         return results
 
 
@@ -143,6 +232,7 @@ def _make_collector(company: dict[str, Any]) -> Any:
         return _CompositeCollector(
             collectors,
             fetch_details=bool(settings.get("fetch_details", True)),
+            search_workers=int(settings.get("search_workers", 3)),
         )
     if provider == "greenhouse":
         return GreenhouseCollector(
@@ -204,7 +294,7 @@ AUDIT_FIELDS = [
     "role_eligible", "role_reason", "location_eligible", "location_reason",
     "final_eligible", "auto_sync_eligible", "audit_status", "review_flags",
     "possible_duplicate_group_size", "description_present", "description_length",
-    "description_preview", "minimum_qualification_excerpt",
+    "description_preview", "minimum_qualification_excerpt", "detail_fetch_status",
 ]
 
 
@@ -334,6 +424,14 @@ def _make_audit_row(
         "description_length": len(description),
         "description_preview": preview,
         "minimum_qualification_excerpt": _minimum_qualification_excerpt(description),
+        "detail_fetch_status": str(
+            job.get("_jobpilot_detail_fetch_status")
+            or (
+                "not_applicable" if provider != "google_careers"
+                else "description_available" if description.strip()
+                else "not_reported"
+            )
+        ),
     }
 
 
@@ -355,6 +453,7 @@ def sync_company(
     maximum_required_years: float,
     allow_unverified: bool = False,
     audit_rows: list[dict[str, Any]] | None = None,
+    fast_google_scan: bool = False,
 ) -> SyncResult:
     integration = company.get("integration") or {}
     provider = str(integration.get("provider") or "unconfigured")
@@ -365,7 +464,24 @@ def sync_company(
         result.status = str(integration.get("status") or "source_not_verified")
         return result
 
-    jobs = _make_collector(company).collect()
+    collector_company = company
+    if fast_google_scan and provider == "google_careers":
+        # Work from a shallow copy so the in-memory registry stays unchanged.
+        collector_company = dict(company)
+        collector_integration = dict(integration)
+        collector_settings = dict(integration.get("settings") or {})
+        configured_queries = collector_settings.get("queries")
+        if not isinstance(configured_queries, list) or not configured_queries:
+            configured_queries = [str(collector_settings.get("query") or "software engineer")]
+        configured_count = len([q for q in configured_queries if str(q).strip()])
+        collector_settings["queries"] = google_query_plan(configured_queries, fast_scan=True)
+        collector_integration["settings"] = collector_settings
+        collector_company["integration"] = collector_integration
+        print(
+            f"Google FAST query plan: {len(collector_settings['queries'])} primary batches; "
+            f"{configured_count - len(collector_settings['queries'])} observed low-yield fallback batches omitted."
+        )
+    jobs = _make_collector(collector_company).collect()
     result.collected = len(jobs)
 
     # Build the audit rows as a batch so probable duplicate postings can be
@@ -415,6 +531,8 @@ def sync_company(
             )
             record["source"] = str(record.get("source") or provider)
             record["company"] = str(company["name"])
+            # Internal audit metadata must never be sent to the ORM/repository.
+            record.pop("_jobpilot_detail_fetch_status", None)
             _job, created = repository.upsert_job(company=company_obj, job_data=record)
             if created:
                 result.inserted += 1
@@ -437,6 +555,11 @@ def main() -> int:
     parser.add_argument("--max-years", type=float, default=2.0, help="Maximum required experience years (default: 2).")
     parser.add_argument("--include-unverified", action="store_true", help="Try configured but not yet live-verified source mappings. Requires --dry-run.")
     parser.add_argument("--audit-report", type=Path, help="Write a per-job CSV eligibility audit; requires --dry-run.")
+    parser.add_argument(
+        "--fast-google-scan", action="store_true",
+        help=("Opt-in Google scan omitting the three low-yield query batches observed in v6. "
+              "The default runs the complete 12-query plan."),
+    )
     args = parser.parse_args()
     if args.include_unverified and not args.dry_run:
         parser.error("--include-unverified is read-only and can only be used together with --dry-run")
@@ -467,6 +590,10 @@ def main() -> int:
     print("Location: India roles + remote listings (country eligibility unverified remains flagged for review).")
     if args.include_unverified:
         print("WARNING: Trying configured-but-unverified sources in read-only DRY RUN; no database writes will occur.")
+    if args.fast_google_scan:
+        print("Google query mode: FAST (9 primary queries; 3 low-yield queries retained for full-coverage runs).")
+    else:
+        print("Google query mode: FULL (all configured query batches).")
     print()
 
     results: list[SyncResult] = []
@@ -491,6 +618,7 @@ def main() -> int:
                 maximum_required_years=args.max_years,
                 allow_unverified=args.include_unverified,
                 audit_rows=audit_rows if args.audit_report else None,
+                fast_google_scan=args.fast_google_scan,
             )
             results.append(row)
             print(f"  {row.status}: raw={row.collected}, candidates={row.eligible}, auto_sync_eligible={row.auto_sync_eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
