@@ -88,6 +88,8 @@ class WorkdayCollector(JobCollector):
                     detail = self._fetch_detail(str(raw.get("externalPath") or ""))
                     if detail:
                         job.update(detail)
+                    else:
+                        job["_jobpilot_detail_fetch_status"] = "failed"
                 results.append(job)
             total = payload.get("total")
             offset += len(postings)
@@ -105,7 +107,8 @@ class WorkdayCollector(JobCollector):
         req_id = str(raw.get("jobReqId") or raw.get("id") or external_path).strip()
         location = str(raw.get("locationsText") or raw.get("location") or "").strip()
         posted = raw.get("postedOn")
-        job_url = urljoin(self.host, external_path)
+        public_path = f"/{self.locale}/{quote(self.site, safe='')}/{external_path.lstrip('/')}"
+        job_url = urljoin(self.host + "/", public_path.lstrip("/"))
         return {
             "external_id": req_id,
             "company": self.company_name,
@@ -120,12 +123,15 @@ class WorkdayCollector(JobCollector):
             "external_path": external_path,
             "department": raw.get("jobFamilyGroup") or raw.get("jobFamily"),
             "workplace_type": raw.get("workplaceType"),
+            "_jobpilot_detail_fetch_status": "pending" if self.fetch_details else "not_requested",
         }
 
     def _fetch_detail(self, external_path: str) -> dict[str, Any] | None:
         if not external_path:
             return None
-        detail_url = f"{self.api_root}/job{external_path if external_path.startswith('/') else '/' + external_path}"
+        # Workday CXS detail uses the site root followed directly by externalPath.
+        # Adding another /job segment causes requests to /job/job/... and loses details.
+        detail_url = f"{self.api_root}{external_path if external_path.startswith('/') else '/' + external_path}"
         try:
             response = self.session.get(detail_url, timeout=self.timeout)
             response.raise_for_status()
@@ -139,15 +145,51 @@ class WorkdayCollector(JobCollector):
             return None
         description_html = str(info.get("jobDescription") or info.get("externalDescription") or "")
         description = self._html_to_text(description_html)
-        title = str(info.get("jobTitle") or "").strip()
-        return {
+        title = str(info.get("jobTitle") or info.get("title") or "").strip()
+        locations: list[str] = []
+        for key in ("location", "additionalLocations", "jobRequisitionLocation"):
+            for value in self._location_values(info.get(key)):
+                if value.casefold() not in {item.casefold() for item in locations}:
+                    locations.append(value)
+        detail = {
             "description": description,
             "employment_type": info.get("timeType") or info.get("workerSubType"),
-            "posted_at": self._parse_date(info.get("postedOn")) or None,
+            "posted_at": self._parse_date(info.get("postedOn")),
             "department": info.get("jobFamilyGroup") or info.get("jobFamily"),
             "workplace_type": info.get("workplaceType"),
+            "_jobpilot_detail_fetch_status": "fetched" if description else "fetched_without_description",
             **({"title": title} if title else {}),
         }
+        if locations:
+            detail["location"] = locations
+        external_url = str(info.get("externalUrl") or "").strip()
+        if external_url:
+            detail["url"] = urljoin(self.host + "/", external_url)
+        return detail
+
+    @classmethod
+    def _location_values(cls, value: Any) -> list[str]:
+        """Normalize Workday string/list/dict location variants."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            clean = " ".join(value.split())
+            return [clean] if clean else []
+        if isinstance(value, (list, tuple)):
+            output: list[str] = []
+            for item in value:
+                for location in cls._location_values(item):
+                    if location.casefold() not in {entry.casefold() for entry in output}:
+                        output.append(location)
+            return output
+        if isinstance(value, dict):
+            for key in ("descriptor", "fullLocation", "displayName", "name", "location"):
+                if value.get(key):
+                    return cls._location_values(value[key])
+            parts = [str(value.get(key) or "").strip() for key in ("city", "region", "country")]
+            combined = ", ".join(part for part in parts if part)
+            return [combined] if combined else []
+        return []
 
     @staticmethod
     def _parse_date(value: Any) -> Any:
