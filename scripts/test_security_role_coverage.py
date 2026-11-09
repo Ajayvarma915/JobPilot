@@ -27,6 +27,11 @@ def main() -> None:
         assert not eligible, f"Generic security analyst title must remain excluded: {title}"
         assert not _is_target_software_role(title), f"API feed must exclude generic security analyst: {title}"
 
+    # Regression guard: a malformed regex alternation once made the API title
+    # filter match every title that was not explicitly blocked.
+    for title in ("Head Chef", "Warehouse Operator", "Senior Commissions Analyst"):
+        assert not _is_target_software_role(title), f"API feed must not admit unrelated title: {title}"
+
     print("PASS - Cloud Security Engineer is included")
     print("PASS - Threat Detection Engineer is included")
     print("PASS - Generic security analyst/SOC titles remain excluded")

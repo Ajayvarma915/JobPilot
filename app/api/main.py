@@ -117,10 +117,10 @@ TARGET_SOFTWARE_ROLE_PATTERN = re.compile(
     r"site reliability engineer|sre|devops engineer|"
     r"machine learning engineer|ml engineer|ai engineer|data engineer|"
     r"security software engineer|software security engineer|"
-    r"qa automation engineer|test automation engineer|software development engineer in test|sdet"
-    r")\b"
     r"cloud security engineer|threat detection engineer|security automation engineer|"
-    r"cybersecurity engineer|cyber security engineer|security platform engineer|",
+    r"cybersecurity engineer|cyber security engineer|security platform engineer|"
+    r"qa automation engineer|test automation engineer|software development engineer in test|sdet"
+    r")\b",
     re.IGNORECASE,
 )
 NON_SOFTWARE_ROLE_PATTERN = re.compile(
@@ -129,7 +129,7 @@ NON_SOFTWARE_ROLE_PATTERN = re.compile(
     r"account executive|account manager|sales|business development|"
     r"talent acquisition|recruit(?:er|ing|ment)|human resources|hr|"
     r"marketing|communications|content|public relations|"
-    r"commission|payroll|finance|financial analyst|accounting|"
+    r"commissions?|payroll|finance|financial analyst|accounting|"
     r"administrative|office manager|executive assistant|"
     r"technician|field service|inside sales|solutions consultant"
     r")\b",
