@@ -23,6 +23,7 @@ from sqlalchemy import case, create_engine, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.db.database import resolve_database_path
 from app.db.models import Company, Job
 from app.profile.candidate_profile import CANDIDATE_PROFILE
 from app.ai.jd_insights import analyze_job_description_with_ollama
@@ -61,13 +62,7 @@ from app.resume.resume_evaluator import evaluate_generated_resume
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-configured_database = os.getenv("JOBPILOT_DATABASE_PATH")
-
-DATABASE_PATH = (
-    Path(configured_database).expanduser().resolve()
-    if configured_database
-    else PROJECT_ROOT / "jobpilot.db"
-)
+DATABASE_PATH = resolve_database_path()
 
 EVIDENCE_STORE_PATH = DEFAULT_STORE_PATH
 GENERATED_RESUMES_DIR = PROJECT_ROOT / "data" / "generated_resumes"

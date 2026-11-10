@@ -7,7 +7,7 @@ Ordered by impact. Core discovery and application pipeline first; advanced intel
 
 ## Phase 1 — Core discovery (next)
 1. **Centralise the role/eligibility policy**: make `app/api/main.py` call `target_role_policy` instead of keeping its own regexes; add `eligible / eligible_needs_review / excluded / source_unverified` results with reasons.
-2. **Test isolation**: make `DATABASE_URL` configurable (`JOBPILOT_DB_PATH`) and point tests at a temp DB; fix `test_database` / `test_dedup_constraint`.
+2. ~~**Test isolation**~~ — done 10 Nov: single `resolve_database_path()` honouring `JOBPILOT_DATABASE_PATH`; `test_database` / `test_dedup_constraint` use a temp DB.
 3. **Source health model**: persist per-company status (discovered → configured → awaiting_validation → verified → active → temporarily_unavailable → failed → deprecated), last success/failure, raw/unique/eligible/review counts, enrichment success. Migrate registry vocabulary.
 4. **Validate the 7 configured sources live** (Amazon, Uber, Adobe, BrowserStack, Razorpay, Groww, Freshworks) with a read-only dry run; promote only on evidence.
 5. **Discover connectors for the 19 unmapped companies** from official career pages; choose the 20 additional companies on the criteria in the brief (do not pad to 50).

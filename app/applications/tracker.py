@@ -20,6 +20,8 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field, field_validator
 
+from app.db.database import resolve_database_path
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 GENERATED_RESUMES_DIR = PROJECT_ROOT / "data" / "generated_resumes"
@@ -288,12 +290,7 @@ class CandidateProfileImportRequest(BaseModel):
 
 
 def _database_path() -> Path:
-    configured = os.getenv("JOBPILOT_DATABASE_PATH")
-
-    if configured:
-        return Path(configured).expanduser().resolve()
-
-    return PROJECT_ROOT / "jobpilot.db"
+    return resolve_database_path()
 
 
 def _utc_now() -> str:

@@ -9,7 +9,7 @@ Every scheduled/daily work session on this repo follows these rules. They apply 
 
 ## Hard safety rules
 - NEVER open, print, edit or commit `.env`, `.env.*`, `credentials/`, `tokens/`, `frontend/.env.local`, Gmail tokens/client secrets, `jobpilot.db` or any `*.db`, personal resumes under `data/master_resume/`, or generated resumes.
-- Tests must not write to the real `jobpilot.db`. Use the `JOBPILOT_DB_PATH` temp-DB mechanism (add it first if it does not exist yet).
+- Tests must not write to the real `jobpilot.db`. Set the `JOBPILOT_DATABASE_PATH` environment variable to a temp file (it is honoured by `app/db/database.py`, `app/api/main.py`, the tracker and the Gmail module via `resolve_database_path()`); see `scripts/test_database.py` for the pattern. Do not run scripts that sync or import into the DB without that override unless the user asked for a real sync.
 - Never send email, message a recruiter, submit a job application, or click Submit on an employer form. The extension never auto-submits. `ready_to_apply` never means `applied`.
 - No live Gmail sync, no real OAuth flows, no live Ollama dependency in tests (mock them). Mark such things "needs manual verification with live credentials" in PROJECT_STATUS.md.
 - Network calls only to official public career/ATS endpoints, with timeouts, retry/backoff and polite rate limits. No CAPTCHA bypass, no login scraping.

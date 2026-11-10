@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.applications.tracker import get_application_db
+from app.db.database import resolve_database_path
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/email", tags=["email"])
@@ -98,10 +99,7 @@ class _HTMLTextExtractor(HTMLParser):
 
 
 def _database_path() -> Path:
-    configured = os.getenv("JOBPILOT_DATABASE_PATH")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return PROJECT_ROOT / "jobpilot.db"
+    return resolve_database_path()
 
 
 def _client_secrets_path() -> Path:

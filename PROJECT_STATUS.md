@@ -15,7 +15,7 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 | Role/eligibility policy (`app/services/target_role_policy.py`) | Yes (PhD, seniority, experience, country, security roles) | Yes — `test_target_sync_audit` 11/11, `test_job_filter_policy` 6/6 | Via audit CSVs only | Policy logic is still duplicated in `app/api/main.py`; no `eligible_needs_review` / `source_unverified` result states in the policy itself |
 | Collectors (Google, Amazon, Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM) | Yes | Mock/unit tests pass | Only Google, NVIDIA (Workday), CRED & Meesho (Lever) marked active; Coinbase/KnowBe4 in `job_sources.json` | Pagination/retry/backoff/health states not uniformly verified; no source-health table |
 | 50-company registry (`data/target_companies.json`) | **30 companies only** | `test_target_company_integrations` 11/11 | See below | 20 more companies not chosen; 19 of 30 have no connector |
-| Database (`app/db`, SQLite) | Companies + Jobs via SQLAlchemy; tracker/email tables via raw `sqlite3` | `test_database`, `test_dedup_constraint` **fail on a populated DB** (not idempotent) | Live DB: 3 companies, 331 jobs | No migrations, no job versions/source-sync history, DB path hard-coded so tests can touch live data |
+| Database (`app/db`, SQLite) | Companies + Jobs via SQLAlchemy; tracker/email tables via raw `sqlite3`. DB path now resolved in one place (`resolve_database_path()`, env `JOBPILOT_DATABASE_PATH`) | `test_database`, `test_dedup_constraint` now use a temp DB and pass repeatedly (session 2) | Live DB: 3 companies, 331 jobs | No migrations, no job versions/source-sync history; `main.py` still builds its own second SQLAlchemy engine; `test_structured_job_matching` reads the live DB path directly (read-only) |
 | Matching (`job_matcher`, `jd_analyzer`, cache) | Yes | Pass (`test_job_matching`, `test_structured_job_matching`, `test_job_match_api`, `test_job_match_cache`, `test_jd_analyzer`) | Not verified on real jobs here | Weights not configurable via UI/config; skill-gap intelligence missing |
 | Local AI (Ollama) | `ollama_client`, `jd_insights` | Ollama-dependent tests **not run** (skipped) | Not verified this session | Provider abstraction, caching/prompt versioning to confirm |
 | Resume Studio | Parser, evidence store/selector, builder, PDF, evaluator | Synthetic tests pass; real-resume tests **not run** (sandbox excluded personal resume) | Not verified | No Resume Studio UI beyond generate/download; no DOCX preview/version history UI |
@@ -50,6 +50,12 @@ Run with `venv\Scripts\python.exe -m scripts.<name>`; network/Ollama tests skipp
 ### After changes (run in the real project; these tests do not write to the DB)
 Passed: `test_security_role_coverage`, `test_job_filter_policy` 6/6, `test_target_sync_audit` 11/11, `test_google_composite_performance`, `test_workday_detail_enrichment`, `test_target_company_integrations` 11/11, `test_structured_job_matching` 5/5, `test_job_match_api` 3/3.
 **Not re-run after the change:** the rest of the suite, frontend build/lint, extension test, anything needing Ollama, network, Gmail or the real resume.
+
+## Session 2 (10 Nov): test isolation
+- `app/db/database.py` now exposes `resolve_database_path()` honouring `JOBPILOT_DATABASE_PATH`; `app/api/main.py`, `app/applications/tracker.py` and `app/email/gmail_integration.py` delegate to it instead of keeping three copies. Default path is unchanged.
+- Found that `scripts/test_database.py` and `scripts/test_dedup_constraint.py` inserted rows straight into the **live** `jobpilot.db`. Rewrote both to use a temp DB with real assertions. Verified: ran each twice in the real project; SHA-256 of `jobpilot.db` identical before and after.
+- Full offline suite (sandbox copy, `JOBPILOT_DATABASE_PATH` pointed at the copy): **34 passed, 0 failed, 10 skipped** (7 need network/Ollama, 3 need the personal resume). Skipped tests were not run.
+- Scheduled-task/SESSION_RULES.md referenced a non-existent `JOBPILOT_DB_PATH`; corrected to `JOBPILOT_DATABASE_PATH`.
 
 ## Known risks / debt
 - Role-filter logic exists in two places (`target_role_policy.py` and `app/api/main.py`); that duplication is what allowed this regression. Centralise next.
