@@ -20,9 +20,11 @@ from app.collectors.oracle_hcm import OracleHCMCollector
 from app.db.database import SessionLocal
 from app.db.job_repository import JobRepository
 from app.services.target_role_policy import (
-    extract_minimum_experience_years,
+    ELIGIBLE_NEEDS_REVIEW,
+    EXCLUDED,
+    SOURCE_UNVERIFIED,
+    evaluate_eligibility,
     is_target_software_role,
-    is_india_or_remote_eligible,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -281,12 +283,6 @@ def _make_collector(company: dict[str, Any]) -> Any:
     raise ValueError(f"No configured public API connector for provider: {provider!r}")
 
 
-_BROAD_TITLE_REVIEW_RE = re.compile(
-    r"\b(?:application engineer|cloud engineer|cloud ai engineer|data and ai engineer|"
-    r"salesforce application engineer|solutions engineer)\b",
-    re.IGNORECASE,
-)
-
 AUDIT_FIELDS = [
     "company_id", "company", "provider", "mapping_status", "mapping_verified",
     "external_id", "title", "url", "locations", "workplace_type", "employment_type",
@@ -369,27 +365,23 @@ def _make_audit_row(
     provider = str(integration.get("provider") or "unconfigured")
     title = str(job.get("title") or "").strip()
     description = str(job.get("description") or "")
-    minimum_years = extract_minimum_experience_years(description)
-    role_ok, role_reason = is_target_software_role(
-        title, description, maximum_required_years=maximum_required_years
-    )
-    location_ok, location_reason = is_india_or_remote_eligible(job)
-    flags: list[str] = []
-    if not description.strip():
-        flags.append("description_missing")
-    if minimum_years is None:
-        flags.append("minimum_experience_not_found_review")
-    if location_reason == "remote_country_eligibility_unverified":
-        flags.append("remote_country_eligibility_unverified")
-    if _BROAD_TITLE_REVIEW_RE.search(title):
-        flags.append("broad_title_manual_review")
     mapping_verified = bool(integration.get("verified")) and integration.get("status") == "active"
-    final_ok = role_ok and location_ok
-    if final_ok and not mapping_verified:
-        flags.append("source_mapping_unverified_review")
-    status = "filtered"
-    if final_ok:
-        status = "eligible_needs_review" if flags else "eligible"
+    decision = evaluate_eligibility(
+        job,
+        source_verified=mapping_verified,
+        maximum_required_years=maximum_required_years,
+    )
+    minimum_years = decision.minimum_years
+    role_ok, role_reason = decision.role_ok, decision.role_reason
+    location_ok, location_reason = decision.location_ok, decision.location_reason
+    flags = list(decision.flags)
+    final_ok = decision.passes_filters
+    # The CSV keeps its original vocabulary: excluded -> "filtered", and a job
+    # from an unverified source stays "eligible_needs_review" (never auto-synced).
+    status = {
+        EXCLUDED: "filtered",
+        SOURCE_UNVERIFIED: ELIGIBLE_NEEDS_REVIEW,
+    }.get(decision.status, decision.status)
     preview = re.sub(r"\s+", " ", description).strip()[:280]
     return {
         "company_id": str(company.get("id") or ""),

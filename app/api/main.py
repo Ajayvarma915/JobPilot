@@ -24,6 +24,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.database import resolve_database_path
+from app.services.target_role_policy import (
+    early_career_title_exclusion,
+    extract_minimum_experience_years,
+    matches_software_role_family,
+    requires_phd,
+)
 from app.db.models import Company, Job
 from app.profile.candidate_profile import CANDIDATE_PROFILE
 from app.ai.jd_insights import analyze_job_description_with_ollama
@@ -90,46 +96,8 @@ CITY_DISPLAY_NAMES = {
     "hyderabad": "Hyderabad",
 }
 
-SENIOR_ROLE_PATTERN = re.compile(
-    r"\b(senior|staff|principal|distinguished|fellow|manager|director|"
-    r"head|lead|chief|architect|vice president)\b",
-    re.IGNORECASE,
-)
-INTERN_ROLE_PATTERN = re.compile(r"\b(intern|internship)\b", re.IGNORECASE)
-PHD_PATTERN = re.compile(r"\bph\.?\s*d\.?\b|\bdoctorate\b", re.IGNORECASE)
-
-# JobPilot's default feed is intentionally limited to software-engineering roles.
-# Greenhouse/Lever boards contain every department, so early-career seniority
-# checks alone are not enough to keep sales/support/recruiting roles out.
-TARGET_SOFTWARE_ROLE_PATTERN = re.compile(
-    r"\b(?:"
-    r"software engineer|software developer|software development engineer|"
-    r"sde(?:\s*[1-3])?|"
-    r"backend engineer|backend developer|back[- ]end engineer|back[- ]end developer|"
-    r"frontend engineer|frontend developer|front[- ]end engineer|front[- ]end developer|"
-    r"full[- ]stack engineer|full[- ]stack developer|"
-    r"platform engineer|infrastructure software engineer|systems software engineer|"
-    r"site reliability engineer|sre|devops engineer|"
-    r"machine learning engineer|ml engineer|ai engineer|data engineer|"
-    r"security software engineer|software security engineer|"
-    r"cloud security engineer|threat detection engineer|security automation engineer|"
-    r"cybersecurity engineer|cyber security engineer|security platform engineer|"
-    r"qa automation engineer|test automation engineer|software development engineer in test|sdet"
-    r")\b",
-    re.IGNORECASE,
-)
-NON_SOFTWARE_ROLE_PATTERN = re.compile(
-    r"\b(?:"
-    r"support|customer success|customer service|help desk|service desk|"
-    r"account executive|account manager|sales|business development|"
-    r"talent acquisition|recruit(?:er|ing|ment)|human resources|hr|"
-    r"marketing|communications|content|public relations|"
-    r"commissions?|payroll|finance|financial analyst|accounting|"
-    r"administrative|office manager|executive assistant|"
-    r"technician|field service|inside sales|solutions consultant"
-    r")\b",
-    re.IGNORECASE,
-)
+# Role-family, seniority, PhD and experience rules live in
+# app/services/target_role_policy.py (single source of truth).
 
 TARGET_COMPENSATION_FLOOR_LPA = 25.0
 _LPA_UNIT = r"(?:lpa|lakhs?\s*(?:per\s+annum|p\.?a\.?|pa))"
@@ -142,24 +110,6 @@ _LPA_SINGLE_PATTERN = re.compile(
     rf"(?:₹|inr\s*)?\s*(\d{{1,3}}(?:\.\d+)?)\s*{_LPA_UNIT}",
     re.IGNORECASE,
 )
-QUALIFICATION_START_PATTERN = re.compile(
-    r"\b(?:minimum|basic|required)\s+qualifications?\b",
-    re.IGNORECASE,
-)
-QUALIFICATION_END_PATTERN = re.compile(
-    r"\b(?:preferred qualifications?|responsibilities|what you(?:'|’)ll do|"
-    r"about the job|about the role|equal opportunity)\b",
-    re.IGNORECASE,
-)
-YEARS_BEFORE_EXPERIENCE_PATTERN = re.compile(
-    r"\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b[^\n]{0,120}\bexperience\b",
-    re.IGNORECASE,
-)
-EXPERIENCE_BEFORE_YEARS_PATTERN = re.compile(
-    r"\bexperience\b[^\n]{0,100}\b(\d+(?:\.\d+)?)\s*\+?\s+years?\b",
-    re.IGNORECASE,
-)
-
 RECOMMENDATION_LABELS = {
     "strong_match": "Strong match",
     "good_match": "Good match",
@@ -468,42 +418,20 @@ def _matches_requested_city(
     return _find_matching_location(stored_location, requested_location) is not None
 
 
-def _minimum_qualification_text(description: str) -> str:
-    start = QUALIFICATION_START_PATTERN.search(description)
-    remaining = description[start.end():] if start else description
-    end = QUALIFICATION_END_PATTERN.search(remaining)
-    return remaining[:end.start()] if end else remaining
-
-
 def _extract_required_experience_years(
     description: str,
 ) -> float | None:
-    minimum_text = _minimum_qualification_text(description)
-    values: list[float] = []
-
-    for pattern in (
-        YEARS_BEFORE_EXPERIENCE_PATTERN,
-        EXPERIENCE_BEFORE_YEARS_PATTERN,
-    ):
-        for match in pattern.finditer(minimum_text):
-            try:
-                values.append(float(match.group(1)))
-            except ValueError:
-                continue
-
-    return max(values) if values else None
+    """Minimum years stated in the JD (lower bound of ranges); None if unstated."""
+    return extract_minimum_experience_years(description)
 
 
 def _requires_phd(description: str) -> bool:
-    return bool(PHD_PATTERN.search(_minimum_qualification_text(description)))
+    return requires_phd(description)
 
 
 def _is_target_software_role(title: str) -> bool:
     """Return true for software-engineering title families in the default feed."""
-    clean_title = re.sub(r"\s+", " ", title or "").strip()
-    if not clean_title or NON_SOFTWARE_ROLE_PATTERN.search(clean_title):
-        return False
-    return bool(TARGET_SOFTWARE_ROLE_PATTERN.search(clean_title))
+    return matches_software_role_family(title)
 
 
 def _extract_salary_lpa(description: str) -> tuple[float, float] | None:
@@ -551,15 +479,9 @@ def _is_early_career_suitable(
     description: str,
 ) -> bool:
     """Shared eligibility rule for normal search and autocomplete."""
-    clean_title = re.sub(r"\s+", " ", title).strip()
-
-    if not clean_title:
+    if early_career_title_exclusion(title) is not None:
         return False
-    if SENIOR_ROLE_PATTERN.search(clean_title):
-        return False
-    if INTERN_ROLE_PATTERN.search(clean_title):
-        return False
-    if PHD_PATTERN.search(clean_title) or _requires_phd(description):
+    if _requires_phd(description):
         return False
 
     required_years = _extract_required_experience_years(description)

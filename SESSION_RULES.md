@@ -25,10 +25,9 @@ Every scheduled/daily work session on this repo follows these rules. They apply 
 - Update `PROJECT_STATUS.md` (what is implemented / tested / real-world verified, plus the session's test results) and tick `ROADMAP.md` honestly.
 
 ## Git rules
-- Commit with a clear message; end it with the line `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
-- Use normal current timestamps. NEVER set `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` or rewrite history.
-- At the end of the session push once: `git push origin main`. The user has authorised this daily push to their own repo `Ajayvarma915/JobPilot`. Never use `--force`; if the push is rejected, `git pull --rebase origin main`, re-run tests, and push again; if it still fails, stop and report.
-- Split the day's work into 1–3 coherent commits rather than one giant commit.
+- Do NOT run `git commit`, `git push`, `git add`, `git stash`, `git reset` or any other command that changes git state. The user commits and pushes themselves. Leave all changes uncommitted in the working tree.
+- Never set `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` or rewrite history.
+- At the end of the session, state "Done with the code" and give a ready-to-use commit message (subject line + short body of what changed and which tests were run, ending with the line `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`). If the day's work is large, suggest 2-3 separate commit messages with the exact files for each, as `git add` paths the user can copy.
 
 ## Final report (print at the end of the session)
 Inspected · Changed · Files modified · Tests run / passed / failed · Known risks · Needs manual testing or live credentials · Next milestone.

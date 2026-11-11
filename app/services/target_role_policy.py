@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
 
 SOFTWARE_ROLE_RE = re.compile(
     r"\b(?:software engineer|software developer|software development engineer|"
-    r"sde|swe|backend engineer|back-end engineer|frontend engineer|front-end engineer|"
-    r"full[ -]?stack engineer|platform engineer|site reliability engineer|\bsre\b|"
+    r"sde|swe|back[ -]?end (?:engineer|developer)|front[ -]?end (?:engineer|developer)|"
+    r"full[ -]?stack (?:engineer|developer)|platform engineer|site reliability engineer|\bsre\b|"
+    r"software security engineer|test automation engineer|"
     r"devops engineer|infrastructure software engineer|systems software engineer|"
     r"machine learning engineer|\bml engineer\b|ai engineer|data engineer|"
     r"security software engineer|application security engineer|product security engineer|"
@@ -87,9 +89,11 @@ def extract_minimum_experience_years(description: str | None) -> float | None:
         # Amazon-style wording: "3+ years of non-internship professional
         # software development experience". Descriptors may occur before
         # the final "experience" token.
-        r"\b(\d+(?:\.\d+)?)\s*\+\s*years?\s+(?:of\s+)?"
+        # A degree length such as "4 year degree ... or equivalent experience"
+        # is not an experience requirement, so those nouns are excluded.
+        r"\b(\d+(?:\.\d+)?)\s*\+\s*years?\s+(?!(?:degree|bachelor|college|university|diploma|program|undergraduate)\b)(?:of\s+)?"
         r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
-        r"\b(\d+(?:\.\d+)?)\s+years?\s+(?:of\s+)?"
+        r"\b(\d+(?:\.\d+)?)\s+years?\s+(?!(?:degree|bachelor|college|university|diploma|program|undergraduate)\b)(?:of\s+)?"
         r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
         r"\bexperience\s+of\s+(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
         # Some listings express tenure as a duration in a named role rather
@@ -103,6 +107,48 @@ def extract_minimum_experience_years(description: str | None) -> float | None:
         if match:
             return float(match.group(1))
     return None
+
+
+def _clean_title(title: str | None) -> str:
+    return re.sub(r"\s+", " ", str(title or "")).strip()
+
+
+def is_non_software_title(title: str | None) -> bool:
+    """True for support, sales, recruiting, finance and similar non-engineering titles."""
+    return bool(NON_SOFTWARE_ROLE_RE.search(_clean_title(title)))
+
+
+def matches_software_role_family(title: str | None) -> bool:
+    """True when the title belongs to a target software-engineering family.
+
+    This is only the role-family test (no seniority, experience or PhD checks)
+    so callers that list every career level can reuse it.
+    """
+    clean = _clean_title(title)
+    return bool(clean) and not NON_SOFTWARE_ROLE_RE.search(clean) and bool(SOFTWARE_ROLE_RE.search(clean))
+
+
+def early_career_title_exclusion(title: str | None) -> str | None:
+    """Return the reason an early-career search should drop this title, else None."""
+    clean = _clean_title(title)
+    if not clean:
+        return "missing_title"
+    if _PHD_RE.search(clean):
+        return "phd_required_or_phd_targeted_title"
+    if INTERN_TITLE_RE.search(clean):
+        return "internship_or_trainee"
+    if SENIORITY_TITLE_RE.search(clean):
+        return "senior_or_lead_title"
+    return None
+
+
+def requires_phd(description: str | None) -> bool:
+    """True when a PhD appears inside the minimum-qualifications section only.
+
+    A PhD listed as "preferred" does not count as a mandatory requirement.
+    """
+    minimum_text, has_section = _minimum_qualification_text(description)
+    return bool(has_section and _PHD_RE.search(minimum_text))
 
 
 def is_target_software_role(
@@ -251,3 +297,103 @@ def is_india_or_remote_eligible(job: dict[str, Any]) -> tuple[bool, str]:
         return False, "missing_location"
 
     return False, "location_not_verified_as_india"
+
+
+ELIGIBLE = "eligible"
+ELIGIBLE_NEEDS_REVIEW = "eligible_needs_review"
+EXCLUDED = "excluded"
+SOURCE_UNVERIFIED = "source_unverified"
+
+_BROAD_TITLE_REVIEW_RE = re.compile(
+    r"\b(?:application engineer|cloud engineer|cloud ai engineer|data and ai engineer|"
+    r"salesforce application engineer|solutions engineer)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class EligibilityDecision:
+    """Explainable outcome of the deterministic eligibility layer.
+
+    ``status`` is one of eligible / eligible_needs_review / excluded /
+    source_unverified. ``reasons`` explains an exclusion; ``flags`` lists the
+    reasons a job needs human review. Deterministic rules are authoritative;
+    nothing here depends on an LLM.
+    """
+
+    status: str
+    role_ok: bool
+    role_reason: str
+    location_ok: bool
+    location_reason: str
+    minimum_years: float | None
+    flags: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def reasons(self) -> tuple[str, ...]:
+        reasons: list[str] = []
+        if not self.role_ok:
+            reasons.append(self.role_reason)
+        if not self.location_ok:
+            reasons.append(self.location_reason)
+        return tuple(reasons)
+
+    @property
+    def passes_filters(self) -> bool:
+        return self.role_ok and self.location_ok
+
+
+def evaluate_eligibility(
+    job: dict[str, Any],
+    *,
+    source_verified: bool = True,
+    maximum_required_years: float = 2.0,
+) -> EligibilityDecision:
+    """Classify one job from title, description and location.
+
+    - excluded: fails the role/experience/PhD or the India/remote rule.
+    - eligible_needs_review: passes, but something is ambiguous (experience not
+      stated, remote country unverified, missing description, broad title).
+    - source_unverified: passes, but its source mapping is not verified/active,
+      so it must not enter automatic sync.
+    - eligible: passes with no review flags from a verified source.
+    Undisclosed salary is never a reason to exclude.
+    """
+    title = str(job.get("title") or "").strip()
+    description = str(job.get("description") or "")
+    minimum_years = extract_minimum_experience_years(description)
+    role_ok, role_reason = is_target_software_role(
+        title, description, maximum_required_years=maximum_required_years
+    )
+    location_ok, location_reason = is_india_or_remote_eligible(job)
+
+    flags: list[str] = []
+    if not description.strip():
+        flags.append("description_missing")
+    if minimum_years is None:
+        flags.append("minimum_experience_not_found_review")
+    if location_reason == "remote_country_eligibility_unverified":
+        flags.append("remote_country_eligibility_unverified")
+    if _BROAD_TITLE_REVIEW_RE.search(title):
+        flags.append("broad_title_manual_review")
+
+    passes = role_ok and location_ok
+    if not passes:
+        status = EXCLUDED
+    elif not source_verified:
+        status = SOURCE_UNVERIFIED
+        flags.append("source_mapping_unverified_review")
+    elif flags:
+        status = ELIGIBLE_NEEDS_REVIEW
+    else:
+        status = ELIGIBLE
+
+    return EligibilityDecision(
+        status=status,
+        role_ok=role_ok,
+        role_reason=role_reason,
+        location_ok=location_ok,
+        location_reason=location_reason,
+        minimum_years=minimum_years,
+        flags=tuple(flags),
+    )

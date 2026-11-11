@@ -6,7 +6,7 @@ Ordered by impact. Core discovery and application pipeline first; advanced intel
 - Repository mapped, baseline recorded, role-filter regressions repaired and covered by a new guard test.
 
 ## Phase 1 — Core discovery (next)
-1. **Centralise the role/eligibility policy**: make `app/api/main.py` call `target_role_policy` instead of keeping its own regexes; add `eligible / eligible_needs_review / excluded / source_unverified` results with reasons.
+1. ~~**Centralise the role/eligibility policy**~~ — done 11 Nov: API and sync audit use `target_role_policy`; `evaluate_eligibility()` returns the four states with reasons. Remaining: expose the decision in the jobs API/UI.
 2. ~~**Test isolation**~~ — done 10 Nov: single `resolve_database_path()` honouring `JOBPILOT_DATABASE_PATH`; `test_database` / `test_dedup_constraint` use a temp DB.
 3. **Source health model**: persist per-company status (discovered → configured → awaiting_validation → verified → active → temporarily_unavailable → failed → deprecated), last success/failure, raw/unique/eligible/review counts, enrichment success. Migrate registry vocabulary.
 4. **Validate the 7 configured sources live** (Amazon, Uber, Adobe, BrowserStack, Razorpay, Groww, Freshworks) with a read-only dry run; promote only on evidence.
