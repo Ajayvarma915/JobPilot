@@ -21,8 +21,8 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 | Resume Studio | Parser, evidence store/selector, builder, PDF, evaluator | Synthetic tests pass; real-resume tests **not run** (sandbox excluded personal resume) | Not verified | No Resume Studio UI beyond generate/download; no DOCX preview/version history UI |
 | Application tracker (`app/applications/tracker.py`) | Yes (14 routes) | `test_application_tracker` passes | 1 application in live DB | — |
 | Gmail integration | Read-only scope only (`gmail.readonly`) | `test_email_integration`, `test_submission_gmail_lifecycle` pass | 100 messages scanned, 12 events in live DB (not re-verified) | Strict-match rules to re-audit; no live sync run this session |
-| Chrome extension (`browser_extension/jobpilot-form-assistant`) | MV3 popup + scripting, localhost only | Root-level `.mjs` test **not run** | Not verified in a browser | Single `popup.js` (895 lines); no portal adapters |
-| Frontend (`frontend/`) | One 4,025-line `App.tsx` + 1 component | Build/lint **not run** this session | Not verified | No routing/pages for most planned navigation items; no design system |
+| Chrome extension (`browser_extension/jobpilot-form-assistant`) | MV3 popup + scripting, localhost only | `node --check popup.js` OK; manifest valid MV3 (permissions only `activeTab`, `scripting`; host only `127.0.0.1:8000`); `scripts_test_extension_submission_confirmation.mjs` 3/3 pass (12 Nov) | Not verified on a real employer form. Code read: no click/submit calls, fill result reports `submitted: false`, applied status only after `window.confirm` | Single `popup.js` (895 lines); no portal adapters |
+| Frontend (`frontend/`) | One 4,025-line `App.tsx` + 1 component | `npm run build` passes; `npm run lint` had 1 error (`any` in `ApplicationPreparationPanel.tsx`), fixed, now clean (12 Nov) | Smoke-tested in the in-app browser against a throwaway DB copy: Overview and Discover pages load, API connected, 331 jobs, no console errors. Other pages not clicked through | No routing/pages for most planned navigation items; no design system |
 | API security | Local-only, CORS allow-list | — | — | No authentication; fine for localhost, blocker for any hosted use |
 
 ## 30-company registry state (from `data/target_companies.json`)
@@ -64,6 +64,11 @@ Passed: `test_security_role_coverage`, `test_job_filter_policy` 6/6, `test_targe
 - **Behaviour change, measured on the 331 stored jobs (read-only sandbox copy), API vs previous API logic:** early-career-suitable 85 -> 63. The old API extractor found no experience requirement in most descriptions (min-years found: policy finds far more), so e.g. "Software Engineer ... 3 years" used to pass. 24 jobs went suitable -> not suitable (all because of a stated requirement above 2 years or an "IV"-level title; I read the list); 2 non-software Account Executive jobs went the other way because "1-3 years" now uses the lower bound (1) instead of the maximum (3) and they are outside the software role family anyway. Role-family: 2 more jobs pass (Product Security Engineer, Data Application Engineer), matching the brief.
 - The central role-family list was also missing "developer" variants the API had (Frontend/Backend/Full-Stack Developer, Test Automation Engineer, "Back End" spelling); added and covered by a test. Role-family: nothing that passed before is lost.
 - Ranges now use the **lower bound** everywhere (e.g. "1-3 years" -> 1), consistent with "an explicitly stated two-year minimum can qualify".
+
+## Session 4 (12 Nov): frontend and extension baseline
+- Frontend: build passed first time; lint failed with 1 error (`@typescript-eslint/no-explicit-any`, `ApplicationPreparationPanel.tsx` line 155). Replaced with a typed `{ detail?: unknown }` payload, no behaviour change. Build and lint now both clean.
+- Extension: syntax, manifest and the confirmation test all pass; no change needed.
+- Browser smoke test used a copy of the DB, servers were stopped afterwards, real `jobpilot.db` untouched. Backend code was not changed today, so the backend suite was not re-run.
 
 ## Known risks / debt
 - Role-filter logic exists in two places (`target_role_policy.py` and `app/api/main.py`); that duplication is what allowed this regression. Centralise next.

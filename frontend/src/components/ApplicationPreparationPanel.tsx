@@ -152,7 +152,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const body = await response.text();
-  let payload: any = {};
+  let payload: { detail?: unknown } = {};
   if (body) {
     try { payload = JSON.parse(body); } catch { payload = { detail: body }; }
   }
@@ -160,7 +160,7 @@ async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
     const detail = payload?.detail;
     throw new Error(typeof detail === "string" ? detail : `Request failed (${response.status}).`);
   }
-  return payload as T;
+  return payload as unknown as T;
 }
 
 function inputClass(): string {

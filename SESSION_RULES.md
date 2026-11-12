@@ -27,7 +27,7 @@ Every scheduled/daily work session on this repo follows these rules. They apply 
 ## Git rules
 - Do NOT run `git commit`, `git push`, `git add`, `git stash`, `git reset` or any other command that changes git state. The user commits and pushes themselves. Leave all changes uncommitted in the working tree.
 - Never set `GIT_AUTHOR_DATE` / `GIT_COMMITTER_DATE` or rewrite history.
-- At the end of the session, state "Done with the code" and give a ready-to-use commit message (subject line + short body of what changed and which tests were run, ending with the line `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`). If the day's work is large, suggest 2-3 separate commit messages with the exact files for each, as `git add` paths the user can copy.
+- At the end of the session, state "Done with the code" and give a ready-to-use commit command. Write the message in the user's style: ONE short, precise, lowercase line in past tense, e.g. `wrote logic to centralise role eligibility policy and fixed experience parsing`. No body, no Co-Authored-By trailer. If the day's work is large, suggest 2-3 such commits with the exact `git add` paths for each so the user can copy them.
 
 ## Final report (print at the end of the session)
 Inspected · Changed · Files modified · Tests run / passed / failed · Known risks · Needs manual testing or live credentials · Next milestone.
