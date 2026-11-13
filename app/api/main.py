@@ -24,6 +24,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.database import resolve_database_path
+from app.services.source_health import (
+    build_health_report,
+    load_health_rows,
+    load_registry_companies,
+)
 from app.services.target_role_policy import (
     early_career_title_exclusion,
     extract_minimum_experience_years,
@@ -672,6 +677,30 @@ def health(db: Session = Depends(get_db)) -> dict[str, Any]:
         "jobs_available": jobs_count,
         "companies_available": companies_count,
     }
+
+
+@app.get("/api/sources/health")
+def source_health(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Read-only coverage view: every registry company with its source state.
+
+    States come from data/target_companies.json (what is configured and
+    verified) combined with recorded fetch history. Nothing is written here.
+    """
+    try:
+        companies = load_registry_companies()
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The company source registry could not be read.",
+        ) from exc
+    try:
+        rows = load_health_rows(db)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The API cannot read source health history.",
+        ) from exc
+    return build_health_report(companies, rows)
 
 
 @app.get("/api/dashboard/stats")

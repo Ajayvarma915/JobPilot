@@ -149,3 +149,42 @@ class Job(Base):
     company: Mapped["Company"] = relationship(
         back_populates="jobs",
     )
+
+
+
+class SourceHealth(Base):
+    """Operational history of one registry company's job source.
+
+    The *configured* state lives in data/target_companies.json; this table only
+    stores what actually happened when the source was fetched, so a configured
+    source can never look verified because of a row here.
+    """
+
+    __tablename__ = "source_health"
+
+    company_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    last_attempt_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(default=0, nullable=False)
+
+    # Counts from the most recent successful fetch.
+    raw_jobs: Mapped[int | None] = mapped_column(nullable=True)
+    unique_jobs: Mapped[int | None] = mapped_column(nullable=True)
+    eligible_jobs: Mapped[int | None] = mapped_column(nullable=True)
+    review_jobs: Mapped[int | None] = mapped_column(nullable=True)
+    jobs_with_description: Mapped[int | None] = mapped_column(nullable=True)
+
+    # NULL when the connector does not report a per-job detail-fetch status.
+    detail_attempted: Mapped[int | None] = mapped_column(nullable=True)
+    detail_succeeded: Mapped[int | None] = mapped_column(nullable=True)
+    last_enrichment_success_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    pagination_status: Mapped[str] = mapped_column(
+        String(50), default="not_reported", nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)

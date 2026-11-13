@@ -26,6 +26,7 @@ from app.services.target_role_policy import (
     evaluate_eligibility,
     is_target_software_role,
 )
+from app.services.source_health import record_fetch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY_PATH = PROJECT_ROOT / "data" / "target_companies.json"
@@ -60,6 +61,11 @@ class SyncResult:
     review_required: int = 0
     auto_sync_eligible: int = 0
     error: str | None = None
+    # Health metrics (None = the connector did not report it).
+    unique_jobs: int = 0
+    jobs_with_description: int = 0
+    detail_attempted: int | None = None
+    detail_succeeded: int | None = None
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
@@ -438,6 +444,55 @@ def write_audit_report(rows: list[dict[str, Any]], destination: Path) -> Path:
     return destination
 
 
+_DETAIL_ATTEMPTED_STATUSES = {"fetched", "fetched_without_description", "failed"}
+
+
+def _fill_health_metrics(result: SyncResult, jobs: list[dict[str, Any]]) -> None:
+    """Derive source-health counts from the raw collector output."""
+    keys = {
+        str(job.get("external_id") or job.get("url") or job.get("title") or id(job))
+        for job in jobs
+    }
+    result.unique_jobs = len(keys)
+    result.jobs_with_description = sum(
+        1 for job in jobs if str(job.get("description") or "").strip()
+    )
+    statuses = [job.get("_jobpilot_detail_fetch_status") for job in jobs]
+    if any(status is not None for status in statuses):
+        result.detail_attempted = sum(1 for s in statuses if s in _DETAIL_ATTEMPTED_STATUSES)
+        result.detail_succeeded = sum(1 for s in statuses if s == "fetched")
+
+
+def _record_health(company: dict[str, Any], result: SyncResult) -> None:
+    """Persist the fetch outcome; a recording problem must never stop the sync."""
+    try:
+        db = SessionLocal()
+        try:
+            success = result.status != "failed" and result.error is None
+            record_fetch(
+                db,
+                company_id=str(company["id"]),
+                company_name=str(company["name"]),
+                provider=result.provider,
+                success=success,
+                counts={
+                    "raw_jobs": result.collected,
+                    "unique_jobs": result.unique_jobs,
+                    "eligible_jobs": result.eligible,
+                    "review_jobs": result.review_required,
+                    "jobs_with_description": result.jobs_with_description,
+                    "detail_attempted": result.detail_attempted,
+                    "detail_succeeded": result.detail_succeeded,
+                },
+                error=result.error,
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  WARNING: could not record source health for {company.get('name')}: {type(exc).__name__}: {exc}")
+
+
 def sync_company(
     company: dict[str, Any],
     *,
@@ -475,6 +530,7 @@ def sync_company(
         )
     jobs = _make_collector(collector_company).collect()
     result.collected = len(jobs)
+    _fill_health_metrics(result, jobs)
 
     # Build the audit rows as a batch so probable duplicate postings can be
     # flagged before any records are considered for database upsert.
@@ -552,7 +608,13 @@ def main() -> int:
         help=("Opt-in Google scan omitting the three low-yield query batches observed in v6. "
               "The default runs the complete 12-query plan."),
     )
+    parser.add_argument(
+        "--record-health", action="store_true",
+        help=("Also record fetch results in the source_health table during a dry run "
+              "(job tables are still never written). Live syncs always record health."),
+    )
     args = parser.parse_args()
+    record_health = (not args.dry_run) or args.record_health
     if args.include_unverified and not args.dry_run:
         parser.error("--include-unverified is read-only and can only be used together with --dry-run")
     if args.audit_report and not args.dry_run:
@@ -618,6 +680,10 @@ def main() -> int:
             row = SyncResult(company=company["name"], provider=provider, status="failed", error=f"{type(exc).__name__}: {exc}")
             results.append(row)
             print(f"  FAILED: {row.error}")
+        # Live syncs always record health; dry runs only when explicitly asked,
+        # so a plain dry run never writes anything to the database.
+        if record_health:
+            _record_health(company, row)
 
     print("\nSummary")
     print("-" * 88)
