@@ -51,7 +51,17 @@ def test_registry_has_all_30_unique_target_companies() -> None:
     active = {item["id"] for item in companies if item.get("integration", {}).get("status") == "active"}
     configured = {item["id"] for item in companies if item.get("integration", {}).get("status") == "configured_needs_live_validation"}
     check({"google", "nvidia", "cred", "meesho"}.issubset(active), "Expected verified Google/NVIDIA/CRED/Meesho sources")
-    check({"amazon", "uber"}.issubset(configured), "Amazon and Uber should be configured for read-only live validation")
+    # Updated 14 Nov after live read-only dry runs (see the `notes` of each entry in
+    # target_companies.json): Amazon, Razorpay, Groww and BrowserStack were validated
+    # and promoted; Uber (ownership of the Oracle site unconfirmed), Adobe (Workday wd5
+    # outage) and Freshworks (no descriptions yet) stay awaiting validation.
+    check({"amazon", "razorpay", "groww", "browserstack"}.issubset(active), "Amazon/Razorpay/Groww/BrowserStack were validated live on 2026-11-14")
+    check({"uber", "adobe", "freshworks"} == configured, f"Uber/Adobe/Freshworks should remain awaiting validation, got {sorted(configured)}")
+    for item in companies:
+        integration = item.get("integration", {})
+        if integration.get("status") == "active":
+            check(integration.get("verified") is True and bool(integration.get("validated_at") or item["id"] in {"google", "nvidia", "cred", "meesho"}),
+                  f"{item['id']} is active without verification evidence")
 
 
 def test_ashby_public_job_board_normalization_and_deduplication() -> None:
@@ -157,7 +167,12 @@ def test_amazon_public_search_normalization_and_experience_bands() -> None:
     check(jobs[0]["source"] == "amazon_jobs:india_software_development", "Amazon source missing")
     check(jobs[0]["url"] == "https://www.amazon.jobs/en/jobs/123/software-development-engineer-i", "Amazon job URL should be canonical")
     params = get_mock.call_args_list[0].kwargs["params"]
-    check(params["country[]"] == "IND" and params["category[]"] == "software-development", "Amazon search must be restricted to India software roles")
+    # The earlier expectation (`country[]`) came from a mocked test; live validation
+    # on 14 Nov showed amazon.jobs ignores it (2,637 worldwide hits) and only
+    # `normalized_country_code[]` restricts results to India (364 hits).
+    check(params["normalized_country_code[]"] == "IND" and params["category[]"] == "software-development", "Amazon search must be restricted to India software roles")
+    check("country[]" not in params and "industry_experience[]" not in params and "industry_experience" not in params,
+          "Amazon default search must not use the ignored country filter or the unreliable experience-band filter")
 
 
 def test_india_and_remote_location_policy() -> None:

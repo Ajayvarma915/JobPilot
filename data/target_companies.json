@@ -86,20 +86,18 @@
       "careers_url": "https://www.amazon.jobs/en/search?country=IND",
       "integration": {
         "provider": "amazon_jobs",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
-          "max_pages_per_band": 4,
+          "max_pages_per_band": 5,
           "page_size": 100,
           "fetch_details": true,
           "max_detail_fetch": 200,
-          "experience_bands": [
-            "less_than_one_year",
-            "one_to_three_years"
-          ],
+          "experience_bands": [],
           "note": "Official Amazon.jobs India Software Development search JSON; role descriptions are rechecked against the 0-2 year policy."
         },
-        "notes": "Official Amazon.jobs India Software Development search route configured; test with --include-unverified --dry-run before enabling normal sync."
+        "notes": "Official amazon.jobs public search JSON. Live dry run on 2026-11-14 after fixing the country filter (country[] is ignored by the server; normalized_country_code[] works): 364 India software-development jobs = the server's reported total, all with descriptions; 65 role-eligible, pending human review of each.",
+        "validated_at": "2026-11-14"
       }
     },
     {
@@ -143,9 +141,11 @@
           "language": "en",
           "country_code": "IN",
           "page_size": 100,
-          "max_pages": 20
+          "max_pages": 20,
+          "fetch_details": true,
+          "max_detail_fetch": 100
         },
-        "notes": "Official Uber careers results resolve to an Oracle Candidate Experience site. Site-number/feed response must be confirmed with a read-only dry run."
+        "notes": "Live dry run 2026-11-14 (after fixing the ignored country parameter): 32 India jobs, 32/32 descriptions fetched via the detail endpoint, 0 role-eligible today. NOT promoted: Uber's own careers site blocked an automated cross-check (HTTP 406), so ownership of this Oracle site is unconfirmed. Open Uber's careers page, follow an Apply link and confirm it lands on iaziqy.fa.ocs.oraclecloud.com / UberCareers before setting verified=true."
       }
     },
     {
@@ -177,7 +177,7 @@
           "locale": "en-US"
         },
         "discovered_url": "https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Jose/Software-Engineer---Adobe-Experience-Platform_R160198-1/apply",
-        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+        "notes": "Identifier confirmed on careers.adobe.com (adobe.wd5.myworkdayjobs.com/external_experienced). Live dry run 2026-11-14 failed: HTTP 521 for the whole wd5 Workday cluster (NVIDIA's wd5 tenant returned 521 at the same time while wd3 worked), i.e. a temporary Workday outage, not a bad mapping. Re-run when wd5 recovers."
       }
     },
     {
@@ -318,13 +318,14 @@
       "careers_url": "https://razorpay.com/jobs/",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "razorpaysoftwareprivatelimited"
         },
         "discovered_url": "https://job-boards.greenhouse.io/razorpaysoftwareprivatelimited",
-        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+        "notes": "Board token appears on the official razorpay.com/jobs page (job-boards.greenhouse.io/razorpaysoftwareprivatelimited). Live read-only dry run on 2026-11-14: HTTP 200, 26 jobs, 26/26 with descriptions, 22 India locations; 0 role-eligible today (15 non-software, 8 senior, 3 outside families).",
+        "validated_at": "2026-11-14"
       }
     },
     {
@@ -404,13 +405,14 @@
       "careers_url": "https://groww.in/careers",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "groww"
         },
         "discovered_url": "https://job-boards.eu.greenhouse.io/groww",
-        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+        "notes": "Greenhouse board 'groww' returns name 'Groww' and is referenced on the official groww.in/careers page. Live read-only dry run on 2026-11-14: HTTP 200, 9 jobs, 9/9 with descriptions, all India; 0 role-eligible today.",
+        "validated_at": "2026-11-14"
       }
     },
     {
@@ -451,7 +453,7 @@
           "company_identifier": "Freshworks"
         },
         "discovered_url": "https://careers.smartrecruiters.com/Freshworks/cxg",
-        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+        "notes": "Identifier confirmed on freshworks.com/company/careers (smartrecruiters.com/Freshworks). Live dry run 2026-11-14: HTTP 200, 32 jobs, all India, but 0/32 descriptions (the list endpoint carries none), so experience/PhD rules cannot run. NOT promoted until posting-detail enrichment is implemented."
       }
     },
     {
@@ -474,8 +476,8 @@
       "careers_url": "https://www.browserstack.com/careers",
       "integration": {
         "provider": "workday",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "tenant": "browserstack",
           "site": "External",
@@ -483,7 +485,8 @@
           "locale": "en-US"
         },
         "discovered_url": "https://browserstack.wd3.myworkdayjobs.com/External",
-        "notes": "Detected from the company's official careers page. Run a read-only dry-run before setting verified=true."
+        "notes": "Workday tenant/site appear on the official browserstack.com/careers page (browserstack.wd3.myworkdayjobs.com/External). Live read-only dry run on 2026-11-14: HTTP 200, 34 jobs, 34/34 detail pages fetched, 30 India + 2 remote-India; 0 role-eligible today.",
+        "validated_at": "2026-11-14"
       }
     }
   ]

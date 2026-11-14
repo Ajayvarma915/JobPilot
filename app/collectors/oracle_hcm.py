@@ -31,6 +31,8 @@ class OracleHCMCollector(JobCollector):
         page_size: int = 100,
         max_pages: int = 20,
         timeout: int = 30,
+        fetch_details: bool = False,
+        max_detail_fetch: int = 100,
     ) -> None:
         self.base_url = base_url.strip().rstrip("/")
         self.site_number = site_number.strip()
@@ -44,7 +46,10 @@ class OracleHCMCollector(JobCollector):
         self.page_size = page_size
         self.max_pages = max_pages
         self.timeout = timeout
+        self.fetch_details = fetch_details
+        self.max_detail_fetch = max(0, int(max_detail_fetch))
         self.source = f"oracle_hcm:{self.site_number.casefold()}"
+        self.detail_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails"
         self.api_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
         self.session = requests.Session()
         self.session.headers.update({
@@ -73,6 +78,8 @@ class OracleHCMCollector(JobCollector):
             if not rows:
                 break
             for raw in rows:
+                if not self._in_requested_country(raw):
+                    continue
                 job = self._normalize(raw)
                 if job is None or job["external_id"] in seen:
                     continue
@@ -81,7 +88,60 @@ class OracleHCMCollector(JobCollector):
             if len(rows) < self.page_size:
                 break
             offset += len(rows)
+        if self.fetch_details:
+            self._enrich_descriptions(results)
         return results
+
+    def _in_requested_country(self, raw: dict[str, Any]) -> bool:
+        """Keep only requisitions in ``country_code``.
+
+        The server ignores the country parameter on the findReqs finder (verified
+        against Uber's live feed: all countries came back), so the filter is
+        applied here using each requisition's ``PrimaryLocationCountry``. A row
+        without that field is kept rather than silently discarded.
+        """
+        if not self.country_code:
+            return True
+        country = str(raw.get("PrimaryLocationCountry") or "").strip()
+        if not country:
+            return True
+        return country.casefold() == self.country_code.casefold()
+
+    def _enrich_descriptions(self, jobs: list[dict[str, Any]]) -> None:
+        """Fetch each requisition's detail once, for jobs whose list row has no description."""
+        fetched = 0
+        for job in jobs:
+            if job.get("description"):
+                job["_jobpilot_detail_fetch_status"] = "not_needed"
+                continue
+            if fetched >= self.max_detail_fetch:
+                job["_jobpilot_detail_fetch_status"] = "not_requested"
+                continue
+            fetched += 1
+            try:
+                response = self.session.get(
+                    self.detail_url,
+                    params={
+                        "expand": "all",
+                        "onlyData": "true",
+                        "finder": f'ById;Id="{job["external_id"]}",siteNumber={self.site_number}',
+                    },
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+                items = response.json().get("items") or []
+                detail = items[0] if items and isinstance(items[0], dict) else {}
+            except Exception:  # noqa: BLE001 - one bad detail must not fail the whole source
+                job["_jobpilot_detail_fetch_status"] = "failed"
+                continue
+            parts = [
+                self._html_to_text(str(detail[key]))
+                for key in ("ExternalDescriptionStr", "ExternalResponsibilitiesStr", "ExternalQualificationsStr")
+                if detail.get(key)
+            ]
+            description = "\n".join(dict.fromkeys(part for part in parts if part))
+            job["description"] = description
+            job["_jobpilot_detail_fetch_status"] = "fetched" if description else "fetched_without_description"
 
     @staticmethod
     def _extract_requisitions(payload: Any) -> list[dict[str, Any]]:

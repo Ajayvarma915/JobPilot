@@ -13,7 +13,7 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 | Module | Implemented | Tested (offline) | Real-world verified | Missing / gaps |
 |---|---|---|---|---|
 | Role/eligibility policy (`app/services/target_role_policy.py`) | Yes (PhD, seniority, experience, country, security roles). Single source of truth: the API and sync audit now call it. `evaluate_eligibility()` returns eligible / eligible_needs_review / excluded / source_unverified with reasons and flags | Yes — `test_eligibility_decision` 3/3, `test_target_sync_audit` 11/11, `test_job_filter_policy` 6/6 (full offline suite earlier in the session: 34/35 runnable passed, the 1 failure was the missing Frontend Developer title, then fixed; the 11 role/eligibility/API/matching tests were re-run after the fix and all passed; the whole suite was not re-run end to end after that last fix) | Compared against the 331 stored jobs (see Session 3) | Salary/compensation helpers and location-matching helpers still live in `app/api/main.py`; `evaluate_eligibility` is not yet exposed through an API field |
-| Collectors (Google, Amazon, Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM) | Yes | Mock/unit tests pass | Only Google, NVIDIA (Workday), CRED & Meesho (Lever) marked active; Coinbase/KnowBe4 in `job_sources.json` | Pagination/retry/backoff/health states not uniformly verified; no source-health table |
+| Collectors (Google, Amazon, Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM) | Yes | Mock/unit tests pass (`test_collector_validation_fixes` 4/4) | Live read-only dry runs on 14 Nov: Amazon, Razorpay, Groww, BrowserStack, Uber, Freshworks fetched real data; Adobe failed (Workday wd5 outage). Google, NVIDIA, CRED, Meesho were verified earlier and not re-run today | Pagination/retry/backoff/health states not uniformly verified; no source-health table |
 | 50-company registry (`data/target_companies.json`) | **30 companies only** | `test_target_company_integrations` 11/11 | See below | 20 more companies not chosen; 19 of 30 have no connector |
 | Database (`app/db`, SQLite) | Companies + Jobs + SourceHealth via SQLAlchemy; tracker/email tables via raw `sqlite3`. DB path now resolved in one place (`resolve_database_path()`, env `JOBPILOT_DATABASE_PATH`) | `test_database`, `test_dedup_constraint` now use a temp DB and pass repeatedly (session 2) | Live DB: 3 companies, 331 jobs | No migrations, no job versions/source-sync history; `main.py` still builds its own second SQLAlchemy engine; `test_structured_job_matching` reads the live DB path directly (read-only) |
 | Matching (`job_matcher`, `jd_analyzer`, cache) | Yes | Pass (`test_job_matching`, `test_structured_job_matching`, `test_job_match_api`, `test_job_match_cache`, `test_jd_analyzer`) | Not verified on real jobs here | Weights not configurable via UI/config; skill-gap intelligence missing |
@@ -26,8 +26,8 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 | API security | Local-only, CORS allow-list | — | — | No authentication; fine for localhost, blocker for any hosted use |
 
 ## 30-company registry state (from `data/target_companies.json`)
-- **Active + verified (4):** Google (google_careers), NVIDIA (workday), CRED (lever), Meesho (lever).
-- **Configured, awaiting live validation (7):** Amazon, Uber (oracle_hcm), Adobe & BrowserStack (workday), Razorpay & Groww (greenhouse), Freshworks (smartrecruiters).
+- **Active + verified (8, updated 14 Nov):** Google, NVIDIA, CRED, Meesho, and — after live read-only dry runs on 14 Nov — Amazon, Razorpay, Groww, BrowserStack.
+- **Awaiting validation (3):** Uber (data clean, ownership of the Oracle site unconfirmed), Adobe (Workday wd5 outage, retry later), Freshworks (no descriptions until detail enrichment exists).
 - **No connector yet (19):** 13 `pending_ats_discovery` (Microsoft, Meta, Salesforce, LinkedIn, Intuit, ServiceNow, Rubrik, Confluent, Flipkart, Zomato, Zepto, Dream11, Postman) and 6 `official_career_page_only` (Atlassian, Apple, Databricks, PhonePe, Swiggy, Zoho).
 - The registry uses a different status vocabulary from the target one (discovered/configured/awaiting_validation/verified/active/…); migration needed.
 - The live DB only contains Coinbase (225), KnowBe4 (68), Google (38) — the multi-company sync output exists only as audit CSVs at the repo root.
@@ -79,6 +79,28 @@ Passed: `test_security_role_coverage`, `test_job_filter_policy` 6/6, `test_targe
 - Full offline suite (sandbox copy): **36 passed, 0 failed, 10 skipped** (7 need network/Ollama, 3 need the personal resume; skipped = not run).
 - Tests: `scripts/test_source_health.py` 6/6 (state mapping, real-registry sanity, downgrade rules, history/recovery, API read-only behaviour, sync + dry-run behaviour). Real `jobpilot.db` hash unchanged during testing.
 - Not done / limits: **pagination status is stored but no connector reports it yet** (always `not_reported`); unique-job count uses external_id/url within one fetch, not cross-source deduplication (planned for 18 Nov); `load_registry()` in the sync script still insists on exactly 30 companies and must be relaxed when the registry grows; no UI yet (16 Nov); no real-network fetch was run, so no health rows exist yet.
+
+## Session 6 (14 Nov): live validation of the 7 configured sources
+Read-only dry runs against the real public endpoints (job tables never written; health rows went to a throwaway DB copy; real `jobpilot.db` hash identical before and after). Official-page evidence: identifiers for Razorpay, Freshworks, BrowserStack and Adobe were found on each company's own careers page; Groww's board returns the name "Groww" and is referenced on groww.in/careers.
+
+| Source | Result (live) | Decision |
+|---|---|---|
+| Razorpay (greenhouse) | 26 jobs, 26/26 descriptions, 0 role-eligible now | promoted to active |
+| Groww (greenhouse) | 9 jobs, 9/9 descriptions, 0 role-eligible now | promoted to active |
+| BrowserStack (workday wd3) | 34 jobs, 34/34 detail fetched, 0 role-eligible now | promoted to active |
+| Amazon (amazon_jobs) | 364 India jobs = server total, all with descriptions, **65 role-eligible** (was 9) | promoted to active |
+| Uber (oracle_hcm) | 32 India jobs, 32/32 descriptions, 0 role-eligible now | **not promoted**: could not confirm the Oracle site belongs to Uber (uber.com returned HTTP 406 to an automated check). Manual step: confirm an Apply link lands on `iaziqy.fa.ocs.oraclecloud.com` / `UberCareers`, then set `verified` |
+| Adobe (workday wd5) | HTTP 521 | **not promoted, not failed**: NVIDIA's wd5 tenant returned 521 at the same time, wd3 worked: a Workday wd5 cluster outage. Re-run later |
+| Freshworks (smartrecruiters) | 32 jobs, all India, **0/32 descriptions** | **not promoted**: filters can't run without descriptions; needs posting-detail enrichment |
+
+Full offline suite after these changes (sandbox copy): **37 passed, 0 failed, 10 skipped** (7 need network/Ollama, 3 need the personal resume; skipped = not run). The live dry runs are not part of the automated suite.
+
+Bugs found that mocked tests had hidden (fixed, with tests in `scripts/test_collector_validation_fixes.py`):
+- **Amazon:** the collector sent `country[]=IND`, which amazon.jobs silently ignores (2,637 worldwide hits), so it spent its 400-job cap on mostly foreign roles and only saw 40 India jobs. The working parameter is `normalized_country_code[]=IND` (364 hits). The `industry_experience` band filter is also unreliable (one band returned every job), so the default is now a single unfiltered India pass and experience is judged from the description.
+- **Uber/Oracle HCM:** the finder's `workLocationCountryCode` is ignored (818 jobs, 777 outside India). The country is now filtered client-side on `PrimaryLocationCountry` (rows with no country field are kept, not discarded). The list payload has no descriptions, so an opt-in detail fetch (`recruitingCEJobRequisitionDetails`) was added, bounded by `max_detail_fetch`, one request per job, failures tolerated; enabled for Uber in the registry.
+- Test expectation changed (explained in the test): `test_target_company_integrations` had pinned `country[]` and the old "configured" statuses; both reflected the unvalidated assumptions.
+- Side finding: the entire Workday **wd5** cluster, including NVIDIA (an active source), was unreachable on 14 Nov; NVIDIA's health will show `temporarily_unavailable` if a sync is recorded now.
+- Still true: 0 candidates for five sources means no current 0-2-year software roles passed the policy, not that the connectors are broken (reasons are in the audit CSVs). The audit CSVs and logs were written to a scratch folder, not the repo. Collectors still have no retry/backoff (planned work).
 
 ## Known risks / debt
 - Role-filter logic exists in two places (`target_role_policy.py` and `app/api/main.py`); that duplication is what allowed this regression. Centralise next.

@@ -9,7 +9,7 @@ Ordered by impact. Core discovery and application pipeline first; advanced intel
 1. ~~**Centralise the role/eligibility policy**~~ — done 11 Nov: API and sync audit use `target_role_policy`; `evaluate_eligibility()` returns the four states with reasons. Remaining: expose the decision in the jobs API/UI.
 2. ~~**Test isolation**~~ — done 10 Nov: single `resolve_database_path()` honouring `JOBPILOT_DATABASE_PATH`; `test_database` / `test_dedup_constraint` use a temp DB.
 3. ~~**Source health model**~~ — done 13 Nov (`source_health` table, `GET /api/sources/health`, health recorded by the sync script). Remaining: connectors reporting pagination status; relax the 30-company check in `load_registry`.
-4. **Validate the 7 configured sources live** (Amazon, Uber, Adobe, BrowserStack, Razorpay, Groww, Freshworks) with a read-only dry run; promote only on evidence.
+4. ~~**Validate the 7 configured sources live**~~ — done 14 Nov: Amazon, Razorpay, Groww, BrowserStack promoted; Uber (confirm ownership manually), Adobe (re-run after Workday wd5 recovers), Freshworks (needs detail enrichment) still awaiting validation.
 5. **Discover connectors for the 19 unmapped companies** from official career pages; choose the 20 additional companies on the criteria in the brief (do not pad to 50).
 6. Company coverage dashboard in the UI backed by the health table.
 

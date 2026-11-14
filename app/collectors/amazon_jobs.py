@@ -30,7 +30,11 @@ class AmazonJobsCollector(JobCollector):
         *,
         max_pages_per_band: int = 4,
         page_size: int = 100,
-        experience_bands: tuple[str, ...] = ("less_than_one_year", "one_to_three_years"),
+        # Empty (default) = one unfiltered pass over all India software roles.
+        # Amazon's industry_experience filter is unreliable (live check: one band
+        # returned every job, another a subset), so experience is judged from
+        # the job description by the deterministic policy instead.
+        experience_bands: tuple[str, ...] = (),
         fetch_details: bool = True,
         max_detail_fetch: int = 200,
         timeout: int = 30,
@@ -55,19 +59,24 @@ class AmazonJobsCollector(JobCollector):
         jobs: list[dict[str, Any]] = []
         seen: set[str] = set()
         detail_fetches_attempted = 0
-        for band in self.experience_bands:
+        for band in (self.experience_bands or (None,)):
             offset = 0
             for _ in range(self.max_pages_per_band):
+                params = {
+                    "category[]": "software-development",
+                    # NOTE: `country[]` is silently ignored by amazon.jobs (verified
+                    # live: 2,637 worldwide hits). `normalized_country_code[]` is the
+                    # parameter that actually restricts results to India.
+                    "normalized_country_code[]": "IND",
+                    "offset": offset,
+                    "result_limit": self.page_size,
+                    "sort": "recent",
+                }
+                if band:
+                    params["industry_experience[]"] = band
                 response = self.session.get(
                     self.SEARCH_URL,
-                    params={
-                        "category[]": "software-development",
-                        "country[]": "IND",
-                        "industry_experience": band,
-                        "offset": offset,
-                        "result_limit": self.page_size,
-                        "sort": "recent",
-                    },
+                    params=params,
                     timeout=self.timeout,
                 )
                 response.raise_for_status()

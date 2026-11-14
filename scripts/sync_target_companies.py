@@ -210,6 +210,8 @@ def _make_collector(company: dict[str, Any]) -> Any:
             country_code=str(settings.get("country_code") or "IN"),
             page_size=int(settings.get("page_size", 100)),
             max_pages=int(settings.get("max_pages", 20)),
+            fetch_details=bool(settings.get("fetch_details", False)),
+            max_detail_fetch=int(settings.get("max_detail_fetch", 100)),
         )
     if provider == "amazon_jobs":
         return AmazonJobsCollector(
@@ -218,7 +220,7 @@ def _make_collector(company: dict[str, Any]) -> Any:
             page_size=int(settings.get("page_size", 100)),
             fetch_details=bool(settings.get("fetch_details", True)),
             max_detail_fetch=int(settings.get("max_detail_fetch", 200)),
-            experience_bands=tuple(settings.get("experience_bands", ["less_than_one_year", "one_to_three_years"])),
+            experience_bands=tuple(settings.get("experience_bands") or ()),
         )
     if provider == "google_careers":
         queries = settings.get("queries")
