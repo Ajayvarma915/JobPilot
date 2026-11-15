@@ -8,6 +8,8 @@ from app.services.jd_analyzer import (
     JobAnalysis,
     JobDescriptionAnalyzer,
 )
+from app.services.match_weights import DEFAULT_WEIGHTS, load_match_weights, validate_match_weights
+from app.services.target_role_policy import evaluate_eligibility
 
 
 @dataclass
@@ -59,6 +61,14 @@ class JobMatchResult:
 
     role_family: str = "other"
     seniority: str = "unknown"
+
+    # Transparency: what each kind of problem is, which weights produced the score, and what
+    # the deterministic eligibility policy said (it is authoritative: a mandatory exclusion caps the score).
+    mismatches: dict[str, list[str]] = field(default_factory=dict)
+    weights_used: dict[str, float] = field(default_factory=dict)
+    eligibility_status: str | None = None
+    eligibility_reasons: list[str] = field(default_factory=list)
+    eligibility_capped: bool = False
 
     @property
     def skills_matched(self) -> list[str]:
@@ -387,8 +397,11 @@ class JobMatcher:
         self,
         candidate_profile: Any,
         analyzer: JobDescriptionAnalyzer | None = None,
+        weights: dict[str, float] | None = None,
     ) -> None:
         self.candidate_profile = candidate_profile
+        # Validated weights from data/match_weights.json unless given explicitly.
+        self.weights = validate_match_weights(weights) if weights is not None else load_match_weights()
         self.analyzer = (
             analyzer
             if analyzer is not None
@@ -450,6 +463,15 @@ class JobMatcher:
             analysis=analysis,
         )
 
+        # The component scorers work on the historical 100-point layout; rescale each one
+        # to its configured weight so the weights file actually changes the score.
+        role_score *= self.weights["role"] / DEFAULT_WEIGHTS["role"]
+        seniority_score *= self.weights["seniority"] / DEFAULT_WEIGHTS["seniority"]
+        experience_score *= self.weights["experience"] / DEFAULT_WEIGHTS["experience"]
+        skills_score *= self.weights["skills"] / DEFAULT_WEIGHTS["skills"]
+        education_score *= self.weights["education"] / DEFAULT_WEIGHTS["education"]
+        location_score *= self.weights["location"] / DEFAULT_WEIGHTS["location"]
+
         raw_score = (
             role_score
             + seniority_score
@@ -465,6 +487,15 @@ class JobMatcher:
             role_family=role_family,
             seniority=seniority,
         )
+
+        # Deterministic eligibility is authoritative: a mandatory role/experience/PhD exclusion
+        # cannot be outweighed by keyword overlap. Location is scored separately and not capped here.
+        eligibility = self._eligibility(job)
+        eligibility_capped = False
+        if eligibility is not None and not eligibility.role_ok:
+            if score > self.ELIGIBILITY_CAP:
+                score = self.ELIGIBILITY_CAP
+                eligibility_capped = True
 
         recommendation = self._recommendation(
             score
@@ -485,6 +516,16 @@ class JobMatcher:
             missing_required=missing_required,
             role_family=role_family,
             seniority=seniority,
+        )
+        if eligibility is not None and not eligibility.role_ok:
+            concerns.insert(0, f"Excluded by the eligibility policy: {eligibility.role_reason.replace('_', ' ')}.")
+
+        mismatches = self._mismatches(
+            analysis=analysis,
+            missing_required=missing_required,
+            matched_preferred=matched_preferred,
+            seniority_score=seniority_score,
+            location_score=location_score,
         )
 
         return JobMatchResult(
@@ -535,7 +576,66 @@ class JobMatcher:
             analysis_confidence=analysis.confidence,
             role_family=role_family,
             seniority=seniority,
+            mismatches=mismatches,
+            weights_used=dict(self.weights),
+            eligibility_status=eligibility.status if eligibility is not None else None,
+            eligibility_reasons=list(eligibility.reasons) if eligibility is not None else [],
+            eligibility_capped=eligibility_capped,
         )
+
+    ELIGIBILITY_CAP = 35.0
+
+    def _eligibility(self, job: Any):
+        """Run the central eligibility policy on the stored job; None if the job has no usable text."""
+        title = self._get(job, "title", "")
+        if not title:
+            return None
+        return evaluate_eligibility(
+            {
+                "title": str(title),
+                "description": str(self._get(job, "description", "") or ""),
+                "location": [str(self._get(job, "location", "") or "")],
+            },
+            source_verified=True,
+            maximum_required_years=max(2.0, self._candidate_years() + 1.0),
+        )
+
+    def _mismatches(
+        self,
+        analysis: JobAnalysis,
+        missing_required: list[str],
+        matched_preferred: list[str],
+        seniority_score: float,
+        location_score: float,
+    ) -> dict[str, list[str]]:
+        """Separate kinds of problems so a reader can tell a blocker from a nice-to-have."""
+        mandatory = [f"Missing required skill: {skill}" for skill in missing_required]
+        mandatory += [str(item) for item in analysis.hard_constraints]
+        if "phd" in {str(v).lower() for v in analysis.required_education}:
+            mandatory.append("Requires a PhD")
+        preferred_missing = [
+            f"Preferred skill not matched: {skill}"
+            for skill in analysis.preferred_skills
+            if skill not in matched_preferred
+        ]
+        experience: list[str] = []
+        required_years = analysis.required_years_min
+        candidate_years = self._candidate_years()
+        if required_years is not None and required_years > candidate_years:
+            experience.append(f"Asks for {required_years:g} years; the profile shows {candidate_years:g}")
+        location: list[str] = []
+        if location_score <= 0:
+            location.append("Location does not match the preferred locations or remote eligibility")
+        seniority: list[str] = []
+        if seniority_score < 0.5 * self.weights["seniority"]:
+            seniority.append("Seniority level is above the profile")
+        return {
+            "mandatory_requirement_mismatch": mandatory,
+            "preferred_skill_missing": preferred_missing,
+            "experience_mismatch": experience,
+            "location_mismatch": location,
+            "seniority_mismatch": seniority,
+        }
 
     def match_job(
         self,

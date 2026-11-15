@@ -11,7 +11,7 @@ Ordered by impact. Core discovery and application pipeline first; advanced intel
 3. ~~**Source health model**~~ — done 13 Nov (`source_health` table, `GET /api/sources/health`, health recorded by the sync script). Remaining: connectors reporting pagination status; relax the 30-company check in `load_registry`.
 4. ~~**Validate the 7 configured sources live**~~ — done 14 Nov: Amazon, Razorpay, Groww, BrowserStack promoted; Uber (confirm ownership manually), Adobe (re-run after Workday wd5 recovers), Freshworks (needs detail enrichment) still awaiting validation.
 5. **Discover connectors for the unmapped companies / add companies** — partly done 15 Nov: 6 of the 19 mapped, 10 companies added, registry at 40, 18 active. Remaining: 13 unmapped (Microsoft connector for its `apply.careers.microsoft.com` API is the most promising), 10 more evidence-backed companies to reach 50 (do not pad), confirm ownership for Uber/Zscaler/GitLab/Twilio/InMobi, re-run NVIDIA after the Workday pagination fix.
-6. Company coverage dashboard in the UI backed by the health table.
+6. ~~Company coverage dashboard~~ — done 15 Nov (`views/CoverageView.tsx`). 17-20 Nov work (frontend split, job versions/change detection, FAST/FULL, SmartRecruiters enrichment, scheduled sync and summary, configurable weights, eligibility cap, job comparison API) is described in PROJECT_STATUS.md Session 8. Still open: URL routing, sync-summary and comparison UIs, a shared location module.
 
 ## Phase 2 — Matching and AI
 Config-driven score weights, validated on real jobs; skill-gap view from actual opportunity data; Ollama provider abstraction with health check, timeouts, schema validation and prompt versioning; keep deterministic filtering authoritative.

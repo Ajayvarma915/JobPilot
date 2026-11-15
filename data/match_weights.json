@@ -1,0 +1,11 @@
+{
+  "_note": "Weights of the six job match components. They must add up to 100. Changing them re-scores jobs (the match cache key includes these values).",
+  "weights": {
+    "role": 25,
+    "seniority": 20,
+    "experience": 20,
+    "skills": 20,
+    "education": 10,
+    "location": 5
+  }
+}

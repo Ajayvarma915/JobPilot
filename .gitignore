@@ -37,3 +37,6 @@ Thumbs.db
 
 # Local backups
 *.bak
+
+# Scheduled sync summaries
+data/sync_reports/

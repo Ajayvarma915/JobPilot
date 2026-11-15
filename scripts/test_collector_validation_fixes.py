@@ -173,7 +173,51 @@ def test_atlassian_listing_normalization() -> None:
     check(is_india_or_remote_eligible(job)[0], "Bengaluru entry must make the job India-eligible")
 
 
+def test_smartrecruiters_detail_enrichment() -> None:
+    """Posting detail shape copied from the live API: jobAd.sections is a dict keyed by section name."""
+    from app.collectors.smartrecruiters import SmartRecruitersCollector
+
+    listing = {"totalFound": 4, "content": [
+        {"id": f"p{i}", "name": f"Backend Engineer {i}", "ref": f"https://jobs.example/p{i}",
+         "location": {"fullLocation": "Bengaluru, KA, India", "country": "in"}} for i in range(1, 5)]}
+    detail = {"jobAd": {"sections": {
+        "companyDescription": {"title": "Company", "text": "<p>About us boilerplate.</p>"},
+        "jobDescription": {"title": "Job Description", "text": "<p>Build services.</p>"},
+        "qualifications": {"title": "Qualifications", "text": "<ul><li>1 year of experience.</li></ul>"},
+        "additionalInformation": {"title": "Additional", "text": "<p>Perks.</p>"},
+    }}}
+    calls: list[str] = []
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(url)
+        if url.endswith("/postings"):
+            return FakeResponse(listing)
+        if url.endswith("/p3"):
+            raise RuntimeError("network down")
+        return FakeResponse(detail)
+
+    collector = SmartRecruitersCollector("acme", "Acme", fetch_details=True, max_detail_fetch=3)
+    collector.known_descriptions = {"p1": "Reused stored description."}
+    with patch.object(collector.session, "get", side_effect=fake_get):
+        jobs = {j["external_id"]: j for j in collector.collect()}
+
+    detail_calls = [c for c in calls if not c.endswith("/postings")]
+    check(len(detail_calls) == 3, f"p1 is reused, p2/p3/p4 fetched (cap 3); got {detail_calls}")
+    check(jobs["p1"]["_jobpilot_detail_fetch_status"] == "reused" and jobs["p1"]["description"] == "Reused stored description.", "reuse")
+    description = jobs["p2"]["description"]
+    check(jobs["p2"]["_jobpilot_detail_fetch_status"] == "fetched", "fetched")
+    check(description.index("1 year of experience") < description.index("Build services") < description.index("About us"),
+          "qualifications first, company boilerplate last")
+    check(jobs["p3"]["_jobpilot_detail_fetch_status"] == "failed" and not jobs["p3"]["description"], "failure tolerated")
+
+    off = SmartRecruitersCollector("acme", "Acme")  # default: list endpoint only
+    with patch.object(off.session, "get", return_value=FakeResponse(listing)) as get:
+        off.collect()
+    check(get.call_count == 1, "detail fetching is opt-in; the default makes no extra requests")
+
+
 TESTS = [
+    ("SmartRecruiters detail enrichment", test_smartrecruiters_detail_enrichment),
     ("Atlassian feed normalization", test_atlassian_listing_normalization),
     ("Workday paginates beyond two pages", test_workday_paginates_past_two_pages_when_total_only_on_first_page),
     ("Oracle country filter applied client-side", test_oracle_country_filter_is_applied_client_side),

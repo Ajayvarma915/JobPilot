@@ -18,7 +18,10 @@ from app.collectors.workday import WorkdayCollector
 from app.collectors.amazon_jobs import AmazonJobsCollector
 from app.collectors.oracle_hcm import OracleHCMCollector
 from app.collectors.atlassian_careers import AtlassianCareersCollector
+from sqlalchemy import select
+
 from app.db.database import SessionLocal
+from app.db.models import Company, Job
 from app.db.job_repository import JobRepository
 from app.services.target_role_policy import (
     ELIGIBLE_NEEDS_REVIEW,
@@ -67,6 +70,11 @@ class SyncResult:
     jobs_with_description: int = 0
     detail_attempted: int | None = None
     detail_succeeded: int | None = None
+    # Change tracking (live sync only).
+    unchanged: int = 0
+    reactivated: int = 0
+    removed: int = 0
+    removal_note: str | None = None
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
@@ -280,6 +288,8 @@ def _make_collector(company: dict[str, Any]) -> Any:
             careers_url=careers_url,
             page_size=int(settings.get("page_size", 100)),
             max_pages=int(settings.get("max_pages", 20)),
+            fetch_details=bool(settings.get("fetch_details", False)),
+            max_detail_fetch=int(settings.get("max_detail_fetch", 300)),
         )
     if provider == "workday":
         return WorkdayCollector(
@@ -501,24 +511,10 @@ def _record_health(company: dict[str, Any], result: SyncResult) -> None:
         print(f"  WARNING: could not record source health for {company.get('name')}: {type(exc).__name__}: {exc}")
 
 
-def sync_company(
-    company: dict[str, Any],
-    *,
-    dry_run: bool,
-    maximum_required_years: float,
-    allow_unverified: bool = False,
-    audit_rows: list[dict[str, Any]] | None = None,
-    fast_google_scan: bool = False,
-) -> SyncResult:
+def _collector_company(company: dict[str, Any], fast_google_scan: bool) -> dict[str, Any]:
+    """Company entry a collector is built from (FAST trims Google's low-yield queries)."""
     integration = company.get("integration") or {}
     provider = str(integration.get("provider") or "unconfigured")
-    result = SyncResult(company=str(company["name"]), provider=provider, status="pending")
-    is_active = bool(integration.get("verified")) and integration.get("status") == "active"
-    is_configured = bool(provider and integration.get("settings"))
-    if not is_active and not (allow_unverified and is_configured):
-        result.status = str(integration.get("status") or "source_not_verified")
-        return result
-
     collector_company = company
     if fast_google_scan and provider == "google_careers":
         # Work from a shallow copy so the in-memory registry stays unchanged.
@@ -536,8 +532,72 @@ def sync_company(
             f"Google FAST query plan: {len(collector_settings['queries'])} primary batches; "
             f"{configured_count - len(collector_settings['queries'])} observed low-yield fallback batches omitted."
         )
-    jobs = _make_collector(collector_company).collect()
+    return collector_company
+
+
+def _build_collector(
+    company: dict[str, Any],
+    *,
+    fast_google_scan: bool = False,
+    known_descriptions: dict[str, str] | None = None,
+) -> Any:
+    collector = _make_collector(_collector_company(company, fast_google_scan))
+    if known_descriptions and hasattr(collector, "known_descriptions"):
+        collector.known_descriptions = dict(known_descriptions)
+    return collector
+
+
+def _load_known_descriptions(company: dict[str, Any]) -> dict[str, str]:
+    """Read-only: descriptions already stored for this company's active jobs.
+
+    FAST mode reuses them instead of fetching every detail page again.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(Job.external_id, Job.description)
+            .join(Company, Company.id == Job.company_id)
+            .where(Company.name == str(company["name"]), Job.is_active.is_(True))
+        ).all()
+        return {str(ext): desc for ext, desc in rows if ext and desc and desc.strip()}
+    except Exception:  # noqa: BLE001 - a DB without these tables simply has nothing to reuse
+        return {}
+    finally:
+        db.close()
+
+
+def sync_company(
+    company: dict[str, Any],
+    *,
+    dry_run: bool,
+    maximum_required_years: float,
+    allow_unverified: bool = False,
+    audit_rows: list[dict[str, Any]] | None = None,
+    fast_google_scan: bool = False,
+    known_descriptions: dict[str, str] | None = None,
+    prefetched_jobs: Any = None,
+    detect_removals: bool = True,
+) -> SyncResult:
+    integration = company.get("integration") or {}
+    provider = str(integration.get("provider") or "unconfigured")
+    result = SyncResult(company=str(company["name"]), provider=provider, status="pending")
+    is_active = bool(integration.get("verified")) and integration.get("status") == "active"
+    is_configured = bool(provider and integration.get("settings"))
+    if not is_active and not (allow_unverified and is_configured):
+        result.status = str(integration.get("status") or "source_not_verified")
+        return result
+
+    if isinstance(prefetched_jobs, BaseException):
+        raise prefetched_jobs
+    if prefetched_jobs is not None:
+        jobs = prefetched_jobs
+    else:
+        jobs = _build_collector(
+            company, fast_google_scan=fast_google_scan, known_descriptions=known_descriptions
+        ).collect()
     result.collected = len(jobs)
+    raw_ids = {str(j.get("external_id")) for j in jobs if j.get("external_id") not in (None, "")}
+    raw_sources = {str(j.get("source") or provider) for j in jobs} or {provider}
     _fill_health_metrics(result, jobs)
 
     # Build the audit rows as a batch so probable duplicate postings can be
@@ -589,11 +649,31 @@ def sync_company(
             record["company"] = str(company["name"])
             # Internal audit metadata must never be sent to the ORM/repository.
             record.pop("_jobpilot_detail_fetch_status", None)
-            _job, created = repository.upsert_job(company=company_obj, job_data=record)
-            if created:
+            outcome = repository.upsert_job_detailed(company=company_obj, job_data=record)
+            if outcome.status == "created":
                 result.inserted += 1
-            else:
+            elif outcome.status == "reactivated":
+                result.reactivated += 1
                 result.updated += 1
+            elif outcome.status == "updated":
+                result.updated += 1
+            else:
+                result.unchanged += 1
+
+        # Removal detection: only after a complete FULL fetch, and never when the
+        # fetch looks partial (so a flaky source cannot wipe the stored jobs).
+        if detect_removals and not fast_google_scan and result.collected > 0:
+            existing_company = repository.get_company(str(company["name"]))
+            if existing_company is not None:
+                active_now = repository.active_job_count(existing_company, raw_sources)
+                if active_now and result.collected < active_now * 0.5:
+                    result.removal_note = (
+                        f"removal skipped: fetch looks partial ({result.collected} collected vs {active_now} stored active)"
+                    )
+                else:
+                    result.removed = len(
+                        repository.mark_missing_inactive(existing_company, raw_sources, raw_ids)
+                    )
         db.commit()
         result.status = "success"
         return result
@@ -604,7 +684,7 @@ def sync_company(
         db.close()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sync verified public job feeds for JobPilot's 30 target companies.")
     parser.add_argument("--only", action="append", default=[], help="Company ID (for example google, nvidia, cred); repeatable.")
     parser.add_argument("--dry-run", action="store_true", help="Fetch and filter jobs without writing to SQLite.")
@@ -617,11 +697,29 @@ def main() -> int:
               "The default runs the complete 12-query plan."),
     )
     parser.add_argument(
+        "--mode", choices=("full", "fast"), default="full",
+        help=("FULL (default) refetches every detail page and checks for removed jobs. "
+              "FAST reuses descriptions already stored for known jobs and trims Google's low-yield queries; "
+              "it can miss an edited description on an existing job until the next FULL run, and skips removal detection."),
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=1,
+        help="Companies fetched in parallel (default 1). Database writes always stay sequential.",
+    )
+    parser.add_argument(
+        "--no-removal-detection", action="store_true",
+        help="Do not mark jobs that disappeared from a source as inactive.",
+    )
+    parser.add_argument(
         "--record-health", action="store_true",
         help=("Also record fetch results in the source_health table during a dry run "
               "(job tables are still never written). Live syncs always record health."),
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.concurrency < 1 or args.concurrency > 8:
+        parser.error("--concurrency must be between 1 and 8")
+    fast = args.mode == "fast"
+    fast_google = args.fast_google_scan or fast
     record_health = (not args.dry_run) or args.record_health
     if args.include_unverified and not args.dry_run:
         parser.error("--include-unverified is read-only and can only be used together with --dry-run")
@@ -658,6 +756,41 @@ def main() -> int:
         print("Google query mode: FULL (all configured query batches).")
     print()
 
+    if fast:
+        print("Mode: FAST - reuses stored descriptions for known jobs; an edited description on an existing job is picked up on the next FULL run; removal detection is skipped.")
+    else:
+        print("Mode: FULL - every detail page is refetched and removed jobs are detected.")
+
+    def _runnable(item: dict[str, Any]) -> bool:
+        integ = item.get("integration") or {}
+        active = bool(integ.get("verified")) and integ.get("status") == "active"
+        configured = bool(integ.get("provider") and integ.get("settings"))
+        return active or (args.include_unverified and configured)
+
+    known_map: dict[str, dict[str, str]] = {}
+    if fast:
+        for item in companies:
+            if _runnable(item):
+                known_map[item["id"]] = _load_known_descriptions(item)
+
+    prefetched: dict[str, Any] = {}
+    if args.concurrency > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _prefetch(item: dict[str, Any]) -> Any:
+            try:
+                return _build_collector(
+                    item, fast_google_scan=fast_google, known_descriptions=known_map.get(item["id"])
+                ).collect()
+            except Exception as exc:  # noqa: BLE001 - reported per company by sync_company
+                return exc
+
+        to_fetch = [item for item in companies if _runnable(item)]
+        print(f"Fetching {len(to_fetch)} sources with up to {args.concurrency} in parallel...")
+        with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            for item, outcome in zip(to_fetch, pool.map(_prefetch, to_fetch)):
+                prefetched[item["id"]] = outcome
+
     results: list[SyncResult] = []
     audit_rows: list[dict[str, Any]] = []
     for company in companies:
@@ -680,10 +813,15 @@ def main() -> int:
                 maximum_required_years=args.max_years,
                 allow_unverified=args.include_unverified,
                 audit_rows=audit_rows if args.audit_report else None,
-                fast_google_scan=args.fast_google_scan,
+                fast_google_scan=fast_google,
+                known_descriptions=known_map.get(company["id"]),
+                prefetched_jobs=prefetched.get(company["id"]),
+                detect_removals=not args.no_removal_detection,
             )
             results.append(row)
-            print(f"  {row.status}: raw={row.collected}, candidates={row.eligible}, auto_sync_eligible={row.auto_sync_eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, filtered={row.skipped}")
+            print(f"  {row.status}: raw={row.collected}, candidates={row.eligible}, auto_sync_eligible={row.auto_sync_eligible}, review_required={row.review_required}, inserted={row.inserted}, updated={row.updated}, unchanged={row.unchanged}, removed={row.removed}, filtered={row.skipped}")
+            if row.removal_note:
+                print(f"  NOTE: {row.removal_note}")
         except Exception as exc:
             row = SyncResult(company=company["name"], provider=provider, status="failed", error=f"{type(exc).__name__}: {exc}")
             results.append(row)
@@ -707,6 +845,9 @@ def main() -> int:
     print(f"Eligible needing review : {sum(r.review_required for r in results)}")
     print(f"New database records    : {sum(r.inserted for r in results)}")
     print(f"Updated records       : {sum(r.updated for r in results)}")
+    print(f"Unchanged records     : {sum(r.unchanged for r in results)}")
+    print(f"Reactivated records   : {sum(r.reactivated for r in results)}")
+    print(f"Removed from source   : {sum(r.removed for r in results)}")
     if args.audit_report:
         try:
             report_path = write_audit_report(audit_rows, args.audit_report)

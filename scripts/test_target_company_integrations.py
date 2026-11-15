@@ -67,9 +67,9 @@ def test_registry_has_all_30_unique_target_companies() -> None:
     # 15 Nov: more sources were validated live and promoted (own-domain job URLs or an
     # official feed, complete descriptions, full pagination). Sources with weaker
     # evidence or no descriptions stay awaiting validation.
-    promoted_15_nov = {"adobe", "atlassian", "databricks", "rubrik", "okta", "mongodb", "toast", "stripe", "druva", "elastic"}
+    promoted_15_nov = {"adobe", "atlassian", "databricks", "rubrik", "okta", "mongodb", "toast", "stripe", "druva", "elastic", "freshworks"}
     check(promoted_15_nov.issubset(active), f"Expected live-validated sources to be active: {sorted(promoted_15_nov - active)}")
-    held = {"uber", "salesforce", "servicenow", "swiggy", "freshworks", "zscaler", "gitlab", "twilio", "inmobi"}
+    held = {"uber", "salesforce", "servicenow", "swiggy", "zscaler", "gitlab", "twilio", "inmobi"}
     check(held == configured, f"Weak-evidence sources must stay awaiting validation; got {sorted(configured)}")
     check(not held & active, "No held source may be active")
     supported = set(payload["supported_ats_connectors"])

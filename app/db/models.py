@@ -188,3 +188,29 @@ class SourceHealth(Base):
         String(50), default="not_reported", nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class JobVersion(Base):
+    """Snapshot of a job at a point where something worth noting happened.
+
+    change_type is one of: baseline (state captured just before the first
+    recorded change), created, updated, removed, reactivated. For "updated" the
+    changed_fields column lists which tracked fields differ from the previous
+    snapshot (title, location, url, description, employment_type).
+    """
+
+    __tablename__ = "job_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(nullable=False)
+    change_type: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    changed_fields: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False, index=True)
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    location: Mapped[str | None] = mapped_column(Text, nullable=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    employment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False)

@@ -293,6 +293,16 @@ def test_live_sync_writes_only_fully_eligible_jobs() -> None:
             self.upserted_titles.append(job_data["title"])
             return object(), True
 
+        # The sync now uses the richer API (change tracking and removal detection);
+        # this double records the same fact and reports a plain insert.
+        def upsert_job_detailed(self, company, job_data):
+            from types import SimpleNamespace
+            self.upserted_titles.append(job_data["title"])
+            return SimpleNamespace(status="created", job=object(), changed_fields=[])
+
+        def get_company(self, name):
+            return None  # nothing stored yet, so there is nothing to remove
+
     company = {
         "id": "sample",
         "name": "Sample Co",

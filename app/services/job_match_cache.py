@@ -10,8 +10,10 @@ from typing import Any, Iterable
 from sqlalchemy import Engine, bindparam, text
 from sqlalchemy.orm import Session
 
+from app.services.match_weights import load_match_weights
 
-CACHE_VERSION = "jobpilot-match-cache-v1"
+
+CACHE_VERSION = "jobpilot-match-cache-v2"
 TABLE_NAME = "job_match_cache"
 
 _init_lock = threading.Lock()
@@ -72,6 +74,8 @@ def profile_fingerprint(profile: Any) -> str:
         {
             "cache_version": CACHE_VERSION,
             "candidate_profile": payload,
+            # Changing data/match_weights.json must re-score jobs, so the weights are part of the key.
+            "match_weights": load_match_weights(),
         },
         sort_keys=True,
         ensure_ascii=False,

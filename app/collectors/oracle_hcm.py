@@ -48,6 +48,8 @@ class OracleHCMCollector(JobCollector):
         self.timeout = timeout
         self.fetch_details = fetch_details
         self.max_detail_fetch = max(0, int(max_detail_fetch))
+        # external_id -> description already stored; set by the sync in FAST mode.
+        self.known_descriptions: dict[str, str] = {}
         self.source = f"oracle_hcm:{self.site_number.casefold()}"
         self.detail_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails"
         self.api_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
@@ -113,6 +115,11 @@ class OracleHCMCollector(JobCollector):
         for job in jobs:
             if job.get("description"):
                 job["_jobpilot_detail_fetch_status"] = "not_needed"
+                continue
+            reused = self.known_descriptions.get(job["external_id"])
+            if reused:
+                job["description"] = reused
+                job["_jobpilot_detail_fetch_status"] = "reused"
                 continue
             if fetched >= self.max_detail_fetch:
                 job["_jobpilot_detail_fetch_status"] = "not_requested"

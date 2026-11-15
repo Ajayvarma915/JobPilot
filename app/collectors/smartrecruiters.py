@@ -26,6 +26,8 @@ class SmartRecruitersCollector(JobCollector):
         page_size: int = 100,
         max_pages: int = 20,
         timeout: int = 30,
+        fetch_details: bool = False,
+        max_detail_fetch: int = 300,
     ) -> None:
         self.company_identifier = company_identifier.strip()
         self.company_name = company_name.strip()
@@ -40,6 +42,10 @@ class SmartRecruitersCollector(JobCollector):
         self.page_size = page_size
         self.max_pages = max_pages
         self.timeout = timeout
+        self.fetch_details = fetch_details
+        self.max_detail_fetch = max(0, int(max_detail_fetch))
+        # external_id -> description already stored; set by the sync in FAST mode.
+        self.known_descriptions: dict[str, str] = {}
         self.source = f"smartrecruiters:{self.company_identifier.casefold()}"
         self.session = requests.Session()
         self.session.headers.update({
@@ -79,7 +85,37 @@ class SmartRecruitersCollector(JobCollector):
             offset += self.page_size
             if isinstance(total, int) and offset >= total:
                 break
+        if self.fetch_details:
+            self._enrich_descriptions(results)
         return results
+
+    def _enrich_descriptions(self, jobs: list[dict[str, Any]]) -> None:
+        """The list endpoint carries no job ad; fetch each posting once for its description."""
+        base = f"{self.API_ROOT}/{quote(self.company_identifier, safe='')}/postings"
+        fetched = 0
+        for job in jobs:
+            if job.get("description"):
+                job["_jobpilot_detail_fetch_status"] = "not_needed"
+                continue
+            reused = self.known_descriptions.get(job["external_id"])
+            if reused:
+                job["description"] = reused
+                job["_jobpilot_detail_fetch_status"] = "reused"
+                continue
+            if fetched >= self.max_detail_fetch:
+                job["_jobpilot_detail_fetch_status"] = "not_requested"
+                continue
+            fetched += 1
+            try:
+                response = self.session.get(f"{base}/{quote(job['external_id'], safe='')}", timeout=self.timeout)
+                response.raise_for_status()
+                detail = response.json()
+            except Exception:  # noqa: BLE001 - one bad posting must not fail the whole source
+                job["_jobpilot_detail_fetch_status"] = "failed"
+                continue
+            description = self._extract_description(detail if isinstance(detail, dict) else {})
+            job["description"] = description
+            job["_jobpilot_detail_fetch_status"] = "fetched" if description else "fetched_without_description"
 
     def _normalise(self, raw: dict[str, Any]) -> dict[str, Any] | None:
         external_id = str(raw.get("id") or "").strip()
@@ -117,7 +153,17 @@ class SmartRecruitersCollector(JobCollector):
     @classmethod
     def _extract_description(cls, raw: dict[str, Any]) -> str:
         job_ad = raw.get("jobAd") if isinstance(raw.get("jobAd"), dict) else {}
-        sections = job_ad.get("sections") if isinstance(job_ad.get("sections"), list) else []
+        raw_sections = job_ad.get("sections")
+        if isinstance(raw_sections, dict):
+            # Live shape: {"qualifications": {...}, "jobDescription": {...}, ...}. Qualifications first so
+            # the experience parser sees them; the company boilerplate goes last.
+            order = ("qualifications", "jobDescription", "additionalInformation", "companyDescription")
+            sections = [raw_sections[key] for key in order if isinstance(raw_sections.get(key), dict)]
+            sections += [v for k, v in raw_sections.items() if k not in order and isinstance(v, dict)]
+        elif isinstance(raw_sections, list):
+            sections = raw_sections
+        else:
+            sections = []
         chunks: list[str] = []
         for section in sections:
             if not isinstance(section, dict):

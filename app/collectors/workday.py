@@ -50,6 +50,8 @@ class WorkdayCollector(JobCollector):
         self.max_pages = max_pages
         self.fetch_details = fetch_details
         self.timeout = timeout
+        # external_id -> description already stored; set by the sync in FAST mode.
+        self.known_descriptions: dict[str, str] = {}
         self.source = f"workday:{self.tenant.casefold()}:{self.site.casefold()}"
         self.api_root = f"{self.host}/wday/cxs/{quote(self.tenant, safe='')}/{quote(self.site, safe='')}"
         self.session = requests.Session()
@@ -85,7 +87,12 @@ class WorkdayCollector(JobCollector):
                 if job is None or job["external_id"] in seen:
                     continue
                 seen.add(job["external_id"])
-                if self.fetch_details:
+                reused = self.known_descriptions.get(job["external_id"])
+                if reused:
+                    # FAST mode: this job's description is already stored; do not fetch it again.
+                    job["description"] = reused
+                    job["_jobpilot_detail_fetch_status"] = "reused"
+                elif self.fetch_details:
                     detail = self._fetch_detail(str(raw.get("externalPath") or ""))
                     if detail:
                         job.update(detail)

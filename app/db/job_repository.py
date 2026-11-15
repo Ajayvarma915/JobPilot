@@ -1,12 +1,42 @@
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, Job
+from app.db.models import Company, Job, JobVersion
+
+# Fields whose change counts as a real change to a posting.
+TRACKED_FIELDS = ("title", "location", "url", "description", "employment_type")
+
+CREATED = "created"
+UPDATED = "updated"
+UNCHANGED = "unchanged"
+REACTIVATED = "reactivated"
+
+
+@dataclass
+class UpsertResult:
+    job: Job
+    status: str  # created / updated / unchanged / reactivated
+    changed_fields: list[str] = field(default_factory=list)
+
+    @property
+    def created(self) -> bool:
+        return self.status == CREATED
+
+
+def content_hash(values: dict[str, Any]) -> str:
+    """Stable hash of the tracked fields (whitespace-insensitive)."""
+    parts = []
+    for name in TRACKED_FIELDS:
+        text = " ".join(str(values.get(name) or "").split())
+        parts.append(f"{name}={text}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 class JobRepository:
@@ -14,7 +44,16 @@ class JobRepository:
 
     def __init__(self, db: Session) -> None:
         self.db = db
+        self._versions_ready = False
 
+    # -- schema ---------------------------------------------------------------
+    def _ensure_versions_table(self) -> None:
+        """Create job_versions on first use (additive, idempotent)."""
+        if not self._versions_ready:
+            JobVersion.__table__.create(bind=self.db.get_bind(), checkfirst=True)
+            self._versions_ready = True
+
+    # -- companies ------------------------------------------------------------
     def get_or_create_company(
         self,
         name: str,
@@ -22,12 +61,7 @@ class JobRepository:
         careers_url: str | None = None,
         source_type: str | None = None,
     ) -> Company:
-        company = self.db.scalar(
-            select(Company).where(
-                Company.name == name
-            )
-        )
-
+        company = self.db.scalar(select(Company).where(Company.name == name))
         if company is not None:
             return company
 
@@ -37,173 +71,195 @@ class JobRepository:
             careers_url=careers_url,
             source_type=source_type,
         )
-
         self.db.add(company)
         self.db.flush()
-
         return company
 
+    def get_company(self, name: str) -> Company | None:
+        return self.db.scalar(select(Company).where(Company.name == name))
+
+    # -- jobs -----------------------------------------------------------------
     def get_job(
         self,
         source: str,
         external_id: str | None,
         url: str | None = None,
     ) -> Job | None:
-        """
-        Find an existing job.
-
-        Primary identity:
-            source + external_id
-
-        Fallback:
-            source + URL
-        """
-
+        """Find an existing job by source + external_id, falling back to source + URL."""
         if external_id:
             job = self.db.scalar(
-                select(Job).where(
-                    Job.source == source,
-                    Job.external_id == external_id,
-                )
+                select(Job).where(Job.source == source, Job.external_id == external_id)
             )
-
             if job is not None:
                 return job
-
         if url:
-            return self.db.scalar(
-                select(Job).where(
-                    Job.source == source,
-                    Job.url == url,
-                )
-            )
-
+            return self.db.scalar(select(Job).where(Job.source == source, Job.url == url))
         return None
 
-    def upsert_job(
+    @staticmethod
+    def _location_value(job_data: dict[str, Any]) -> str | None:
+        location = job_data.get("location", [])
+        if isinstance(location, list):
+            return "; ".join(location)
+        return location
+
+    def _snapshot_values(self, job: Job) -> dict[str, Any]:
+        return {name: getattr(job, name) for name in TRACKED_FIELDS}
+
+    def _record_version(
         self,
-        company: Company,
-        job_data: dict[str, Any],
-    ) -> tuple[Job, bool]:
-        """
-        Insert a new job or update an existing job.
-
-        Returns:
-            (job, created)
-
-        created=True:
-            A new job was inserted.
-
-        created=False:
-            An existing job was updated.
-        """
-
-        source = job_data["source"]
-        external_id = job_data.get(
-            "external_id"
+        job: Job,
+        change_type: str,
+        changed_fields: Iterable[str] = (),
+        now: datetime | None = None,
+    ) -> JobVersion:
+        self._ensure_versions_table()
+        next_no = int(
+            self.db.scalar(
+                select(func.coalesce(func.max(JobVersion.version_no), 0)).where(JobVersion.job_id == job.id)
+            )
+            or 0
+        ) + 1
+        values = self._snapshot_values(job)
+        version = JobVersion(
+            job_id=job.id,
+            version_no=next_no,
+            change_type=change_type,
+            changed_fields=",".join(changed_fields) or None,
+            content_hash=content_hash(values),
+            captured_at=now or datetime.utcnow(),
+            title=values["title"] or "",
+            location=values["location"],
+            url=values["url"] or "",
+            employment_type=values["employment_type"],
+            description=values["description"] or "",
         )
-        url = job_data.get("url")
+        self.db.add(version)
+        # Sessions here run with autoflush off; flush so numbering and the
+        # "has versions" checks see this row immediately.
+        self.db.flush()
+        return version
 
+    def _has_versions(self, job: Job) -> bool:
+        self._ensure_versions_table()
+        return self.db.scalar(select(func.count()).select_from(JobVersion).where(JobVersion.job_id == job.id)) > 0
+
+    def upsert_job_detailed(self, company: Company, job_data: dict[str, Any]) -> UpsertResult:
+        """Insert or update a job and report exactly what happened.
+
+        - created:     new job (version 1 recorded)
+        - updated:     a tracked field changed (previous state kept as a version)
+        - reactivated: the job had been marked removed and is posted again
+        - unchanged:   nothing tracked changed; only last_seen_at is refreshed
+        """
+        source = job_data["source"]
+        external_id = job_data.get("external_id")
+        url = job_data.get("url")
         now = datetime.utcnow()
 
-        existing_job = self.get_job(
-            source=source,
-            external_id=external_id,
-            url=url,
-        )
+        incoming = {
+            "title": job_data["title"],
+            "location": self._location_value(job_data),
+            "url": url,
+            "description": job_data.get("description", ""),
+            "employment_type": job_data.get("employment_type"),
+        }
 
-        location = job_data.get(
-            "location",
-            [],
-        )
+        existing = self.get_job(source=source, external_id=external_id, url=url)
 
-        if isinstance(location, list):
-            location_value = "; ".join(
-                location
+        if existing is None:
+            job = Job(
+                company_id=company.id,
+                external_id=external_id,
+                title=incoming["title"],
+                location=incoming["location"],
+                url=url,
+                description=incoming["description"],
+                source=source,
+                experience_level=job_data.get("experience_level"),
+                employment_type=incoming["employment_type"],
+                posted_at=job_data.get("posted_at"),
+                first_seen_at=now,
+                last_seen_at=now,
+                is_active=True,
             )
-        else:
-            location_value = location
-
-        if existing_job is not None:
-            existing_job.company_id = (
-                company.id
-            )
-
-            existing_job.external_id = (
-                external_id
-            )
-
-            existing_job.title = (
-                job_data["title"]
-            )
-
-            existing_job.location = (
-                location_value
-            )
-
-            existing_job.url = url
-
-            existing_job.description = (
-                job_data.get(
-                    "description",
-                    "",
-                )
-            )
-
-            existing_job.source = source
-
-            existing_job.experience_level = (
-                job_data.get(
-                    "experience_level"
-                )
-            )
-
-            existing_job.employment_type = (
-                job_data.get(
-                    "employment_type"
-                )
-            )
-
-            existing_job.posted_at = (
-                job_data.get(
-                    "posted_at"
-                )
-            )
-
-            # Lifecycle tracking.
-            existing_job.last_seen_at = now
-            existing_job.is_active = True
-
+            self.db.add(job)
             self.db.flush()
+            self._record_version(job, CREATED, now=now)
+            return UpsertResult(job, CREATED)
 
-            return existing_job, False
+        changed = [
+            name for name in TRACKED_FIELDS
+            if " ".join(str(getattr(existing, name) or "").split()) != " ".join(str(incoming[name] or "").split())
+        ]
+        was_inactive = not existing.is_active
 
-        new_job = Job(
-            company_id=company.id,
-            external_id=external_id,
-            title=job_data["title"],
-            location=location_value,
-            url=url,
-            description=job_data.get(
-                "description",
-                "",
-            ),
-            source=source,
-            experience_level=job_data.get(
-                "experience_level"
-            ),
-            employment_type=job_data.get(
-                "employment_type"
-            ),
-            posted_at=job_data.get(
-                "posted_at"
-            ),
-            first_seen_at=now,
-            last_seen_at=now,
-            is_active=True,
-        )
+        if changed and not self._has_versions(existing):
+            # Jobs stored before version tracking existed: keep their old state as the baseline.
+            self._record_version(existing, "baseline", now=existing.last_seen_at)
 
-        self.db.add(new_job)
+        if changed:
+            for name in changed:
+                setattr(existing, name, incoming[name])
+
+        # Untracked fields follow the source but never count as a change.
+        existing.company_id = company.id
+        existing.external_id = external_id
+        existing.experience_level = job_data.get("experience_level")
+        existing.posted_at = job_data.get("posted_at")
+        existing.source = source
+        existing.last_seen_at = now
+        existing.is_active = True
         self.db.flush()
 
-        return new_job, True
+        if changed:
+            self._record_version(existing, REACTIVATED if was_inactive else UPDATED, changed, now=now)
+            return UpsertResult(existing, REACTIVATED if was_inactive else UPDATED, changed)
+        if was_inactive:
+            self._record_version(existing, REACTIVATED, now=now)
+            return UpsertResult(existing, REACTIVATED)
+        return UpsertResult(existing, UNCHANGED)
+
+    def upsert_job(self, company: Company, job_data: dict[str, Any]) -> tuple[Job, bool]:
+        """Backward-compatible wrapper: returns (job, created)."""
+        result = self.upsert_job_detailed(company, job_data)
+        return result.job, result.created
+
+    # -- removal detection ----------------------------------------------------
+    def active_job_count(self, company: Company, sources: Iterable[str]) -> int:
+        return int(
+            self.db.scalar(
+                select(func.count()).select_from(Job).where(
+                    Job.company_id == company.id, Job.source.in_(list(sources)), Job.is_active.is_(True)
+                )
+            )
+            or 0
+        )
+
+    def mark_missing_inactive(
+        self,
+        company: Company,
+        sources: Iterable[str],
+        seen_external_ids: set[str],
+    ) -> list[Job]:
+        """Mark active jobs that are no longer on the source as removed.
+
+        The caller decides whether the fetch was complete enough to trust.
+        """
+        now = datetime.utcnow()
+        candidates = self.db.scalars(
+            select(Job).where(
+                Job.company_id == company.id, Job.source.in_(list(sources)), Job.is_active.is_(True)
+            )
+        ).all()
+        removed: list[Job] = []
+        for job in candidates:
+            if job.external_id is not None and job.external_id in seen_external_ids:
+                continue
+            if not self._has_versions(job):
+                self._record_version(job, "baseline", now=job.last_seen_at)
+            job.is_active = False
+            self.db.flush()
+            self._record_version(job, "removed", now=now)
+            removed.append(job)
+        return removed

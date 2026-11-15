@@ -24,6 +24,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.database import resolve_database_path
+from app.services.sync_summary import build_change_summary
+from app.services.job_compare import build_comparison
 from app.services.source_health import (
     build_health_report,
     load_health_rows,
@@ -532,6 +534,14 @@ def _serialize_match(result: Any) -> dict[str, Any]:
         "hard_constraints": list(result.hard_constraints),
         "reasons": list(result.reasons),
         "concerns": list(result.concerns),
+        # Transparency fields (older cached rows may not have them).
+        "mismatches": {k: list(v) for k, v in (getattr(result, "mismatches", None) or {}).items()},
+        "weights": dict(getattr(result, "weights_used", None) or {}),
+        "eligibility": {
+            "status": getattr(result, "eligibility_status", None),
+            "reasons": list(getattr(result, "eligibility_reasons", None) or []),
+            "capped": bool(getattr(result, "eligibility_capped", False)),
+        },
     }
 
 
@@ -701,6 +711,25 @@ def source_health(db: Session = Depends(get_db)) -> dict[str, Any]:
             detail="The API cannot read source health history.",
         ) from exc
     return build_health_report(companies, rows)
+
+
+@app.get("/api/sync/summary")
+def sync_summary(
+    days: int = Query(7, ge=1, le=90, description="Look-back window in days (7 = weekly, 1 = daily)."),
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """What changed in the stored jobs recently: new, updated, reactivated and removed.
+
+    Read-only, computed from the job version history so each event is reported once.
+    """
+    try:
+        return build_change_summary(db, days=days, limit=limit)
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The API cannot read the job change history.",
+        ) from exc
 
 
 @app.get("/api/dashboard/stats")
@@ -1316,6 +1345,51 @@ def list_jobs(
             "scheduled_jobs": len(scheduled_ids),
         },
     }
+
+
+@app.get("/api/jobs/compare")
+def compare_jobs(
+    ids: str = Query(..., description="Comma-separated job ids, 2 to 4 (for example 12,15,40)."),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Compare several jobs side by side using their match data (computed and cached if missing)."""
+    try:
+        job_ids = list(dict.fromkeys(int(part) for part in ids.split(",") if part.strip()))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="ids must be comma-separated integers.") from exc
+    if not 2 <= len(job_ids) <= 4:
+        raise HTTPException(status_code=422, detail="Choose between 2 and 4 different jobs to compare.")
+
+    ensure_match_cache_table(db.get_bind())
+    jobs = {job.id: job for job in db.scalars(select(Job).where(Job.id.in_(job_ids))).all()}
+    missing = [job_id for job_id in job_ids if job_id not in jobs]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Job(s) not found: {', '.join(map(str, missing))}.")
+
+    profile = _candidate_profile()
+    profile_hash = profile_fingerprint(profile)
+    cached = load_cached_matches(db, list(jobs.values()), profile_hash)
+    matcher: JobMatcher | None = None
+    entries: list[dict[str, Any]] = []
+    for job_id in job_ids:
+        job = jobs[job_id]
+        match_data = cached.get(job_id)
+        if match_data is None:
+            matcher = matcher or JobMatcher(candidate_profile=profile)
+            match_data = _serialize_match(matcher.match(job))
+            save_cached_match(db, job, profile_hash, match_data)
+        company_obj = db.get(Company, job.company_id)
+        entries.append({
+            "id": job.id,
+            "title": job.title,
+            "company": company_obj.name if company_obj else None,
+            "location": job.location,
+            "url": job.url,
+            "compensation": _compensation_signal(job.description or ""),
+            "match": match_data,
+        })
+    db.commit()
+    return build_comparison(entries)
 
 
 @app.get("/api/jobs/{job_id}")
