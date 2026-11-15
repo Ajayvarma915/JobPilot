@@ -32,7 +32,8 @@
     "ashby",
     "smartrecruiters",
     "workday",
-    "oracle_hcm"
+    "oracle_hcm",
+    "atlassian_careers"
   ],
   "companies": [
     {
@@ -75,7 +76,9 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Official careers search API found on 2026-11-15: https://apply.careers.microsoft.com/api/pcsx/search (HTTP 200, JSON with a positions list). No connector exists for it yet (a position-detail request would be needed for descriptions), so this stays unmapped.",
+        "discovered_url": "https://apply.careers.microsoft.com/api/pcsx/search"
       }
     },
     {
@@ -109,7 +112,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -119,10 +123,15 @@
       "website": "https://www.atlassian.com",
       "careers_url": "https://www.atlassian.com/company/careers/all-jobs",
       "integration": {
-        "provider": null,
-        "status": "official_career_page_only",
-        "verified": false,
-        "notes": "Official all-jobs page supports India eligibility filters; no stable public job API/ATS board slug verified in this pass."
+        "provider": "atlassian_careers",
+        "status": "active",
+        "verified": true,
+        "notes": "Ownership: Atlassian's own careers JSON feed on atlassian.com. Live read-only dry run on 2026-11-15: 280 unique jobs (duplicate ids removed), 280/280 descriptions, 28 India locations, 1 eligible candidate (needs review).",
+        "settings": {
+          "feed_url": "https://www.atlassian.com/endpoint/careers/listings"
+        },
+        "discovered_url": "https://www.atlassian.com/endpoint/careers/listings",
+        "validated_at": "2026-11-15"
       }
     },
     {
@@ -157,7 +166,8 @@
       "integration": {
         "provider": null,
         "status": "official_career_page_only",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -168,8 +178,8 @@
       "careers_url": "https://careers.adobe.com/us/en/search-results",
       "integration": {
         "provider": "workday",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "tenant": "adobe",
           "site": "external_experienced",
@@ -177,7 +187,8 @@
           "locale": "en-US"
         },
         "discovered_url": "https://adobe.wd5.myworkdayjobs.com/external_experienced/job/San-Jose/Software-Engineer---Adobe-Experience-Platform_R160198-1/apply",
-        "notes": "Identifier confirmed on careers.adobe.com (adobe.wd5.myworkdayjobs.com/external_experienced). Live dry run 2026-11-14 failed: HTTP 521 for the whole wd5 Workday cluster (NVIDIA's wd5 tenant returned 521 at the same time while wd3 worked), i.e. a temporary Workday outage, not a bad mapping. Re-run when wd5 recovers."
+        "notes": "Ownership: identifier found on careers.adobe.com (adobe.wd5.myworkdayjobs.com/external_experienced). Live read-only dry run on 2026-11-15, after the Workday pagination fix: 246 jobs = the 246 the server reports, 246/246 detail pages fetched, 34 India locations, 0 eligible candidates now. (The 14 Nov failure was a temporary Workday wd5 outage.)",
+        "validated_at": "2026-11-15"
       }
     },
     {
@@ -187,9 +198,19 @@
       "website": "https://www.salesforce.com",
       "careers_url": "https://careers.salesforce.com/en/jobs/",
       "integration": {
-        "provider": null,
-        "status": "pending_ats_discovery",
-        "verified": false
+        "provider": "workday",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "tenant": "salesforce",
+          "site": "External_Career_Site",
+          "host": "https://salesforce.wd12.myworkdayjobs.com",
+          "locale": "en-US",
+          "page_size": 20,
+          "max_pages": 85
+        },
+        "discovered_url": "https://salesforce.wd12.myworkdayjobs.com/External_Career_Site",
+        "notes": "Workday CXS answers for tenant 'salesforce' (1,609 postings on 2026-11-15). NOT verified: the official careers page does not expose the link statically, and the board is global, so a full dry run would make one detail request per posting. Do a dry run only after detail fetching is limited to India software roles."
       }
     },
     {
@@ -201,7 +222,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "A Lever site 'linkedin' answers with only 23 postings (3 India engineering) on 2026-11-15; it is too small and its ownership is unconfirmed, so it is NOT used as LinkedIn's job source."
       }
     },
     {
@@ -234,7 +256,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -244,9 +267,14 @@
       "website": "https://www.servicenow.com",
       "careers_url": "https://careers.servicenow.com/",
       "integration": {
-        "provider": null,
-        "status": "pending_ats_discovery",
-        "verified": false
+        "provider": "smartrecruiters",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "company_identifier": "ServiceNow"
+        },
+        "discovered_url": "https://jobs.smartrecruiters.com/ServiceNow",
+        "notes": "SmartRecruiters company 'ServiceNow'. Dry run 2026-11-15: 80 India postings, but 0/80 descriptions (the list endpoint has none). NOT promoted until posting-detail enrichment exists."
       }
     },
     {
@@ -256,10 +284,15 @@
       "website": "https://www.databricks.com",
       "careers_url": "https://www.databricks.com/company/careers/open-positions",
       "integration": {
-        "provider": null,
-        "status": "official_career_page_only",
-        "verified": false,
-        "notes": "A historical Greenhouse URL now redirects to the official careers page; do not use the stale board mapping."
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "notes": "Ownership: every job URL is on databricks.com (only the board owner can set that). Live read-only dry run on 2026-11-15: 896 jobs, 896/896 descriptions, 85 India locations, 11 role-family matches, 1 eligible candidate (needs review).",
+        "settings": {
+          "board_token": "databricks"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/databricks",
+        "validated_at": "2026-11-15"
       }
     },
     {
@@ -269,9 +302,15 @@
       "website": "https://www.rubrik.com",
       "careers_url": "https://www.rubrik.com/company/careers",
       "integration": {
-        "provider": null,
-        "status": "pending_ats_discovery",
-        "verified": false
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "rubrik"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/rubrik",
+        "notes": "Ownership: every job URL is on www.rubrik.com. Live read-only dry run on 2026-11-15: 182 jobs, 182/182 descriptions, 34 India locations, 3 eligible candidates (need review).",
+        "validated_at": "2026-11-15"
       }
     },
     {
@@ -283,7 +322,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -295,7 +335,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -307,7 +348,8 @@
       "integration": {
         "provider": null,
         "status": "official_career_page_only",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -367,10 +409,14 @@
       "website": "https://www.swiggy.com",
       "careers_url": "https://careers.swiggy.in/explore-jobs",
       "integration": {
-        "provider": null,
-        "status": "official_career_page_only",
+        "provider": "smartrecruiters",
+        "status": "configured_needs_live_validation",
         "verified": false,
-        "notes": "Official career page exposes live roles, but the underlying public feed/API needs identification."
+        "notes": "SmartRecruiters company 'SWIGGY'. Dry run 2026-11-15: 191 postings, all India, but 0/191 descriptions (the list endpoint has none), so experience and PhD rules cannot run. NOT promoted until posting-detail enrichment exists.",
+        "settings": {
+          "company_identifier": "swiggy"
+        },
+        "discovered_url": "https://jobs.smartrecruiters.com/swiggy"
       }
     },
     {
@@ -382,7 +428,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "A Lever site 'eternal' answers with 4 postings (no engineering) on 2026-11-15; too small to be the main source. Not mapped."
       }
     },
     {
@@ -394,7 +441,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -424,7 +472,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -436,7 +485,8 @@
       "integration": {
         "provider": null,
         "status": "pending_ats_discovery",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -465,7 +515,8 @@
       "integration": {
         "provider": null,
         "status": "official_career_page_only",
-        "verified": false
+        "verified": false,
+        "notes": "Direct probe of the public Greenhouse, Lever, Ashby and SmartRecruiters board APIs on 2026-11-15 found no board for this company; its careers page is script-rendered so no static ATS link was found either. Needs a manual look at the Apply link or a purpose-built connector."
       }
     },
     {
@@ -487,6 +538,182 @@
         "discovered_url": "https://browserstack.wd3.myworkdayjobs.com/External",
         "notes": "Workday tenant/site appear on the official browserstack.com/careers page (browserstack.wd3.myworkdayjobs.com/External). Live read-only dry run on 2026-11-14: HTTP 200, 34 jobs, 34/34 detail pages fetched, 30 India + 2 remote-India; 0 role-eligible today.",
         "validated_at": "2026-11-14"
+      }
+    },
+    {
+      "id": "okta",
+      "name": "Okta",
+      "priority": 3,
+      "website": "https://www.okta.com",
+      "careers_url": "https://www.okta.com/company/careers/",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "okta"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/okta",
+        "notes": "Ownership: every job URL is on www.okta.com. Live read-only dry run on 2026-11-15: 362 jobs, 362/362 descriptions, 99 India locations, 0 eligible candidates now (the policy excluded all of them).",
+        "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "zscaler",
+      "name": "Zscaler",
+      "priority": 3,
+      "website": "https://www.zscaler.com",
+      "careers_url": "https://www.zscaler.com/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "zscaler"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/zscaler",
+        "notes": "Dry run 2026-11-15 clean (373 jobs, 373/373 descriptions, 84 India locations, 1 candidate). NOT promoted: the only ownership evidence is the board name; job URLs are on job-boards.greenhouse.io. Confirm that an Apply link on zscaler.com/careers lands on job-boards.greenhouse.io/zscaler, then set verified=true."
+      }
+    },
+    {
+      "id": "mongodb",
+      "name": "MongoDB",
+      "priority": 3,
+      "website": "https://www.mongodb.com",
+      "careers_url": "https://www.mongodb.com/company/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "mongodb"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/mongodb",
+        "notes": "Ownership: every job URL is on www.mongodb.com. Live read-only dry run on 2026-11-15: 390 jobs, 390/390 descriptions, 73 India locations, 2 eligible candidates (need review).",
+        "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "priority": 3,
+      "website": "https://about.gitlab.com",
+      "careers_url": "https://about.gitlab.com/jobs/",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "gitlab"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/gitlab",
+        "notes": "Dry run 2026-11-15 clean (251 jobs, 251/251 descriptions, 36 India-eligible locations, 6 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on about.gitlab.com/jobs, then set verified=true."
+      }
+    },
+    {
+      "id": "toast",
+      "name": "Toast",
+      "priority": 3,
+      "website": "https://pos.toasttab.com",
+      "careers_url": "https://careers.toasttab.com/",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "toast"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/toast",
+        "notes": "Ownership: every job URL is on careers.toasttab.com. Live read-only dry run on 2026-11-15: 355 jobs, 355/355 descriptions, 24 India locations, 1 eligible candidate (needs review).",
+        "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "stripe",
+      "name": "Stripe",
+      "priority": 3,
+      "website": "https://stripe.com",
+      "careers_url": "https://stripe.com/jobs",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "stripe"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/stripe",
+        "notes": "Ownership: every job URL is on stripe.com. Live read-only dry run on 2026-11-15: 785 jobs, 785/785 descriptions, 45 India locations, 4 eligible candidates (need review).",
+        "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "druva",
+      "name": "Druva",
+      "priority": 3,
+      "website": "https://www.druva.com",
+      "careers_url": "https://www.druva.com/about/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "druva"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/druva",
+        "notes": "Ownership: the official careers page references boards-api.greenhouse.io/v1/boards/druva and every job URL is on www.druva.com. Live read-only dry run on 2026-11-15: 27 jobs, 27/27 descriptions, 10 India locations, 0 eligible candidates now.",
+        "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "twilio",
+      "name": "Twilio",
+      "priority": 3,
+      "website": "https://www.twilio.com",
+      "careers_url": "https://www.twilio.com/en-us/company/jobs",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "twilio"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/twilio",
+        "notes": "Dry run 2026-11-15 clean (114 jobs, 114/114 descriptions, 49 India locations, 2 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on twilio.com careers, then set verified=true."
+      }
+    },
+    {
+      "id": "inmobi",
+      "name": "InMobi",
+      "priority": 3,
+      "website": "https://www.inmobi.com",
+      "careers_url": "https://www.inmobi.com/company/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "configured_needs_live_validation",
+        "verified": false,
+        "settings": {
+          "board_token": "inmobi"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/inmobi",
+        "notes": "Dry run 2026-11-15 clean (74 jobs, 74/74 descriptions, 47 India locations, 3 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on inmobi.com careers, then set verified=true."
+      }
+    },
+    {
+      "id": "elastic",
+      "name": "Elastic",
+      "priority": 3,
+      "website": "https://www.elastic.co",
+      "careers_url": "https://www.elastic.co/careers",
+      "integration": {
+        "provider": "greenhouse",
+        "status": "active",
+        "verified": true,
+        "settings": {
+          "board_token": "elastic"
+        },
+        "discovered_url": "https://job-boards.greenhouse.io/elastic",
+        "notes": "Ownership: every job URL is on jobs.elastic.co. Live read-only dry run on 2026-11-15: 400 jobs, 400/400 descriptions, 19 India locations, 1 eligible candidate (needs review).",
+        "validated_at": "2026-11-15"
       }
     }
   ]

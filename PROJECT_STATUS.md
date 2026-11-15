@@ -14,7 +14,7 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 |---|---|---|---|---|
 | Role/eligibility policy (`app/services/target_role_policy.py`) | Yes (PhD, seniority, experience, country, security roles). Single source of truth: the API and sync audit now call it. `evaluate_eligibility()` returns eligible / eligible_needs_review / excluded / source_unverified with reasons and flags | Yes — `test_eligibility_decision` 3/3, `test_target_sync_audit` 11/11, `test_job_filter_policy` 6/6 (full offline suite earlier in the session: 34/35 runnable passed, the 1 failure was the missing Frontend Developer title, then fixed; the 11 role/eligibility/API/matching tests were re-run after the fix and all passed; the whole suite was not re-run end to end after that last fix) | Compared against the 331 stored jobs (see Session 3) | Salary/compensation helpers and location-matching helpers still live in `app/api/main.py`; `evaluate_eligibility` is not yet exposed through an API field |
 | Collectors (Google, Amazon, Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM) | Yes | Mock/unit tests pass (`test_collector_validation_fixes` 4/4) | Live read-only dry runs on 14 Nov: Amazon, Razorpay, Groww, BrowserStack, Uber, Freshworks fetched real data; Adobe failed (Workday wd5 outage). Google, NVIDIA, CRED, Meesho were verified earlier and not re-run today | Pagination/retry/backoff/health states not uniformly verified; no source-health table |
-| 50-company registry (`data/target_companies.json`) | **30 companies only** | `test_target_company_integrations` 11/11 | See below | 20 more companies not chosen; 19 of 30 have no connector |
+| 50-company registry (`data/target_companies.json`) | **40 companies** (original 30 + 10 added 15 Nov); 18 active, 9 awaiting validation, 13 discovered | `test_target_company_integrations` 11/11, `test_source_health` 7/7 | 18 active sources: 4 verified earlier, 14 validated by live read-only dry runs on 14-15 Nov | **Target is 50; 10 more companies with evidence-backed public boards still to be found** (no padding); 13 companies still have no connector |
 | Database (`app/db`, SQLite) | Companies + Jobs + SourceHealth via SQLAlchemy; tracker/email tables via raw `sqlite3`. DB path now resolved in one place (`resolve_database_path()`, env `JOBPILOT_DATABASE_PATH`) | `test_database`, `test_dedup_constraint` now use a temp DB and pass repeatedly (session 2) | Live DB: 3 companies, 331 jobs | No migrations, no job versions/source-sync history; `main.py` still builds its own second SQLAlchemy engine; `test_structured_job_matching` reads the live DB path directly (read-only) |
 | Matching (`job_matcher`, `jd_analyzer`, cache) | Yes | Pass (`test_job_matching`, `test_structured_job_matching`, `test_job_match_api`, `test_job_match_cache`, `test_jd_analyzer`) | Not verified on real jobs here | Weights not configurable via UI/config; skill-gap intelligence missing |
 | Local AI (Ollama) | `ollama_client`, `jd_insights` | Ollama-dependent tests **not run** (skipped) | Not verified this session | Provider abstraction, caching/prompt versioning to confirm |
@@ -26,8 +26,10 @@ Status is based on code inspection and test runs. Nothing here is a percentage e
 | API security | Local-only, CORS allow-list | — | — | No authentication; fine for localhost, blocker for any hosted use |
 
 ## 30-company registry state (from `data/target_companies.json`)
-- **Active + verified (8, updated 14 Nov):** Google, NVIDIA, CRED, Meesho, and — after live read-only dry runs on 14 Nov — Amazon, Razorpay, Groww, BrowserStack.
-- **Awaiting validation (3):** Uber (data clean, ownership of the Oracle site unconfirmed), Adobe (Workday wd5 outage, retry later), Freshworks (no descriptions until detail enrichment exists).
+- **Active + verified (18, updated 15 Nov):** Google, NVIDIA, CRED, Meesho, Amazon, Razorpay, Groww, BrowserStack (14 Nov), Adobe, Atlassian, Databricks, Rubrik, Okta, MongoDB, Toast, Stripe, Druva, Elastic (15 Nov).
+- **Awaiting validation (9):** Uber (ownership unconfirmed), Salesforce (not dry-run), ServiceNow / Swiggy / Freshworks (no descriptions), Zscaler / GitLab / Twilio / InMobi (board-name-only evidence).
+- **Discovered, no connector (13):** see Session 7.
+- NVIDIA's earlier verification predates the Workday pagination fix: it was collecting only 40 of ~2,000 postings. Re-run it after the next network window.
 - **No connector yet (19):** 13 `pending_ats_discovery` (Microsoft, Meta, Salesforce, LinkedIn, Intuit, ServiceNow, Rubrik, Confluent, Flipkart, Zomato, Zepto, Dream11, Postman) and 6 `official_career_page_only` (Atlassian, Apple, Databricks, PhonePe, Swiggy, Zoho).
 - The registry uses a different status vocabulary from the target one (discovered/configured/awaiting_validation/verified/active/…); migration needed.
 - The live DB only contains Coinbase (225), KnowBe4 (68), Google (38) — the multi-company sync output exists only as audit CSVs at the repo root.
@@ -101,6 +103,28 @@ Bugs found that mocked tests had hidden (fixed, with tests in `scripts/test_coll
 - Test expectation changed (explained in the test): `test_target_company_integrations` had pinned `country[]` and the old "configured" statuses; both reflected the unvalidated assumptions.
 - Side finding: the entire Workday **wd5** cluster, including NVIDIA (an active source), was unreachable on 14 Nov; NVIDIA's health will show `temporarily_unavailable` if a sync is recorded now.
 - Still true: 0 candidates for five sources means no current 0-2-year software roles passed the policy, not that the connectors are broken (reasons are in the audit CSVs). The audit CSVs and logs were written to a scratch folder, not the repo. Collectors still have no retry/backoff (planned work).
+
+## Session 7 (15 Nov): mapping the unmapped companies and growing the registry
+Method: instead of grepping script-rendered careers pages (which gave nothing), I probed the public board APIs (Greenhouse, Lever, Ashby, SmartRecruiters, Workday CXS) with company-name slugs and accepted a mapping only with ownership evidence. Strong evidence = every job URL on the company's own domain (only the board owner can configure that), an official feed on the company's own domain, or a link on the official careers page. Board-name match alone is *not* enough to promote.
+
+**Bug found by live testing and fixed:** the Workday collector stopped after 2 pages because Workday reports `total` only on the first page (Adobe: 246, then 0, 0). Every Workday source was truncated to 40 jobs, including NVIDIA (active; the board reports 2,000). Fixed by remembering the first positive total, with a test. Adobe went from 40 to all 246 postings.
+
+**New connector:** `atlassian_careers` (`app/collectors/atlassian_careers.py`) reads Atlassian's own careers JSON, one request, descriptions included, duplicate ids removed, no invented posting date.
+
+Registry changes (all in `data/target_companies.json`, each entry has the evidence in its `notes`):
+- **Promoted to active (10, dry-run evidence in notes):** Adobe (now complete), Atlassian, Databricks, Rubrik, Okta, MongoDB, Toast, Stripe, Druva, Elastic. Together with the 8 active before: **18 active**.
+- **Added but held (awaiting validation) because ownership is only a board-name match:** Zscaler, GitLab, Twilio, InMobi. Dry runs were clean; confirm each company's Apply link lands on its Greenhouse board, then set `verified`.
+- **Mapped but held, no descriptions from SmartRecruiters' list endpoint:** ServiceNow, Swiggy (same limitation as Freshworks; needs posting-detail enrichment, planned 19 Nov).
+- **Mapped but not dry-run:** Salesforce (Workday CXS answers, 1,609 postings; a full dry run would make one detail request per posting, so wait for detail-fetch limiting). Uber still needs the manual ownership check from 14 Nov.
+- **Still no connector (13):** Microsoft (official `apply.careers.microsoft.com/api/pcsx/search` JSON works; connector not written), Meta, Apple, LinkedIn (a tiny unrelated-looking Lever site was rejected), Intuit, Confluent, Flipkart, PhonePe, Zomato (a 4-job Lever site rejected), Zepto, Dream11, Postman, Zoho. No public board found by direct probe.
+- **Companies rejected for the extra list:** probed and dropped for having no India engineering roles: Cloudflare, Pinterest, Airbnb (2), Datadog (1), Lyft, DoorDash, Dropbox, Box, Asana, Reddit, Robinhood, Duolingo, Brex, Anthropic, Vercel and others; Indian startups probed with no public board found: Juspay, Chargebee, CleverTap, Cashfree, ShareChat, Lenskart, Sprinklr, Innovaccer and others. The first-batch counts are in the notes only for the ones added.
+- `load_registry()` in the sync script and the discovery script no longer insist on exactly 30; they require at least the original 30, unique ids and unique names (tests added).
+
+Full offline suite after these changes (sandbox copy): **37 passed, 0 failed, 10 skipped** (7 need network/Ollama, 3 need the personal resume; skipped = not run). The live dry runs are not part of the automated suite.
+
+Live dry-run summary (read-only; job tables untouched; real `jobpilot.db` hash unchanged): candidates found now — Stripe 4, GitLab 6, Rubrik 3, InMobi 3, MongoDB 2, Twilio 2, Databricks/Atlassian/Toast/Elastic/Zscaler 1 each, Okta/Druva 0. Candidates still need human review (audit status `eligible_needs_review`) because a posting's experience/location is checked by rules, not by a person.
+
+Limits to remember: the 0-2 year + India + software policy is strict, so most boards yield few candidates; a mapped source is not a guarantee of suitable jobs. Pagination status is still not reported by connectors. Collectors still have no retry/backoff.
 
 ## Known risks / debt
 - Role-filter logic exists in two places (`target_role_policy.py` and `app/api/main.py`); that duplication is what allowed this regression. Centralise next.

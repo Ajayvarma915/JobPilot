@@ -41,7 +41,15 @@ def check(condition: bool, message: str) -> None:
 def test_registry_has_all_30_unique_target_companies() -> None:
     payload = json.loads((ROOT / "data" / "target_companies.json").read_text(encoding="utf-8"))
     companies = payload["companies"]
-    check(len(companies) == 30, f"Expected 30 targets, got {len(companies)}")
+    # The registry started with 30 targets and grows only with companies that have a
+    # verified public board; the original 30 must never disappear.
+    original_30 = {
+        "google", "microsoft", "amazon", "meta", "atlassian", "uber", "apple", "adobe", "salesforce", "linkedin",
+        "nvidia", "intuit", "servicenow", "databricks", "rubrik", "confluent", "flipkart", "phonepe", "razorpay",
+        "cred", "meesho", "swiggy", "zomato", "zepto", "groww", "dream11", "postman", "freshworks", "zoho", "browserstack",
+    }
+    check(len(companies) >= 30, f"Expected at least 30 targets, got {len(companies)}")
+    check(original_30.issubset({item["id"] for item in companies}), "The original 30 target companies must all remain in the registry")
     ids = [item["id"] for item in companies]
     names = [item["name"] for item in companies]
     check(len(ids) == len(set(ids)), "Company IDs must be unique")
@@ -56,12 +64,24 @@ def test_registry_has_all_30_unique_target_companies() -> None:
     # and promoted; Uber (ownership of the Oracle site unconfirmed), Adobe (Workday wd5
     # outage) and Freshworks (no descriptions yet) stay awaiting validation.
     check({"amazon", "razorpay", "groww", "browserstack"}.issubset(active), "Amazon/Razorpay/Groww/BrowserStack were validated live on 2026-11-14")
-    check({"uber", "adobe", "freshworks"} == configured, f"Uber/Adobe/Freshworks should remain awaiting validation, got {sorted(configured)}")
+    # 15 Nov: more sources were validated live and promoted (own-domain job URLs or an
+    # official feed, complete descriptions, full pagination). Sources with weaker
+    # evidence or no descriptions stay awaiting validation.
+    promoted_15_nov = {"adobe", "atlassian", "databricks", "rubrik", "okta", "mongodb", "toast", "stripe", "druva", "elastic"}
+    check(promoted_15_nov.issubset(active), f"Expected live-validated sources to be active: {sorted(promoted_15_nov - active)}")
+    held = {"uber", "salesforce", "servicenow", "swiggy", "freshworks", "zscaler", "gitlab", "twilio", "inmobi"}
+    check(held == configured, f"Weak-evidence sources must stay awaiting validation; got {sorted(configured)}")
+    check(not held & active, "No held source may be active")
+    supported = set(payload["supported_ats_connectors"])
     for item in companies:
         integration = item.get("integration", {})
+        provider = integration.get("provider")
+        if provider:
+            check(provider in supported, f"{item['id']} uses unsupported connector {provider!r}")
         if integration.get("status") == "active":
             check(integration.get("verified") is True and bool(integration.get("validated_at") or item["id"] in {"google", "nvidia", "cred", "meesho"}),
                   f"{item['id']} is active without verification evidence")
+            check(bool(provider and integration.get("settings")), f"{item['id']} is active without a working connector")
 
 
 def test_ashby_public_job_board_normalization_and_deduplication() -> None:

@@ -9,8 +9,10 @@ from app.collectors.smartrecruiters import SmartRecruitersCollector
 from app.collectors.workday import WorkdayCollector
 from app.collectors.amazon_jobs import AmazonJobsCollector
 from app.collectors.oracle_hcm import OracleHCMCollector
+from app.collectors.atlassian_careers import AtlassianCareersCollector
 
 __all__ = [
+    "AtlassianCareersCollector",
     "JobCollector",
     "GoogleCareersCollector",
     "GreenhouseCollector",

@@ -64,6 +64,7 @@ class WorkdayCollector(JobCollector):
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         offset = 0
+        known_total: int | None = None
         for _ in range(self.max_pages):
             response = self.session.post(
                 f"{self.api_root}/jobs",
@@ -91,11 +92,16 @@ class WorkdayCollector(JobCollector):
                     else:
                         job["_jobpilot_detail_fetch_status"] = "failed"
                 results.append(job)
-            total = payload.get("total")
+            # Workday reports `total` only on the first page (0 on later pages,
+            # verified live against Adobe: 246, then 0, 0). Remember the first
+            # positive value, otherwise `offset >= total` stops after two pages.
+            page_total = payload.get("total")
+            if isinstance(page_total, int) and page_total > 0:
+                known_total = page_total
             offset += len(postings)
             if not postings or len(postings) < self.page_size:
                 break
-            if isinstance(total, int) and offset >= total:
+            if known_total is not None and offset >= known_total:
                 break
         return results
 

@@ -117,7 +117,65 @@ def test_amazon_band_filter_still_available_when_requested() -> None:
           "An explicitly requested band must use the array parameter that the server honours")
 
 
+def test_workday_paginates_past_two_pages_when_total_only_on_first_page() -> None:
+    """Live Workday returns `total` on the first page only (Adobe: 246, 0, 0, ...)."""
+    from app.collectors.workday import WorkdayCollector
+
+    def page(start: int, count: int, total: int) -> FakeResponse:
+        return FakeResponse({"total": total, "jobPostings": [
+            {"title": f"Software Engineer {n}", "externalPath": f"/job/IN/Software-Engineer-{n}_R{n}",
+             "jobReqId": f"R{n}", "locationsText": "India, Bengaluru"} for n in range(start, start + count)]})
+
+    collector = WorkdayCollector(tenant="t", site="s", company_name="T", host="https://t.wd5.myworkdayjobs.com",
+                                 page_size=20, max_pages=25, fetch_details=False)
+    pages = [page(0, 20, 50), page(20, 20, 0), page(40, 10, 0)]
+    with patch.object(collector.session, "post", side_effect=pages) as post:
+        jobs = collector.collect()
+    check(len(jobs) == 50, f"All 50 jobs must be collected across three pages, got {len(jobs)}")
+    check(post.call_count == 3, f"Expected 3 page requests, got {post.call_count}")
+
+    # When the pages exactly fill the reported total, no extra empty page is requested.
+    exact = WorkdayCollector(tenant="t", site="s", company_name="T", host="https://t.wd5.myworkdayjobs.com",
+                             page_size=20, max_pages=25, fetch_details=False)
+    with patch.object(exact.session, "post", side_effect=[page(0, 20, 40), page(20, 20, 0), page(40, 20, 0)]) as post2:
+        jobs2 = exact.collect()
+    check(len(jobs2) == 40 and post2.call_count == 2, f"Must stop at the first-page total; got {len(jobs2)} jobs / {post2.call_count} calls")
+
+
+def test_atlassian_listing_normalization() -> None:
+    """Shape copied from the live feed (https://www.atlassian.com/endpoint/careers/listings)."""
+    from app.collectors.atlassian_careers import AtlassianCareersCollector
+
+    row = {
+        "id": 27589, "portalId": 242, "title": "Data Platform Engineer", "type": "Full-Time", "category": "Engineering",
+        "locations": ["Bengaluru - India -   Bengaluru,  560071 India", "Remote - Remote", "Remote - Remote"],
+        "overview": "<p><strong>Working at Atlassian</strong></p><p>Long boilerplate.</p>",
+        "responsibilities": "<ul><li><p>Build the data platform.</p></li></ul>",
+        "qualifications": "<ul><li><p>1+ years in software engineering.</p></li></ul>",
+        "applyUrl": "https://careers-apac-atlassian.icims.com/jobs/27589/data-platform-engineer/job?mode=apply",
+        "portalJobPost": {"portalUrl": "https://careers-apac-atlassian.icims.com/jobs/27589/data-platform-engineer/job",
+                          "updatedDate": "2026-10-29 12:41 PM"},
+    }
+    duplicate = dict(row)  # the live feed repeats ids
+    no_title = {"id": 5, "title": "", "applyUrl": "https://x"}
+    collector = AtlassianCareersCollector()
+    with patch.object(collector.session, "get", return_value=FakeResponse([row, duplicate, no_title, "junk"])) as get:
+        jobs = collector.collect()
+    check(get.call_count == 1, "Atlassian needs exactly one request, no per-job detail requests")
+    check(len(jobs) == 1, f"Duplicate ids and unusable rows must be dropped, got {len(jobs)}")
+    job = jobs[0]
+    check(job["external_id"] == "27589" and job["source"] == "atlassian_careers", "id/source")
+    check(job["url"].endswith("/job") and "mode=apply" not in job["url"], "Use the job page URL, not the apply-mode URL")
+    check(job["location"] == ["Bengaluru - India - Bengaluru, 560071 India", "Remote - Remote"], f"locations cleaned: {job['location']}")
+    check(job["description"].startswith("Qualifications:") and "1+ years" in job["description"], "Qualifications must come first")
+    check(job["posted_at"] is None, "Do not invent a posting date from the updated timestamp")
+    from app.services.target_role_policy import is_india_or_remote_eligible
+    check(is_india_or_remote_eligible(job)[0], "Bengaluru entry must make the job India-eligible")
+
+
 TESTS = [
+    ("Atlassian feed normalization", test_atlassian_listing_normalization),
+    ("Workday paginates beyond two pages", test_workday_paginates_past_two_pages_when_total_only_on_first_page),
     ("Oracle country filter applied client-side", test_oracle_country_filter_is_applied_client_side),
     ("Oracle detail fetch bounded and fault tolerant", test_oracle_detail_fetch_is_bounded_and_fault_tolerant),
     ("Amazon default search uses working country filter", test_amazon_uses_working_country_filter_and_no_band_by_default),

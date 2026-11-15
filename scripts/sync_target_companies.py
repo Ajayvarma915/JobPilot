@@ -17,6 +17,7 @@ from app.collectors.smartrecruiters import SmartRecruitersCollector
 from app.collectors.workday import WorkdayCollector
 from app.collectors.amazon_jobs import AmazonJobsCollector
 from app.collectors.oracle_hcm import OracleHCMCollector
+from app.collectors.atlassian_careers import AtlassianCareersCollector
 from app.db.database import SessionLocal
 from app.db.job_repository import JobRepository
 from app.services.target_role_policy import (
@@ -72,11 +73,14 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
     companies = payload.get("companies")
-    if not isinstance(companies, list) or len(companies) != 30:
-        raise ValueError("target_companies.json must contain exactly 30 companies")
+    if not isinstance(companies, list) or len(companies) < 30:
+        raise ValueError("target_companies.json must contain at least the original 30 companies")
     ids = [item.get("id") for item in companies]
     if len(ids) != len(set(ids)):
         raise ValueError("Target company IDs must be unique")
+    names = [str(item.get("name") or "").casefold() for item in companies]
+    if len(names) != len(set(names)):
+        raise ValueError("Target company names must be unique")
     return payload
 
 
@@ -213,6 +217,8 @@ def _make_collector(company: dict[str, Any]) -> Any:
             fetch_details=bool(settings.get("fetch_details", False)),
             max_detail_fetch=int(settings.get("max_detail_fetch", 100)),
         )
+    if provider == "atlassian_careers":
+        return AtlassianCareersCollector(company_name=name)
     if provider == "amazon_jobs":
         return AmazonJobsCollector(
             company_name=name,

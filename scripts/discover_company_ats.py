@@ -19,8 +19,8 @@ def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
     companies = payload.get("companies")
     if not isinstance(companies, list):
         raise ValueError("target_companies.json must contain a companies array")
-    if len(companies) != 30:
-        raise ValueError(f"Expected exactly 30 target companies, found {len(companies)}")
+    if len(companies) < 30:
+        raise ValueError(f"Expected at least the original 30 target companies, found {len(companies)}")
     return payload
 
 

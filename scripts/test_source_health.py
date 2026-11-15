@@ -196,7 +196,32 @@ def test_sync_records_health_safely() -> None:
         session.close()
 
 
+def test_sync_accepts_grown_registry_and_rejects_bad_ones() -> None:
+    import json
+
+    registry = sync_module.load_registry()
+    check(len(registry["companies"]) >= 30, "The real registry must load (it is no longer capped at exactly 30)")
+
+    base = [_company(f"c{i}", status="active", verified=True) for i in range(30)]
+    for bad, message in (
+        (base[:29], "Fewer than the original 30 must be rejected"),
+        (base + [dict(base[0])], "Duplicate company ids must be rejected"),
+        (base + [{**base[0], "id": "other"}], "Duplicate company names must be rejected"),
+    ):
+        path = Path(_TEMP_DIR.name) / "bad_registry.json"
+        path.write_text(json.dumps({"companies": bad}), encoding="utf-8")
+        try:
+            sync_module.load_registry(path)
+        except ValueError:
+            continue
+        raise AssertionError(message)
+    path = Path(_TEMP_DIR.name) / "grown_registry.json"
+    path.write_text(json.dumps({"companies": base + [_company("extra", status="active", verified=True)]}), encoding="utf-8")
+    check(len(sync_module.load_registry(path)["companies"]) == 31, "A registry larger than 30 must load")
+
+
 TESTS = [
+    ("Sync accepts a grown registry, rejects invalid ones", test_sync_accepts_grown_registry_and_rejects_bad_ones),
     ("Registry entries map to explicit states", test_registry_state_mapping),
     ("Real registry has valid, never-overtrusted states", test_real_registry_has_valid_states),
     ("Effective state only downgrades", test_effective_state_only_downgrades),
