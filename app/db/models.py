@@ -214,3 +214,89 @@ class JobVersion(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False)
     employment_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AiCacheEntry(Base):
+    """Validated result of one local-AI task, kept so the same question is not asked twice.
+
+    Only the validated, structured result is stored (never the prompt or the raw model
+    output). The key hashes the task, prompt version, provider, model and the caller's inputs,
+    so changing any of them produces a fresh answer.
+    """
+
+    __tablename__ = "ai_cache"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    prompt_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model: Mapped[str] = mapped_column(String(100), nullable=False)
+    result_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class ResumeVersion(Base):
+    """One generated tailored resume, kept so versions can be listed per job and re-opened.
+
+    Only metadata, the transparency report and the check results are stored; the files
+    themselves live in data/generated_resumes. The master resume is never touched.
+    """
+
+    __tablename__ = "resume_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    job_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    docx_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    pdf_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    audit_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    evidence_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    report_json: Mapped[str] = mapped_column(Text, nullable=False)
+    evaluation_json: Mapped[str] = mapped_column(Text, nullable=False)
+    fabrication_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False, index=True)
+
+
+class CoverLetterVersion(Base):
+    """A cover letter draft. Edits never overwrite: each edit is a new version."""
+
+    __tablename__ = "cover_letter_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    version_no: Mapped[int] = mapped_column(nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # template | user_edit
+    based_on_version_id: Mapped[int | None] = mapped_column(nullable=True)
+    job_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    facts_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    saved_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False, index=True)
+
+
+class EmployerAnswer(Base):
+    """A reusable answer to a common employer question, built only from verified facts.
+
+    status: needs_input (a fact is missing or a placeholder remains), draft, or approved.
+    Sensitive (salary, work authorization) and company-specific answers can only be approved
+    with an explicit confirmation from the user.
+    """
+
+    __tablename__ = "employer_answers"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    question_key: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    sensitive: Mapped[bool] = mapped_column(default=False, nullable=False)
+    company_specific: Mapped[bool] = mapped_column(default=False, nullable=False)
+    job_id: Mapped[int | None] = mapped_column(nullable=True, index=True)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    facts_used: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)

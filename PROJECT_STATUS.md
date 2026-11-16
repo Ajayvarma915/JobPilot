@@ -150,6 +150,37 @@ Full offline suite after all of the above (sandbox copy): **41 passed, 0 failed,
 
 **Registry:** 40 companies, **19 active**, 8 awaiting validation, 13 discovered. Real `jobpilot.db` hash unchanged throughout; all live work used throwaway copies.
 
+## Session 9 (16 Nov): work planned for 21-25 Nov
+**AI layer (21 Nov)** - `app/ai/providers.py`, `runner.py`, `fit_analysis.py`
+- Provider interface; default is local Ollama (`gemma3:4b`); `JOBPILOT_AI_PROVIDER=none` turns AI off; no external provider exists unless one is explicitly registered **and** selected. Selection errors degrade to the rule-based result.
+- `run_structured`: retries transient failures with exponential backoff (3 attempts), one retry on unusable output, a missing model is not retried; results cached in `ai_cache` keyed on task + prompt version + provider + model + inputs (only the validated result is stored); logging records metadata only (task, version, model, sizes, duration), never prompt or answer text.
+- `POST /api/jobs/{id}/ai-fit`: candidate-vs-job analysis (matched/missing skills, experience fit, strengths, weaknesses, risks, preparation, recommendation). Skills the model lists must be in the job text, matched ones must be in the profile, missing ones must not be; the rule-based score is the score shown; the model can never turn an excluded job into "apply". Works without a model (source `deterministic`). `GET /api/ai/status` reports the selected provider.
+- **Verified live against your local Ollama** (`gemma3:4b`, throwaway DB copy): validated output, the rules overriding the model's "apply now" with a note, and a cached second call. The first call took 3m43s on this machine (cold model on CPU), longer than the default 180 s timeout: set `JOBPILOT_OLLAMA_TIMEOUT=400` if you see "unavailable" on the first request.
+
+**Opportunity intelligence (22 Nov)** - `app/services/opportunities.py`, `GET /api/recommendations`, `views/RecommendedView.tsx`
+- Next action (apply now / review first / prepare missing skills / skip) from the rule-based match and eligibility only; the opportunity score (fit 60, freshness 15, company priority 15, disclosed pay 10) ranks viable jobs; undisclosed pay is neutral; a skipped job can never rank above a viable one. Application deadlines and competition are not modelled (not collected) and the response says so.
+- Skill-gap report counts required skills missing across the jobs worth pursuing, states the sample size (flags samples under 10), and gives learning steps that never tell you to claim a skill you have not used. Sorts: opportunity, score, newest, company, location, experience, salary. UI includes the 2-4 job comparison table. On your real stored jobs: 6 candidates (4 prepare-missing-skills, 2 review-first).
+
+**Resume Studio (23 Nov)** - `app/resume/tailoring_report.py`, `resume_versions` table, `GET /api/resume-versions[/{id}]`, `views/ResumeVersionsPanel.tsx`
+- Each generated resume is stored as a version (linked to a job via the optional `job_id`) with a tailoring report: original details reused, keywords aligned, what was selected and ordered, required skills covered / awaiting your review / no evidence, items needing review, and an explicit "master resume unchanged" note. DOCX and PDF downloads work from the list.
+- New fail-closed check: every bullet in the finished DOCX must be text of verified evidence; otherwise the files are deleted, nothing is stored and the request returns 422.
+- **Bug fixed:** resume filenames had only second-level resolution, so two generations in the same second shared a name and cleaning up a refused one deleted the good one's files. Names now carry a random suffix (regression test added).
+
+**Cover letters and answers (24 Nov)** - `app/applications/{cover_letters,answers,profile_facts}.py`, endpoints under `/api/cover-letters` and `/api/answers`, `views/DocumentsView.tsx`
+- Cover letters are a deterministic template (no model, so nothing can be invented) using the job, your profile facts as you wrote them, skills backed by verified evidence, and the first sentence of verified projects; unsupported skills are listed as "not claimed". Edits create new versions; DOCX and PDF export; "save file" lets you attach one to an application.
+- Answer library: drafts for salary, notice period, work authorization, technology experience, challenging project, why-company/why-role. Missing facts are reported, never invented; "why this company" is a scaffold with a placeholder; placeholders block approval; salary, work authorization and company-specific answers need an explicit confirmation; editing withdraws an approval; reusable = approved and not tied to a job.
+- Not done: AI polishing of letters (deliberately skipped: it would reintroduce the risk of invented claims), and the browser extension does not read the approved answers yet.
+
+**Application workspace (25 Nov)** - `app/applications/tracker.py`
+- Verified (tests added, `scripts/test_application_lifecycle.py`): one tracker entry per job, `ready_to_apply` requires the readiness checklist and never sets `applied_at`, only the applied status sets it (and later statuses keep it), removing an entry never deletes the job.
+- New: `application_status_history` written by database triggers, so every change is recorded whichever path makes it (tracker API, extension confirmation, email approval); existing applications get a starting row; `GET /api/applications/{id}/history`. Saved cover letters are kept out of the resume dropdown.
+- Not done: archive (only delete exists), the extra statuses from the brief (shortlisted, reviewing, on hold; the existing nine are unchanged so the extension and UI keep working), a history view in the Applications UI.
+
+**Verification and limits**
+- Backend: the full offline suite ran 45/46 runnable scripts green; the one failure was the filename bug above, now fixed (the nine new/changed test scripts were re-run green in the sandbox). The whole suite was **not** re-run end to end after that last fix. Frontend `tsc`, lint and build are clean.
+- **The new screens (Recommended, Cover letters & answers, Resume versions panel) were NOT verified in a browser**: the in-app browser pane was hidden in this session, so clicks had no effect. The endpoints they call were tested.
+- 26 Nov (Chrome extension adapters) was not started.
+
 ## Known risks / debt
 - Role-filter logic exists in two places (`target_role_policy.py` and `app/api/main.py`); that duplication is what allowed this regression. Centralise next.
 - No schema migrations; tracker and Gmail tables are managed with raw SQL separately from SQLAlchemy models.

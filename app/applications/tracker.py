@@ -447,6 +447,58 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
         """
     )
 
+    # Status history is written by triggers so every change is recorded no matter which
+    # code path makes it (tracker API, extension confirmation, email review approval).
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS application_status_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            application_id INTEGER NOT NULL,
+            from_status TEXT,
+            to_status TEXT NOT NULL,
+            changed_at TEXT NOT NULL,
+            FOREIGN KEY(application_id)
+                REFERENCES applications(id)
+                ON DELETE CASCADE
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_status_history_application
+        ON application_status_history(application_id, id)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_application_status_insert
+        AFTER INSERT ON applications
+        BEGIN
+            INSERT INTO application_status_history (application_id, from_status, to_status, changed_at)
+            VALUES (NEW.id, NULL, NEW.status, NEW.created_at);
+        END
+        """
+    )
+    connection.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_application_status_update
+        AFTER UPDATE OF status ON applications
+        WHEN OLD.status <> NEW.status
+        BEGIN
+            INSERT INTO application_status_history (application_id, from_status, to_status, changed_at)
+            VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'));
+        END
+        """
+    )
+    # Applications that existed before history tracking get one starting row.
+    connection.execute(
+        """
+        INSERT INTO application_status_history (application_id, from_status, to_status, changed_at)
+        SELECT id, NULL, status, created_at FROM applications
+        WHERE id NOT IN (SELECT application_id FROM application_status_history)
+        """
+    )
+
     connection.commit()
 
 
@@ -806,6 +858,8 @@ def _available_resume_files() -> list[dict[str, Any]]:
     for path in GENERATED_RESUMES_DIR.iterdir():
         if not path.is_file() or path.suffix.lower() not in {".pdf", ".docx"}:
             continue
+        if path.name.startswith("CoverLetter_"):
+            continue  # saved cover letters share this folder but are not resumes
         try:
             modified_at = datetime.fromtimestamp(
                 path.stat().st_mtime,
@@ -1956,6 +2010,27 @@ def update_application(
         )
 
     return result
+
+
+@router.get("/{application_id}/history")
+def get_application_status_history(
+    application_id: int = ApiPath(ge=1),
+    connection: sqlite3.Connection = Depends(get_application_db),
+) -> dict[str, Any]:
+    """Every status this application has had, oldest first (the first row is its creation)."""
+    if connection.execute("SELECT 1 FROM applications WHERE id = ?", (application_id,)).fetchone() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Application {application_id} was not found.")
+    rows = connection.execute(
+        "SELECT from_status, to_status, changed_at FROM application_status_history WHERE application_id = ? ORDER BY id",
+        (application_id,),
+    ).fetchall()
+    return {
+        "application_id": application_id,
+        "items": [
+            {"from_status": row["from_status"], "to_status": row["to_status"], "changed_at": row["changed_at"]}
+            for row in rows
+        ],
+    }
 
 
 @router.delete("/{application_id}")

@@ -13,6 +13,9 @@ Ordered by impact. Core discovery and application pipeline first; advanced intel
 5. **Discover connectors for the unmapped companies / add companies** — partly done 15 Nov: 6 of the 19 mapped, 10 companies added, registry at 40, 18 active. Remaining: 13 unmapped (Microsoft connector for its `apply.careers.microsoft.com` API is the most promising), 10 more evidence-backed companies to reach 50 (do not pad), confirm ownership for Uber/Zscaler/GitLab/Twilio/InMobi, re-run NVIDIA after the Workday pagination fix.
 6. ~~Company coverage dashboard~~ — done 15 Nov (`views/CoverageView.tsx`). 17-20 Nov work (frontend split, job versions/change detection, FAST/FULL, SmartRecruiters enrichment, scheduled sync and summary, configurable weights, eligibility cap, job comparison API) is described in PROJECT_STATUS.md Session 8. Still open: URL routing, sync-summary and comparison UIs, a shared location module.
 
+## Progress note (16 Nov)
+Done since the last note: AI provider layer + fit analysis, opportunity scoring/recommendations/skill gaps, resume versions with tailoring report and fail-closed fabrication check, cover letters, answer library, application status history (details in PROJECT_STATUS.md Session 9). Next: Chrome extension adapters (26 Nov), Gmail lifecycle hardening, analytics/CRM/interview prep, auth/migrations/deployment, docs.
+
 ## Phase 2 — Matching and AI
 Config-driven score weights, validated on real jobs; skill-gap view from actual opportunity data; Ollama provider abstraction with health check, timeouts, schema validation and prompt versioning; keep deterministic filtering authoritative.
 

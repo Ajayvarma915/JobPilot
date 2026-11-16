@@ -1,4 +1,4 @@
-export type Screen = "overview" | "jobs" | "applications" | "resume" | "email" | "coverage";
+export type Screen = "overview" | "jobs" | "recommended" | "applications" | "documents" | "resume" | "email" | "coverage";
 export type ApiStatus = "checking" | "connected" | "offline";
 export type CareerLevelFilter = "early" | "all";
 export type RoleScopeFilter = "software_engineering" | "all";
@@ -370,5 +370,69 @@ export interface SourceHealthResponse {
     by_state: Record<string, number>;
     auto_sync_allowed: number;
     never_fetched: number;
+  };
+}
+
+export interface RecommendationItem {
+  id: number;
+  title: string;
+  company: string;
+  location: string | null;
+  url: string;
+  posted_at: string | null;
+  first_seen_at: string | null;
+  match_score: number | null;
+  match_recommendation: string | null;
+  required_years: number | null;
+  missing_required_skills: string[];
+  matched_required_skills: string[];
+  mismatches: Record<string, string[]>;
+  opportunity_score: number;
+  action: "apply_now" | "review_first" | "prepare_missing_skills" | "skip";
+  action_label: string;
+  reasons: string[];
+  signals: string[];
+  components: Record<string, number>;
+  compensation: { status: string; min_lpa: number | null; max_lpa: number | null };
+}
+
+export interface SkillGapReport {
+  jobs_considered: number;
+  small_sample: boolean;
+  note: string;
+  gaps: Array<{ skill: string; jobs_requiring: number; share_of_jobs: number; example_titles: string[]; companies: string[] }>;
+  learning_plan: Array<{ skill: string; step: string }>;
+}
+
+export interface RecommendationResponse {
+  items: RecommendationItem[];
+  sort: string;
+  summary: { considered: number; by_action: Record<string, number>; shown: number };
+  skill_gap: SkillGapReport;
+}
+
+export interface ComparisonRow {
+  id: number;
+  title: string | null;
+  company: string | null;
+  location: string | null;
+  url: string | null;
+  score: number | null;
+  recommendation: string | null;
+  required_years: number | null;
+  blockers: string[];
+  experience_mismatch: string[];
+  location_mismatch: string[];
+  preferred_missing: string[];
+}
+
+export interface ComparisonResponse {
+  jobs: ComparisonRow[];
+  highlights: {
+    best_overall_job_id: number | null;
+    best_overall_score: number | null;
+    skill_matrix: Array<{ skill: string; jobs: Record<string, string>; required_by: number; covered_by_profile: number }>;
+    skills_missing_everywhere: string[];
+    jobs_with_blockers: number[];
   };
 }

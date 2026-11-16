@@ -1,3 +1,4 @@
+import { ResumeVersionsPanel } from "./ResumeVersionsPanel";
 import { type FormEvent } from "react";
 import { ArrowRight, CheckCircle2, Download, FileCheck2, FileText, Gauge, LoaderCircle, ShieldCheck, Target, WandSparkles } from "lucide-react";
 import { EmptyState, SectionHeading } from "../components";
@@ -449,6 +450,8 @@ export function ResumeView({
           </div>
         </div>
       </div>
+
+      <ResumeVersionsPanel refreshKey={generated?.resume_filename ?? null} />
     </div>
   );
 }

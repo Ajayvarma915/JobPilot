@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Building2, ClipboardList, FileCheck2, LayoutDashboard, Mail, type LucideIcon } from "lucide-react";
+import { BriefcaseBusiness, Building2, FileText, Target, ClipboardList, FileCheck2, LayoutDashboard, Mail, type LucideIcon } from "lucide-react";
 import { type Screen } from "./types";
 
 export const NAV_ITEMS: Array<{
@@ -20,10 +20,22 @@ export const NAV_ITEMS: Array<{
     icon: BriefcaseBusiness,
   },
   {
+    id: "recommended",
+    label: "Recommended",
+    description: "Best next actions",
+    icon: Target,
+  },
+  {
     id: "applications",
     label: "Applications",
     description: "Track your pipeline",
     icon: ClipboardList,
+  },
+  {
+    id: "documents",
+    label: "Cover letters & answers",
+    description: "Honest application writing",
+    icon: FileText,
   },
   {
     id: "resume",

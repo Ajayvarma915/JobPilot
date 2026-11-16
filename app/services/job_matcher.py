@@ -681,6 +681,10 @@ class JobMatcher:
             reverse=True,
         )
 
+    def candidate_skill_set(self) -> set[str]:
+        """Public view of the profile's skills (canonical, lower case) for other modules."""
+        return set(self._candidate_skills())
+
     def _candidate_skills(self) -> set[str]:
         """
         Collect skills from the candidate profile.

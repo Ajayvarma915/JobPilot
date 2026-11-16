@@ -8,6 +8,8 @@ import { NAV_ITEMS } from "./nav";
 import { type ApiStatus, type ApplicationListResponse, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type CompanyDirectoryResponse, type CompanyOption, type DashboardStats, type EvidenceSelection, type EvidenceSummary, type FilterOption, type GeneratedResume, type Job, type JobFilters, type JobListResponse, type JobSuggestionResponse, type JobTitleSuggestion, type LocationDirectoryResponse, type LocationOption, type Screen, type TrackedApplication } from "./types";
 import { ApplicationsView } from "./views/ApplicationsView";
 import { CoverageView } from "./views/CoverageView";
+import { RecommendedView } from "./views/RecommendedView";
+import { DocumentsView } from "./views/DocumentsView";
 import { EmailIntelligenceView, type ApplicationEmailEvent, type EmailConnectionStatus, type EmailEventListResponse, type EmailReviewFilter, type EmailSyncResult } from "./views/EmailIntelligenceView";
 import { JobsView } from "./views/JobsView";
 import { OverviewView } from "./views/OverviewView";
@@ -977,6 +979,10 @@ function App() {
 
 
                 {screen === "coverage" && <CoverageView />}
+
+                {screen === "recommended" && <RecommendedView />}
+
+                {screen === "documents" && <DocumentsView />}
 
                 {screen === "email" && (
                   <EmailIntelligenceView
