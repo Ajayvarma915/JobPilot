@@ -285,6 +285,8 @@ def test_live_sync_writes_only_fully_eligible_jobs() -> None:
     class FakeRepository:
         def __init__(self):
             self.upserted_titles = []
+            self.review_flags = {}
+            self.cleared = 0
 
         def get_or_create_company(self, **kwargs):
             return {"name": kwargs["name"]}
@@ -298,7 +300,13 @@ def test_live_sync_writes_only_fully_eligible_jobs() -> None:
         def upsert_job_detailed(self, company, job_data):
             from types import SimpleNamespace
             self.upserted_titles.append(job_data["title"])
-            return SimpleNamespace(status="created", job=object(), changed_fields=[])
+            return SimpleNamespace(status="created", job=SimpleNamespace(title=job_data["title"]), changed_fields=[])
+
+        def set_review(self, job, flags):
+            self.review_flags[job.title] = list(flags)
+
+        def clear_pending_review(self, job):
+            self.cleared += 1
 
         def get_company(self, name):
             return None  # nothing stored yet, so there is nothing to remove
@@ -339,11 +347,19 @@ def test_live_sync_writes_only_fully_eligible_jobs() -> None:
     check(result.eligible == 2, "Both rows should pass the initial role/location screen.")
     check(result.auto_sync_eligible == 1, "Only one row should be auto-sync eligible.")
     check(result.review_required == 1, "One row should remain pending manual review.")
-    check(result.inserted == 1, "Only the fully eligible job should be inserted.")
+    # Behaviour change (deliberate): review-pending jobs used to be dropped silently, which hid most
+    # of Amazon's entry-level postings. They are now stored, but flagged so they stay out of the
+    # normal job list until the user accepts them.
+    check(result.inserted == 2 and result.stored_for_review == 1, "Both jobs are stored; one of them is held for review.")
     check(
-        fake_repo.upserted_titles == ["Backend Engineer"],
-        f"Review-pending jobs must not be written, got {fake_repo.upserted_titles!r}.",
+        fake_repo.upserted_titles == ["Backend Engineer", "Cloud AI Engineer (English)"],
+        f"Unexpected stored jobs {fake_repo.upserted_titles!r}.",
     )
+    check(
+        list(fake_repo.review_flags) == ["Cloud AI Engineer (English)"] and fake_repo.review_flags["Cloud AI Engineer (English)"],
+        f"Only the ambiguous job is flagged, with its reasons: {fake_repo.review_flags!r}.",
+    )
+    check(fake_repo.cleared == 1, "The fully eligible job clears any old pending review.")
     check(fake_db.committed and fake_db.closed, "The successful safe upsert should commit and close the fake DB.")
 
 

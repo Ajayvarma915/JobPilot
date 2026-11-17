@@ -5,7 +5,7 @@ import { Brand, StatusPill } from "./components";
 import { API_BASE } from "./config";
 import { apiRequest, errorText, formatNumber, makeResumeRequest } from "./lib";
 import { NAV_ITEMS } from "./nav";
-import { type ApiStatus, type ApplicationListResponse, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type CompanyDirectoryResponse, type CompanyOption, type DashboardStats, type EvidenceSelection, type EvidenceSummary, type FilterOption, type GeneratedResume, type Job, type JobFilters, type JobListResponse, type JobSuggestionResponse, type JobTitleSuggestion, type LocationDirectoryResponse, type LocationOption, type Screen, type TrackedApplication } from "./types";
+import { type ApiStatus, type ApplicationListResponse, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type CompanyDirectoryResponse, type CompanyOption, type DashboardStats, type EvidenceSelection, type EvidenceSummary, type FilterOption, type GeneratedResume, type Job, type JobFilters, type JobListResponse, type JobSuggestionResponse, type JobTitleSuggestion, type LocationDirectoryResponse, type LocationOption, type ReviewScope, type Screen, type TrackedApplication } from "./types";
 import { ApplicationsView } from "./views/ApplicationsView";
 import { CoverageView } from "./views/CoverageView";
 import { RecommendedView } from "./views/RecommendedView";
@@ -70,6 +70,7 @@ function App() {
     career_level: "early",
     role_scope: "software_engineering",
     compensation_filter: "target_or_unknown",
+    review_scope: "main",
   });
 
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
@@ -79,12 +80,16 @@ function App() {
     career_level: "early",
     role_scope: "software_engineering",
     compensation_filter: "target_or_unknown",
+    review_scope: "main",
   });
 
   const [jobTitle, setJobTitle] = useState("");
   const [jobDescription, setJobDescription] = useState("");
   const [requiredSkills, setRequiredSkills] = useState("");
   const [preferredSkills, setPreferredSkills] = useState("");
+  const [resumeJobId, setResumeJobId] = useState<number | null>(null);
+  const [confirmedSkills, setConfirmedSkills] = useState<string[]>([]);
+  const [reviewIncluded, setReviewIncluded] = useState<string[]>([]);
 
   const [selection, setSelection] = useState<EvidenceSelection | null>(null);
   const [selectionLoading, setSelectionLoading] = useState(false);
@@ -147,6 +152,7 @@ function App() {
         career_level: appliedFilters.career_level,
         role_scope: appliedFilters.role_scope,
         compensation_filter: appliedFilters.compensation_filter,
+        review_scope: appliedFilters.review_scope,
       });
 
       if (appliedQuery) params.set("q", appliedQuery);
@@ -403,18 +409,57 @@ function App() {
     setMobileNavOpen(false);
   };
 
+  // Asks the API which of the job's skills are backed by your verified evidence.
+  const runEvidenceSelection = async (title: string, description: string, required: string, preferred: string) => {
+    setSelectionLoading(true);
+    setSelectionError(null);
+    setGenerationError(null);
+    setGenerated(null);
+    setConfirmedSkills([]);
+    setReviewIncluded([]);
+
+    try {
+      const result = await apiRequest<EvidenceSelection>("/api/evidence/select", {
+        method: "POST",
+        body: JSON.stringify(makeResumeRequest(title, description, required, preferred)),
+      });
+      setSelection(result);
+    } catch (error) {
+      setSelection(null);
+      setSelectionError(errorText(error));
+    } finally {
+      setSelectionLoading(false);
+    }
+  };
+
   const openResumeForJob = (job: Job) => {
+    // Read the job's own required and preferred skills instead of asking you to type them.
+    const required = (job.match?.required_skills ?? []).join(", ");
+    const preferred = (job.match?.preferred_skills ?? []).join(", ");
+    const description = job.description || "";
     setJobTitle(job.title);
-    setJobDescription(job.description || "");
-    setRequiredSkills("");
-    setPreferredSkills("");
+    setJobDescription(description);
+    setRequiredSkills(required);
+    setPreferredSkills(preferred);
+    setResumeJobId(job.id);
     setSelection(null);
     setSelectionError(null);
     setGenerated(null);
     setGenerationError(null);
+    setConfirmedSkills([]);
+    setReviewIncluded([]);
     setScreen("resume");
     setMobileNavOpen(false);
+    if (description.trim().length >= 20) {
+      void runEvidenceSelection(job.title, description, required, preferred);
+    }
   };
+
+  const toggleConfirmedSkill = (skill: string) =>
+    setConfirmedSkills((current) => (current.includes(skill) ? current.filter((item) => item !== skill) : [...current, skill]));
+
+  const toggleReviewEvidence = (evidenceId: string) =>
+    setReviewIncluded((current) => (current.includes(evidenceId) ? current.filter((item) => item !== evidenceId) : [...current, evidenceId]));
 
   const handleTailorTrackedJob = async (jobId: number) => {
     try {
@@ -436,8 +481,25 @@ function App() {
       career_level: filterDraft.career_level,
       role_scope: filterDraft.role_scope,
       compensation_filter: filterDraft.compensation_filter,
+      review_scope: filterDraft.review_scope,
     });
     setSuggestionsOpen(false);
+  };
+
+  const switchReviewScope = (scope: ReviewScope) => {
+    setJobsPage(0);
+    setFilterDraft((current) => ({ ...current, review_scope: scope }));
+    setAppliedFilters((current) => ({ ...current, review_scope: scope }));
+  };
+
+  const decideReview = async (jobId: number, decision: "accept" | "dismiss" | "reset") => {
+    setJobsError(null);
+    try {
+      await apiRequest(`/api/jobs/${jobId}/review-decision`, { method: "POST", body: JSON.stringify({ decision }) });
+      await loadJobs();
+    } catch (error) {
+      setJobsError(errorText(error));
+    }
   };
 
   const selectSuggestedTitle = (suggestion: JobTitleSuggestion) => {
@@ -448,6 +510,7 @@ function App() {
       career_level: filterDraft.career_level,
       role_scope: filterDraft.role_scope,
       compensation_filter: filterDraft.compensation_filter,
+      review_scope: filterDraft.review_scope,
     };
 
     // When the query matched a company name rather than the title, and the
@@ -554,34 +617,7 @@ function App() {
     event: FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
-    setSelectionLoading(true);
-    setSelectionError(null);
-    setGenerationError(null);
-    setGenerated(null);
-
-    try {
-      const result = await apiRequest<EvidenceSelection>(
-        "/api/evidence/select",
-        {
-          method: "POST",
-          body: JSON.stringify(
-            makeResumeRequest(
-              jobTitle,
-              jobDescription,
-              requiredSkills,
-              preferredSkills,
-            ),
-          ),
-        },
-      );
-
-      setSelection(result);
-    } catch (error) {
-      setSelection(null);
-      setSelectionError(errorText(error));
-    } finally {
-      setSelectionLoading(false);
-    }
+    await runEvidenceSelection(jobTitle, jobDescription, requiredSkills, preferredSkills);
   };
 
   const handleGenerateResume = async () => {
@@ -600,6 +636,7 @@ function App() {
               jobDescription,
               requiredSkills,
               preferredSkills,
+              { jobId: resumeJobId, confirmedSkills, includeReviewEvidenceIds: reviewIncluded },
             ),
           ),
         },
@@ -925,6 +962,9 @@ function App() {
                     locationOptions={locationFilterOptions}
                     sourceOptions={sourceOptions}
                     onApplyFilters={applyJobFilters}
+                    reviewScope={appliedFilters.review_scope}
+                    onReviewScope={switchReviewScope}
+                    onReviewDecision={decideReview}
                     onPrevious={handlePreviousPage}
                     onNext={handleNextPage}
                     onRefresh={() => {
@@ -970,6 +1010,10 @@ function App() {
                     selection={selection}
                     selectionLoading={selectionLoading}
                     selectionError={selectionError}
+                    confirmedSkills={confirmedSkills}
+                    onToggleSkill={toggleConfirmedSkill}
+                    reviewIncluded={reviewIncluded}
+                    onToggleReview={toggleReviewEvidence}
                     generated={generated}
                     generationLoading={generationLoading}
                     generationError={generationError}

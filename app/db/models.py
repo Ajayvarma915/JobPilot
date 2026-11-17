@@ -347,3 +347,20 @@ class InterviewPrepItem(Base):
     text: Mapped[str] = mapped_column(Text, nullable=False)
     done: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class JobReview(Base):
+    """A stored job that passed role and location rules but needs a human look.
+
+    status: pending (waiting for you), accepted (shown with the normal jobs) or dismissed (hidden).
+    flags: the review reasons from the eligibility check, separated by semicolons.
+    A decision you made is never overwritten by a later sync.
+    """
+
+    __tablename__ = "job_reviews"
+
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"), primary_key=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending", index=True)
+    flags: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(nullable=True)

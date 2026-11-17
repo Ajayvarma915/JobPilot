@@ -63,6 +63,7 @@ class SyncResult:
     updated: int = 0
     skipped: int = 0
     review_required: int = 0
+    stored_for_review: int = 0
     auto_sync_eligible: int = 0
     error: str | None = None
     # Health metrics (None = the connector did not report it).
@@ -610,9 +611,11 @@ def sync_company(
     if audit_rows is not None:
         audit_rows.extend(company_audits)
 
-    # Jobs that need human review remain in the CSV, but are never written to
-    # SQLite by the default live-sync path.
+    # Jobs that pass role and location but are ambiguous (for example the years of experience are
+    # not stated) are stored too, marked "needs review", so they are not silently lost. They stay out
+    # of the normal job list until you accept them. Only a verified, active source is ever written.
     eligible_jobs = []
+    review_jobs: list[tuple[dict[str, Any], list[str]]] = []
     for job, audit in zip(jobs, company_audits):
         if audit["final_eligible"]:
             result.eligible += 1
@@ -622,6 +625,10 @@ def sync_company(
                 eligible_jobs.append(job)
             else:
                 result.review_required += 1
+                if is_active:
+                    job["jobpilot_location_screen"] = audit["location_reason"]
+                    flags = [flag for flag in str(audit["review_flags"]).split(";") if flag]
+                    review_jobs.append((job, flags or ["needs_review"]))
         else:
             result.skipped += 1
 
@@ -632,7 +639,8 @@ def sync_company(
     db = SessionLocal()
     try:
         repository = JobRepository(db)
-        for record in eligible_jobs:
+        queued = [(record, None) for record in eligible_jobs] + review_jobs
+        for record, review_flags in queued:
             external_id = str(record.get("external_id") or "").strip()
             url = str(record.get("url") or "").strip()
             title = str(record.get("title") or "").strip()
@@ -650,6 +658,11 @@ def sync_company(
             # Internal audit metadata must never be sent to the ORM/repository.
             record.pop("_jobpilot_detail_fetch_status", None)
             outcome = repository.upsert_job_detailed(company=company_obj, job_data=record)
+            if review_flags is None:
+                repository.clear_pending_review(outcome.job)
+            else:
+                repository.set_review(outcome.job, review_flags)
+                result.stored_for_review += 1
             if outcome.status == "created":
                 result.inserted += 1
             elif outcome.status == "reactivated":

@@ -3,6 +3,7 @@ export type ApiStatus = "checking" | "connected" | "offline";
 export type CareerLevelFilter = "early" | "all";
 export type RoleScopeFilter = "software_engineering" | "all";
 export type CompensationFilter = "target_or_unknown" | "target_only" | "all";
+export type ReviewScope = "main" | "review" | "dismissed";
 
 export interface Company {
   id: number;
@@ -43,6 +44,15 @@ export interface JobFilters {
   career_level: CareerLevelFilter;
   role_scope: RoleScopeFilter;
   compensation_filter: CompensationFilter;
+  review_scope: ReviewScope;
+}
+
+// Why a stored job is waiting for your decision (only present on jobs the sync held for review).
+export interface JobReviewInfo {
+  status: "pending" | "accepted" | "dismissed";
+  flags: string[];
+  reasons: string[];
+  decided_at: string | null;
 }
 
 export interface JobMatch {
@@ -97,11 +107,13 @@ export interface Job {
   last_seen_at: string | null;
   is_active: boolean;
   match?: JobMatch;
+  review?: JobReviewInfo | null;
 }
 
 export interface DashboardStats {
   total_jobs: number;
   active_jobs: number;
+  needs_review_jobs?: number;
   inactive_jobs: number;
   total_companies: number;
   jobs_by_source: Array<{ source: string; count: number }>;
@@ -248,6 +260,10 @@ export interface EvidenceSelection {
     verified_covered: string[];
     awaiting_evidence_review: string[];
     not_found_in_evidence: string[];
+    preferred_skills?: number;
+    preferred_verified_covered?: string[];
+    preferred_awaiting_evidence_review?: string[];
+    preferred_not_found_in_evidence?: string[];
   };
   selected_evidence: SelectedEvidence[];
   review_queue: SelectedEvidence[];

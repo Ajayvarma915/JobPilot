@@ -153,9 +153,14 @@ class AmazonJobsCollector(JobCollector):
         else:
             locations = [str(location).strip()] if str(location).strip() else []
 
+        sections = (
+            ("description", ""),
+            ("basic_qualifications", "Basic qualifications:\n"),
+            ("preferred_qualifications", "Preferred qualifications:\n"),
+        )
         description = "\n".join(
-            str(raw.get(key) or "").strip()
-            for key in ("description", "basic_qualifications", "preferred_qualifications")
+            f"{heading}{str(raw.get(key) or '').strip()}"
+            for key, heading in sections
             if raw.get(key)
         )
         posted = str(raw.get("posted_date") or raw.get("postedDate") or "").strip() or None

@@ -160,7 +160,63 @@ def test_generate_persists_versions_and_fails_closed() -> None:
         api_main._select_evidence, api_main._load_evidence_store, api_main.GENERATED_RESUMES_DIR, api_main.build_tailored_resume = original
 
 
+def _docx_text(path: Path) -> str:
+    return "\n".join(p.text for p in Document(str(path)).paragraphs)
+
+
+def test_user_chooses_whether_to_include_unverified_skills() -> None:
+    job_id = _setup_job()
+    selection, store = _selection_and_store()
+    unverified = {"evidence_id": "unverified-1", "category": "project", "title": "Unverified project",
+                  "statement": "Built a TypeScript dashboard.", "source": {"file": "x", "section": "projects", "text": "Built a TypeScript dashboard."},
+                  "metadata": {}, "review": {"status": "needs_review", "user_verified": False}}
+    store["evidence"].append(unverified)
+    selection["review_queue"] = [{**unverified, "matched_required_skills": ["TypeScript"], "matched_preferred_skills": [], "score": 3,
+                                  "reason": ["relevant"], "user_verified": False}]
+    selection["signals"] = {"required_skills": ["React.js", "TypeScript", "Kubernetes"], "preferred_skills": ["GraphQL"], "inferred_job_technologies": []}
+    store_before = copy.deepcopy(store)
+
+    enriched = api_main._enrich_selection(copy.deepcopy(selection))["coverage"]
+    check(enriched["preferred_not_found_in_evidence"] == ["GraphQL"] and enriched["preferred_verified_covered"] == [], f"preferred coverage: {enriched}")
+
+    out_dir = Path(_TEMP_DIR.name) / "generated_choices"
+    original = (api_main._select_evidence, api_main._load_evidence_store, api_main.GENERATED_RESUMES_DIR)
+    api_main._select_evidence = lambda request: copy.deepcopy(selection)
+    api_main._load_evidence_store = lambda: store
+    api_main.GENERATED_RESUMES_DIR = out_dir
+    client = TestClient(api_main.app)
+    base = {"job_title": "Frontend Software Engineer", "job_description": "We need React.js, TypeScript, Kubernetes and GraphQL. " * 2,
+            "required_skills": ["React.js", "TypeScript", "Kubernetes"], "preferred_skills": ["GraphQL"], "job_id": job_id}
+    try:
+        plain = client.post("/api/resumes/generate", json=base)
+        check(plain.status_code == 201, plain.text)
+        plain_text = _docx_text(out_dir / plain.json()["resume_filename"])
+        check("Kubernetes" not in plain_text and "GraphQL" not in plain_text and "TypeScript dashboard" not in plain_text,
+              "nothing unverified is included unless the user chooses it")
+        check(plain.json()["report"]["added_by_you"] == [], "nothing is labelled as added by the user")
+
+        chosen = client.post("/api/resumes/generate", json={**base, "confirmed_skills": ["Kubernetes", "GraphQL"], "include_review_evidence_ids": ["unverified-1"]})
+        check(chosen.status_code == 201, chosen.text)
+        body = chosen.json()
+        text = _docx_text(out_dir / body["resume_filename"])
+        check("Kubernetes" in text and "GraphQL" in text and "Built a TypeScript dashboard." in text, f"chosen items are included:\n{text}")
+        check(set(body["report"]["added_by_you"]) == {"Kubernetes", "GraphQL", "Unverified project"}, body["report"]["added_by_you"])
+        check("master resume was not changed" in body["report"]["added_by_you_note"], "the report says the master is unchanged")
+        check("Kubernetes" in body["report"]["required_skills"]["covered_with_verified_evidence"], body["report"]["required_skills"])
+        check(body["fabrication_check"]["ok"], "the integrity check accepts choices the user made explicitly")
+        check(store == store_before, "the stored master evidence was not modified")
+
+        only_one = client.post("/api/resumes/generate", json={**base, "confirmed_skills": ["GraphQL"]}).json()
+        one_text = _docx_text(out_dir / only_one["resume_filename"])
+        check("GraphQL" in one_text and "Kubernetes" not in one_text, "each skill is a separate choice")
+        check(client.post("/api/resumes/generate", json={**base, "confirmed_skills": ["Rust"]}).status_code == 422, "only skills the job lists can be confirmed")
+        check(client.post("/api/resumes/generate", json={**base, "include_review_evidence_ids": ["nope"]}).status_code == 422, "unknown evidence refused")
+    finally:
+        api_main._select_evidence, api_main._load_evidence_store, api_main.GENERATED_RESUMES_DIR = original
+
+
 TESTS = [
+    ("User chooses whether to include skills with no verified evidence", test_user_chooses_whether_to_include_unverified_skills),
     ("Tailoring report explains what was reused and what needs review", test_report_contents),
     ("No-fabrication check rejects invented and unverified text", test_fabrication_check_catches_invented_bullets),
     ("Versions are stored per job and a fabricated resume is refused", test_generate_persists_versions_and_fails_closed),

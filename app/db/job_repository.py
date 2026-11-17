@@ -8,7 +8,7 @@ from typing import Any, Iterable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Company, Job, JobVersion
+from app.db.models import Company, Job, JobReview, JobVersion
 
 # Fields whose change counts as a real change to a posting.
 TRACKED_FIELDS = ("title", "location", "url", "description", "employment_type")
@@ -52,6 +52,26 @@ class JobRepository:
         if not self._versions_ready:
             JobVersion.__table__.create(bind=self.db.get_bind(), checkfirst=True)
             self._versions_ready = True
+
+    # -- review queue ---------------------------------------------------------
+    def set_review(self, job: Job, flags: Iterable[str]) -> None:
+        """Hold this job for your review. A decision you already made is kept as it is."""
+        JobReview.__table__.create(bind=self.db.get_bind(), checkfirst=True)
+        text = ";".join(dict.fromkeys(flag for flag in flags if flag))
+        row = self.db.get(JobReview, job.id)
+        if row is None:
+            self.db.add(JobReview(job_id=job.id, status="pending", flags=text))
+        elif row.status == "pending":
+            row.flags = text
+        self.db.flush()
+
+    def clear_pending_review(self, job: Job) -> None:
+        """The job now passes every rule on its own, so it no longer needs your review."""
+        JobReview.__table__.create(bind=self.db.get_bind(), checkfirst=True)
+        row = self.db.get(JobReview, job.id)
+        if row is not None and row.status == "pending":
+            self.db.delete(row)
+            self.db.flush()
 
     # -- companies ------------------------------------------------------------
     def get_or_create_company(
@@ -224,6 +244,27 @@ class JobRepository:
         """Backward-compatible wrapper: returns (job, created)."""
         result = self.upsert_job_detailed(company, job_data)
         return result.job, result.created
+
+    # -- single-job lifecycle -------------------------------------------------
+    def confirm_open(self, job: Job) -> None:
+        """The source still lists this job: refresh the time and reactivate it if needed."""
+        now = datetime.utcnow()
+        job.last_seen_at = now
+        if not job.is_active:
+            job.is_active = True
+            self.db.flush()
+            self._record_version(job, REACTIVATED, now=now)
+        self.db.flush()
+
+    def mark_closed(self, job: Job) -> None:
+        """The source no longer lists this job: keep it, but mark it closed (with history)."""
+        if not job.is_active:
+            return
+        if not self._has_versions(job):
+            self._record_version(job, "baseline", now=job.last_seen_at)
+        job.is_active = False
+        self.db.flush()
+        self._record_version(job, "removed")
 
     # -- removal detection ----------------------------------------------------
     def active_job_count(self, company: Company, sources: Iterable[str]) -> int:

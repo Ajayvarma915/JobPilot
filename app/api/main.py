@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import hmac
 import json
 import logging
@@ -36,6 +37,9 @@ from app.ai.fit_analysis import (
 from app.ai.providers import get_provider
 from app.ai.runner import run_structured
 from app.services.sync_summary import build_change_summary
+from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, decide as decide_job_status, list_only as job_list_only
+from app.db.job_repository import JobRepository
+from app.services import job_review
 from app.services.job_compare import build_comparison
 from app.resume.tailoring_report import FabricationError, build_tailoring_report, fabrication_check
 from app.applications.answers import (
@@ -69,6 +73,7 @@ from app.db.models import (
     EmployerAnswer,
     InterviewPrepItem,
     Job,
+    JobReview,
     ResumeVersion,
 )
 from app.profile.candidate_profile import CANDIDATE_PROFILE
@@ -300,6 +305,7 @@ def get_db() -> Generator[Session, None, None]:
 
     db = SessionLocal()
     try:
+        job_review.ensure_review_table(db.get_bind())
         yield db
     except SQLAlchemyError:
         db.rollback()
@@ -368,6 +374,12 @@ class EvidenceSelectionRequest(BaseModel):
     preferred_skills: list[str] = Field(default_factory=list, max_length=100)
     max_projects: int = Field(default=3, ge=0, le=10)
     job_id: int | None = Field(default=None, description="Stored job this resume is generated for (links the version to it).")
+    confirmed_skills: list[str] = Field(
+        default_factory=list, max_length=50,
+        description="Job skills the user explicitly confirms they have, although no verified evidence exists. Added to THIS resume only.")
+    include_review_evidence_ids: list[str] = Field(
+        default_factory=list, max_length=50,
+        description="Evidence awaiting review that the user confirms is true; included in THIS resume only.")
 
 
 # ---------------------------------------------------------------------
@@ -687,18 +699,102 @@ def _load_evidence_store() -> dict[str, Any]:
         ) from exc
 
 
+def _enrich_selection(selection: dict[str, Any]) -> dict[str, Any]:
+    """Add preferred-skill coverage next to the selector's required-skill coverage."""
+    preferred = list((selection.get("signals") or {}).get("preferred_skills") or [])
+    selected_keys = {str(k).casefold() for item in selection.get("selected_evidence", []) for k in item.get("matched_preferred_skills") or []}
+    review_keys = {str(k).casefold() for item in selection.get("review_queue", []) for k in item.get("matched_preferred_skills") or []}
+    coverage = selection.setdefault("coverage", {})
+    coverage["preferred_skills"] = len(preferred)
+    coverage["preferred_verified_covered"] = [x for x in preferred if x.casefold() in selected_keys]
+    coverage["preferred_awaiting_evidence_review"] = [x for x in preferred if x.casefold() not in selected_keys and x.casefold() in review_keys]
+    coverage["preferred_not_found_in_evidence"] = [x for x in preferred if x.casefold() not in selected_keys and x.casefold() not in review_keys]
+    return selection
+
+
+def _apply_resume_choices(
+    selection: dict[str, Any],
+    store: dict[str, Any],
+    request: "EvidenceSelectionRequest",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply the explicit per-resume choices made by the user. Works on copies; the master is never changed.
+
+    - confirmed_skills: skills the job lists that the user says they really have. They become
+      user-confirmed skill entries on THIS resume only and are labelled as added by the user.
+    - include_review_evidence_ids: unverified evidence the user confirms is true.
+    """
+    job_skills = {skill.casefold(): skill for skill in list(request.required_skills) + list(request.preferred_skills)}
+    unknown = [skill for skill in request.confirmed_skills if skill.casefold() not in job_skills]
+    if unknown:
+        raise HTTPException(status_code=422, detail="You can only confirm skills the job lists: " + ", ".join(unknown))
+    if not request.confirmed_skills and not request.include_review_evidence_ids:
+        return selection, store
+
+    selection = copy.deepcopy(selection)
+    store = copy.deepcopy(store)
+    coverage = selection.setdefault("coverage", {})
+    required_keys = {skill.casefold() for skill in request.required_skills}
+    covered_keys = {x.casefold() for x in coverage.get("verified_covered", [])} | {x.casefold() for x in coverage.get("preferred_verified_covered", [])}
+
+    def mark_covered(skill: str) -> None:
+        required = skill.casefold() in required_keys
+        key = "verified_covered" if required else "preferred_verified_covered"
+        if skill.casefold() not in {x.casefold() for x in coverage.get(key, [])}:
+            coverage.setdefault(key, []).append(skill)
+        pending = ("awaiting_evidence_review", "not_found_in_evidence") if required else ("preferred_awaiting_evidence_review", "preferred_not_found_in_evidence")
+        for list_name in pending:
+            coverage[list_name] = [x for x in coverage.get(list_name, []) if x.casefold() != skill.casefold()]
+
+    for skill in request.confirmed_skills:
+        original = job_skills[skill.casefold()]
+        if original.casefold() in covered_keys:
+            continue  # already backed by verified evidence
+        evidence_id = "user-confirmed-skill-" + re.sub(r"[^a-z0-9]+", "-", original.casefold()).strip("-")
+        record = {
+            "evidence_id": evidence_id, "category": "skill", "title": original,
+            "statement": f"Listed skill {original}",
+            "source": {"file": "your confirmation for this resume", "section": "skills", "text": original},
+            "metadata": {}, "review": {"status": "verified", "user_verified": True},
+        }
+        store.setdefault("evidence", []).append(record)
+        required = original.casefold() in required_keys
+        selection.setdefault("selected_evidence", []).append({
+            **record, "score": 5, "reason": ["You confirmed you have this skill (added to this resume only)"],
+            "matched_required_skills": [original] if required else [],
+            "matched_preferred_skills": [] if required else [original],
+            "user_verified": True, "eligible_for_resume": True, "user_confirmed": True,
+        })
+        mark_covered(original)
+
+    queue = {item.get("evidence_id"): item for item in selection.get("review_queue", [])}
+    store_records = {item.get("evidence_id"): item for item in store.get("evidence", [])}
+    for evidence_id in request.include_review_evidence_ids:
+        item, record = queue.get(evidence_id), store_records.get(evidence_id)
+        if item is None or record is None:
+            raise HTTPException(status_code=422, detail=f"Evidence {evidence_id} is not awaiting review for this job.")
+        record["review"] = {**(record.get("review") or {}), "status": "verified", "user_verified": True}
+        selection["selected_evidence"].append({**item, "user_verified": True, "eligible_for_resume": True, "user_confirmed": True})
+        selection["review_queue"] = [x for x in selection["review_queue"] if x.get("evidence_id") != evidence_id]
+        for skill in list(item.get("matched_required_skills") or []) + list(item.get("matched_preferred_skills") or []):
+            mark_covered(skill)
+
+    selection["counts"] = {**selection.get("counts", {}), "verified_selected": len(selection["selected_evidence"]),
+                           "unverified_relevant_for_review": len(selection.get("review_queue", []))}
+    return selection, store
+
+
 def _select_evidence(
     request: EvidenceSelectionRequest,
 ) -> dict[str, Any]:
     try:
         selector = ResumeEvidenceSelector(EVIDENCE_STORE_PATH)
-        return selector.select_for_job(
+        return _enrich_selection(selector.select_for_job(
             job_title=request.job_title,
             job_description=request.job_description,
             required_skills=request.required_skills,
             preferred_skills=request.preferred_skills,
             max_projects=request.max_projects,
-        )
+        ))
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=409,
@@ -804,7 +900,14 @@ def dashboard_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
         db.scalar(
             select(func.count())
             .select_from(Job)
-            .where(Job.is_active.is_(True))
+            .where(Job.is_active.is_(True), job_review.not_hidden_clause())
+        ) or 0
+    )
+    needs_review = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Job)
+            .where(Job.is_active.is_(True), job_review.scope_clause("review"))
         ) or 0
     )
     total_companies = int(
@@ -826,7 +929,8 @@ def dashboard_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
     return {
         "total_jobs": total_jobs,
         "active_jobs": active_jobs,
-        "inactive_jobs": total_jobs - active_jobs,
+        "needs_review_jobs": needs_review,
+        "inactive_jobs": total_jobs - active_jobs - needs_review,
         "total_companies": total_companies,
         "jobs_by_source": [
             {"source": source or "unknown", "count": int(count)}
@@ -926,7 +1030,7 @@ def list_locations(
     limit: int = Query(default=500, ge=1, le=1000),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    statement = select(Job.id, Job.location)
+    statement = select(Job.id, Job.location).where(job_review.not_hidden_clause())
     if active_only:
         statement = statement.where(Job.is_active.is_(True))
 
@@ -1029,6 +1133,7 @@ def job_suggestions(
     pattern = f"%{query}%"
     filters = [
         Job.is_active.is_(True),
+        job_review.not_hidden_clause(),
         or_(
             Job.title.ilike(pattern),
             Company.name.ilike(pattern),
@@ -1136,6 +1241,10 @@ def list_jobs(
     career_level: Literal["early", "all"] = Query(default="early"),
     role_scope: Literal["software_engineering", "all"] = Query(default="software_engineering"),
     compensation_filter: Literal["target_or_unknown", "target_only", "all"] = Query(default="target_or_unknown"),
+    review_scope: Literal["main", "review", "dismissed"] = Query(
+        default="main",
+        description="main = normal jobs, review = jobs waiting for your Accept/Dismiss, dismissed = jobs you dismissed.",
+    ),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -1144,7 +1253,7 @@ def list_jobs(
     request_engine = db.get_bind()
     ensure_match_cache_table(request_engine)
 
-    filters = []
+    filters = [job_review.scope_clause(review_scope)]
 
     if active_only:
         filters.append(Job.is_active.is_(True))
@@ -1324,10 +1433,17 @@ def list_jobs(
             )
 
     items: list[dict[str, Any]] = []
+    review_rows = {
+        row.job_id: row
+        for row in db.scalars(
+            select(JobReview).where(JobReview.job_id.in_([int(row[0].id) for row in page_results]))
+        ).all()
+    } if page_results else {}
 
     for job, company_obj, matched_location, _, match_data in page_results:
         items.append(
             {
+                "review": job_review.describe(review_rows.get(job.id)),
                 "id": job.id,
                 "external_id": job.external_id,
                 "title": job.title,
@@ -1389,6 +1505,7 @@ def list_jobs(
             "career_level": career_level,
             "role_scope": role_scope,
             "compensation_filter": compensation_filter,
+            "review_scope": review_scope,
             "target_compensation_floor_lpa": TARGET_COMPENSATION_FLOOR_LPA,
             "maximum_required_years": (
                 _maximum_early_career_years()
@@ -1424,7 +1541,9 @@ def recommendations(
     """
     ensure_match_cache_table(db.get_bind())
     rows = db.execute(
-        select(Job, Company).join(Company, Company.id == Job.company_id).where(Job.is_active.is_(True))
+        select(Job, Company).join(Company, Company.id == Job.company_id).where(
+            Job.is_active.is_(True), job_review.not_hidden_clause()
+        )
     ).all()
     candidates = [
         (job, company_obj, _find_matching_location(job.location, "India"))
@@ -1545,6 +1664,68 @@ def compare_jobs(
         })
     db.commit()
     return build_comparison(entries)
+
+
+@app.post("/api/jobs/{job_id}/verify-open")
+def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Check against the employer's own career source whether this job is still listed.
+
+    Re-reads the job's source (list only). A job is closed only when the source answered
+    normally and no longer lists it; any failure or doubtful answer leaves the job untouched.
+    """
+    job = db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job with ID {job_id} was not found.")
+    company_obj = db.get(Company, job.company_id)
+    entry = next((c for c in load_registry_companies() if c.get("name") == (company_obj.name if company_obj else None)), None)
+    integration = (entry or {}).get("integration") or {}
+
+    def answer(status: str, reason: str) -> dict[str, Any]:
+        return {"job_id": job.id, "status": status, "reason": reason, "is_active": job.is_active,
+                "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
+                "checked_at": datetime.utcnow().isoformat()}
+
+    if entry is None or not (integration.get("provider") and integration.get("settings")):
+        return answer(JOB_UNKNOWN, "This company has no connector, so JobPilot cannot look the job up. Open the original posting to check.")
+    if integration.get("provider") == "google_careers":
+        return answer(JOB_UNKNOWN, "Google jobs are re-checked during a full sync; a single job cannot be looked up on its own.")
+
+    from scripts.sync_target_companies import _build_collector  # lazy: keeps the API importable without the scripts folder
+
+    try:
+        fetched = _build_collector(job_list_only(entry)).collect()
+    except Exception as exc:  # noqa: BLE001 - any source problem must leave the job untouched
+        return answer(JOB_UNKNOWN, f"The source could not be read right now ({type(exc).__name__}: {str(exc)[:120]}); the job was left unchanged.")
+    fetched_ids = {str(item.get("external_id")) for item in fetched if item.get("external_id") not in (None, "")}
+    stored_active = int(db.scalar(select(func.count()).select_from(Job).where(
+        Job.company_id == job.company_id, Job.source == job.source, Job.is_active.is_(True))) or 0)
+    status, reason = decide_job_status(external_id=job.external_id, fetched_ids=fetched_ids, stored_active_count=stored_active)
+    repository = JobRepository(db)
+    if status == JOB_OPEN:
+        repository.confirm_open(job)
+    elif status == JOB_CLOSED:
+        repository.mark_closed(job)
+    db.commit()
+    return answer(status, reason)
+
+
+class ReviewDecisionRequest(BaseModel):
+    decision: Literal["accept", "dismiss", "reset"]
+
+
+@app.post("/api/jobs/{job_id}/review-decision")
+def decide_job_review(job_id: int, request: ReviewDecisionRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Accept a held job into the normal list, dismiss it, or put it back to waiting.
+
+    Only jobs the sync flagged for review can be decided. Your decision survives later syncs.
+    """
+    row = db.get(JobReview, job_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="This job was not held for review, so there is nothing to decide.")
+    row.status = job_review.DECISIONS[request.decision]
+    row.decided_at = None if request.decision == "reset" else datetime.utcnow()
+    db.commit()
+    return {"job_id": job_id, "review": job_review.describe(row)}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -1825,6 +2006,7 @@ def generate_resume(
         )
 
     store_data = _load_evidence_store()
+    selection, store_data = _apply_resume_choices(selection, store_data, request)
     slug = (
         re.sub(r"[^A-Za-z0-9]+", "_", request.job_title).strip("_")[:60]
         or "Job"

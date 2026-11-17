@@ -45,6 +45,10 @@ export function ResumeView({
   selection,
   selectionLoading,
   selectionError,
+  confirmedSkills,
+  onToggleSkill,
+  reviewIncluded,
+  onToggleReview,
   generated,
   generationLoading,
   generationError,
@@ -62,6 +66,10 @@ export function ResumeView({
   selection: EvidenceSelection | null;
   selectionLoading: boolean;
   selectionError: string | null;
+  confirmedSkills: string[];
+  onToggleSkill: (skill: string) => void;
+  reviewIncluded: string[];
+  onToggleReview: (evidenceId: string) => void;
   generated: GeneratedResume | null;
   generationLoading: boolean;
   generationError: string | null;
@@ -213,6 +221,58 @@ export function ResumeView({
                   <ShieldCheck size={14} className="text-emerald-300" />
                   Only user-verified evidence is eligible for resume generation.
                 </div>
+
+                {(() => {
+                  const required = selection.coverage.not_found_in_evidence;
+                  const preferred = selection.coverage.preferred_not_found_in_evidence ?? [];
+                  const missing = [
+                    ...required.map((skill) => ({ skill, kind: "required" })),
+                    ...preferred.map((skill) => ({ skill, kind: "preferred" })),
+                  ];
+                  if (missing.length === 0 && selection.review_queue.length === 0) return null;
+                  return (
+                    <div className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/[0.04] p-4 text-xs text-slate-300">
+                      <p className="font-semibold text-amber-200">Your decision: skills this job asks for that are not verified in your resume</p>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        Nothing here is added unless you tick it. Tick a skill only if you really have it and could talk about it in an interview.
+                        It is added to this resume only; your master resume is not changed.
+                      </p>
+                      {missing.length > 0 && (
+                        <ul className="mt-3 grid gap-1.5">
+                          {missing.map((item) => (
+                            <li key={`${item.kind}-${item.skill}`}>
+                              <label className="flex items-center gap-2">
+                                <input type="checkbox" checked={confirmedSkills.includes(item.skill)} onChange={() => onToggleSkill(item.skill)} />
+                                <span>
+                                  <span className="font-medium text-slate-100">{item.skill}</span>{" "}
+                                  <span className="text-slate-500">({item.kind}) — I have this skill, include it</span>
+                                </span>
+                              </label>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {selection.review_queue.length > 0 && (
+                        <>
+                          <p className="mt-4 font-semibold text-sky-200">Evidence from your resume that you have not verified yet</p>
+                          <ul className="mt-2 grid gap-1.5">
+                            {selection.review_queue.map((item) => (
+                              <li key={item.evidence_id}>
+                                <label className="flex items-start gap-2">
+                                  <input type="checkbox" className="mt-0.5" checked={reviewIncluded.includes(item.evidence_id)} onChange={() => onToggleReview(item.evidence_id)} />
+                                  <span>
+                                    <span className="font-medium text-slate-100">{item.title}</span>{" "}
+                                    <span className="text-slate-500">— this is accurate, include it on this resume</span>
+                                  </span>
+                                </label>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </>
             ) : (
               <EmptyState

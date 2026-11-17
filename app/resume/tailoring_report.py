@@ -76,6 +76,7 @@ def build_tailoring_report(selection: dict[str, Any], store: dict[str, Any]) -> 
             "source_section": source.get("section"),
             "matched_keywords": sorted({str(w) for w in matched}, key=str.casefold),
             "why_selected": list(item.get("reason") or []),
+            "added_by_you": bool(item.get("user_confirmed")),
         })
     selected_ids = {item.get("evidence_id") for item in selected}
     for record in store.get("evidence", []):
@@ -108,8 +109,12 @@ def build_tailoring_report(selection: dict[str, Any], store: dict[str, Any]) -> 
             "why": "No evidence for this required skill in your resume. Do not claim it unless it is true; add real evidence to your master resume if you have it.",
         })
 
+    added_by_you = [str(entry["title"]) for entry in reused if entry.get("added_by_you")]
     return {
         "job_title": (selection.get("job") or {}).get("title"),
+        "added_by_you": added_by_you,
+        "added_by_you_note": ("These were not in your verified resume evidence. You confirmed them for this resume only; "
+                              "be ready to discuss each one honestly. Your master resume was not changed.") if added_by_you else None,
         "evidence_reused": reused,
         "keywords_aligned": sorted(keywords.values(), key=str.casefold),
         "required_skills": {

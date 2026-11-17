@@ -43,6 +43,7 @@ export function makeResumeRequest(
   jobDescription: string,
   requiredSkills: string,
   preferredSkills: string,
+  choices?: { jobId?: number | null; confirmedSkills?: string[]; includeReviewEvidenceIds?: string[] },
 ) {
   return {
     job_title: jobTitle.trim(),
@@ -50,6 +51,10 @@ export function makeResumeRequest(
     required_skills: parseSkills(requiredSkills),
     preferred_skills: parseSkills(preferredSkills),
     max_projects: 3,
+    // Explicit, per-resume choices the user made on the resume screen.
+    job_id: choices?.jobId ?? undefined,
+    confirmed_skills: choices?.confirmedSkills ?? [],
+    include_review_evidence_ids: choices?.includeReviewEvidenceIds ?? [],
   };
 }
 

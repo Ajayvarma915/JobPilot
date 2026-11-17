@@ -1,9 +1,10 @@
+import { VerifyOpenButton } from "./VerifyOpenButton";
 import { type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink, Filter, Globe2, LoaderCircle, MapPin, Plus, RefreshCw, Search, Sparkles, Target } from "lucide-react";
 import { CompensationBadge, EmptyState, MatchBadge, MatchDetails, SearchableFilter, SectionHeading } from "../components";
 import { compactText, formatNumber } from "../lib";
-import { type CareerLevelFilter, type CompensationFilter, type FilterOption, type Job, type JobFilters, type JobTitleSuggestion, type RoleScopeFilter } from "../types";
+import { type CareerLevelFilter, type CompensationFilter, type FilterOption, type Job, type JobFilters, type JobTitleSuggestion, type ReviewScope, type RoleScopeFilter } from "../types";
 
 export function JobsView({
   jobs,
@@ -26,6 +27,9 @@ export function JobsView({
   locationOptions,
   sourceOptions,
   onApplyFilters,
+  reviewScope,
+  onReviewScope,
+  onReviewDecision,
   onPrevious,
   onNext,
   onRefresh,
@@ -54,6 +58,9 @@ export function JobsView({
   locationOptions: FilterOption[];
   sourceOptions: string[];
   onApplyFilters: (event: FormEvent<HTMLFormElement>) => void;
+  reviewScope: ReviewScope;
+  onReviewScope: (scope: ReviewScope) => void;
+  onReviewDecision: (jobId: number, decision: "accept" | "dismiss" | "reset") => void;
   onPrevious: () => void;
   onNext: () => void;
   onRefresh: () => void;
@@ -81,6 +88,29 @@ export function JobsView({
           </button>
         }
       />
+
+      <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Job lists">
+        {([
+          ["main", "Jobs"],
+          ["review", "Needs your review"],
+          ["dismissed", "Dismissed"],
+        ] as Array<[ReviewScope, string]>).map(([scope, label]) => (
+          <button
+            key={scope}
+            role="tab"
+            aria-selected={reviewScope === scope}
+            className={reviewScope === scope ? "primary-button !px-3 !py-2" : "secondary-button !px-3 !py-2"}
+            onClick={() => onReviewScope(scope)}
+          >
+            {label}
+          </button>
+        ))}
+        {reviewScope === "review" && (
+          <p className="text-[11px] text-slate-400">
+            These roles fit your location and role rules, but something is unclear (often the years of experience). Accept the ones that look right.
+          </p>
+        )}
+      </div>
 
       <form onSubmit={onApplyFilters} className="panel rounded-2xl p-4 sm:p-5">
         <div className="flex flex-col gap-3 lg:flex-row">
@@ -334,7 +364,20 @@ export function JobsView({
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <MatchBadge match={job.match} />
                       <CompensationBadge compensation={job.compensation} />
+                      {job.review?.status === "pending" && (
+                        <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                          Needs your review
+                        </span>
+                      )}
                     </div>
+
+                    {job.review && job.review.status !== "accepted" && job.review.reasons.length > 0 && (
+                      <ul className="mt-2 space-y-0.5 text-[11px] text-amber-200/90">
+                        {job.review.reasons.map((reason) => (
+                          <li key={reason}>• {reason}</li>
+                        ))}
+                      </ul>
+                    )}
 
                     <div className="mt-3 flex flex-wrap gap-x-3 gap-y-2 text-[10px] text-slate-500">
                       {job.location && (
@@ -369,7 +412,23 @@ export function JobsView({
                   </div>
                 </div>
 
-                <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
+                <div className="flex shrink-0 flex-wrap items-start gap-2 lg:justify-end">
+                  {job.review?.status === "pending" && (
+                    <>
+                      <button className="primary-button !px-3 !py-2" onClick={() => onReviewDecision(job.id, "accept")} title="Show this job with your normal jobs">
+                        Accept
+                      </button>
+                      <button className="secondary-button !px-3 !py-2" onClick={() => onReviewDecision(job.id, "dismiss")} title="Hide this job">
+                        Dismiss
+                      </button>
+                    </>
+                  )}
+                  {job.review?.status === "dismissed" && (
+                    <button className="secondary-button !px-3 !py-2" onClick={() => onReviewDecision(job.id, "reset")} title="Put this job back in your review list">
+                      Restore
+                    </button>
+                  )}
+                  <VerifyOpenButton jobId={job.id} lastSeenAt={job.last_seen_at} />
                   <a
                     className="secondary-button !px-3 !py-2"
                     href={job.url}
