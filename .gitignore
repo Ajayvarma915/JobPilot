@@ -40,3 +40,6 @@ Thumbs.db
 
 # Scheduled sync summaries
 data/sync_reports/
+
+# Database backups
+backups/

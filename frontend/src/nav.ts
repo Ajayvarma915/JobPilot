@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Building2, FileText, Target, ClipboardList, FileCheck2, LayoutDashboard, Mail, type LucideIcon } from "lucide-react";
+import { BriefcaseBusiness, Building2, TrendingUp, FileText, Target, ClipboardList, FileCheck2, LayoutDashboard, Mail, type LucideIcon } from "lucide-react";
 import { type Screen } from "./types";
 
 export const NAV_ITEMS: Array<{
@@ -42,6 +42,12 @@ export const NAV_ITEMS: Array<{
     label: "Resume studio",
     description: "Tailor your resume",
     icon: FileCheck2,
+  },
+  {
+    id: "insights",
+    label: "Insights",
+    description: "Funnel and follow-ups",
+    icon: TrendingUp,
   },
   {
     id: "coverage",

@@ -300,3 +300,50 @@ class EmployerAnswer(Base):
     approved_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class Contact(Base):
+    """A recruiter, referral or other person worth keeping track of."""
+
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="recruiter")  # recruiter | referral | other
+    role_title: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    referral_status: Mapped[str] = mapped_column(String(20), nullable=False, default="none")  # none | asked | agreed | declined | submitted
+    follow_up_date: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class ContactInteraction(Base):
+    """History with a contact. JobPilot never sends anything: a draft stays a draft until the
+    user sends it themselves and marks it as sent."""
+
+    __tablename__ = "contact_interactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    contact_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)  # note | call | meeting | outreach_draft | message_sent
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    job_id: Mapped[int | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="recorded")  # recorded | draft | sent_by_user
+    occurred_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
+
+
+class InterviewPrepItem(Base):
+    """One preparation task or practice question for an application."""
+
+    __tablename__ = "interview_prep_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    application_id: Mapped[int] = mapped_column(nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    done: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)

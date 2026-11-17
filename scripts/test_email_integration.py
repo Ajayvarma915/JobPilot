@@ -5,7 +5,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -398,6 +398,96 @@ class GmailIntegrationTests(unittest.TestCase):
         tracked = self.client.get(f"/api/applications/{self.application['id']}")
         self.assertEqual(tracked.status_code, 200, tracked.text)
         self.assertEqual(tracked.json()["status"], "interview")
+
+    def _match(self, **overrides):
+        arguments = dict(
+            subject="Interview invitation for Software Engineer at ExampleCo",
+            sender="ExampleCo Recruiting <recruiting@exampleco.com>",
+            snippet="We would like to invite you to interview for the Software Engineer role.",
+            body_text="We would like to invite you to interview for the Software Engineer role at ExampleCo.",
+            received_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
+        arguments.update(overrides)
+        connection = sqlite3.connect(self.database_path)
+        connection.row_factory = sqlite3.Row
+        try:
+            return self.email_module._application_match(connection, **arguments)
+        finally:
+            connection.close()
+
+    def test_reply_still_matches_after_the_posting_is_taken_down(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute("UPDATE jobs SET is_active = 0 WHERE id = 1")
+            connection.commit()
+        finally:
+            connection.close()
+        try:
+            match_id, confidence = self._match()
+        finally:
+            connection = sqlite3.connect(self.database_path)
+            connection.execute("UPDATE jobs SET is_active = 1 WHERE id = 1")
+            connection.commit()
+            connection.close()
+        self.assertEqual(match_id, self.application["id"], "interviews and rejections arrive after postings close")
+        self.assertGreaterEqual(confidence, 0.78)
+
+    def test_message_without_a_usable_date_never_matches(self) -> None:
+        for received_at in (None, "", "not a date"):
+            with self.subTest(received_at=received_at):
+                self.assertEqual(self._match(received_at=received_at), (None, 0.0))
+        self.assertIsNotNone(self._match()[0], "the same message with a valid date does match")
+
+    def test_rfc2822_date_header_is_understood(self) -> None:
+        received = self.email_module._received_at({}, {"date": "Mon, 16 Nov 2026 10:00:00 +0530"})
+        self.assertEqual(received, "2026-11-16T04:30:00+00:00")
+        self.assertIsNone(self.email_module._received_at({}, {"date": "garbage"}))
+        self.assertEqual(
+            self.email_module._received_at({"internalDate": "1700000000000"}, {"date": "garbage"}),
+            "2023-11-14T22:13:20+00:00",
+        )
+
+    def test_approval_suggests_a_follow_up_without_overwriting_the_users_own(self) -> None:
+        fake = _FakeGmailService(_message())
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"days_back": 90, "max_messages": 20})
+        event = self.client.get("/api/email/events").json()["items"][0]
+        before = self.client.get(f"/api/applications/{self.application['id']}").json()
+        self.assertFalse(before["next_action"] or before["follow_up_date"], "nothing is scheduled before approval")
+        self.client.post(f"/api/email/events/{event['id']}/review", json={"decision": "approve"})
+        after = self.client.get(f"/api/applications/{self.application['id']}").json()
+        self.assertEqual(after["status"], "interview")
+        self.assertEqual(after["next_action"], "Prepare for and attend the interview")
+        self.assertEqual(after["follow_up_date"], (datetime.now().date() + timedelta(days=5)).isoformat())
+
+        # A next action the user already wrote is kept.
+        self.client.patch(f"/api/applications/{self.application['id']}", json={"status": "applied"})
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute("UPDATE applications SET status='applied', next_action='My own plan', follow_up_date='2030-01-01' WHERE id=?", (self.application["id"],))
+            connection.execute("UPDATE application_email_events SET review_status='pending', reviewed_at=NULL WHERE id=?", (event["id"],))
+            connection.commit()
+        finally:
+            connection.close()
+        self.client.post(f"/api/email/events/{event['id']}/review", json={"decision": "approve"})
+        kept = self.client.get(f"/api/applications/{self.application['id']}").json()
+        self.assertEqual((kept["next_action"], kept["follow_up_date"]), ("My own plan", "2030-01-01"))
+
+    def test_stored_event_keeps_only_minimal_text(self) -> None:
+        long_body = "We would like to invite you to interview for the Software Engineer role at ExampleCo. " + ("Private detail. " * 400)
+        fake = _FakeGmailService(_message(body=long_body))
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"days_back": 90, "max_messages": 20})
+        connection = sqlite3.connect(self.database_path)
+        try:
+            rows = connection.execute("SELECT subject, sender, snippet FROM application_email_events").fetchall()
+            columns = [r[1] for r in connection.execute("PRAGMA table_info(application_email_events)")]
+        finally:
+            connection.close()
+        self.assertEqual(len(rows), 1)
+        self.assertLessEqual(len(rows[0][2]), 1200, "only a short snippet is stored")
+        self.assertNotIn("Private detail. " * 20, " ".join(rows[0]), "the body is not stored")
+        self.assertFalse({"body", "body_text", "raw", "html"} & set(columns), f"no body column exists: {columns}")
 
     def test_sync_persists_page_cursor_and_continues_on_next_manual_sync(self) -> None:
         first_message = _message(message_id="gmail-page-1")

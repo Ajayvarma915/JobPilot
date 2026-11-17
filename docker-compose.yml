@@ -1,0 +1,42 @@
+# Local/private deployment. Copy .env.example to .env first (never commit .env), then:
+#   docker compose up --build
+# Both ports are bound to 127.0.0.1 on purpose: put a TLS reverse proxy in front before exposing
+# JobPilot beyond this machine, and set JOBPILOT_API_TOKEN (see docs/DEPLOYMENT.md).
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      JOBPILOT_DATABASE_PATH: /app/storage/jobpilot.db
+      # The model runs on the host; reach it from the container.
+      JOBPILOT_OLLAMA_BASE_URL: ${JOBPILOT_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - jobpilot_storage:/app/storage
+      # Your resume evidence and generated documents stay on the host.
+      - ./data/master_resume:/app/data/master_resume
+      - ./data/generated_resumes:/app/data/generated_resumes
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://127.0.0.1:8000}
+        VITE_API_TOKEN: ${VITE_API_TOKEN:-}
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped
+
+volumes:
+  jobpilot_storage:

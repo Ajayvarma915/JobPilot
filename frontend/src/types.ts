@@ -1,4 +1,4 @@
-export type Screen = "overview" | "jobs" | "recommended" | "applications" | "documents" | "resume" | "email" | "coverage";
+export type Screen = "overview" | "jobs" | "recommended" | "applications" | "documents" | "resume" | "email" | "coverage" | "insights";
 export type ApiStatus = "checking" | "connected" | "offline";
 export type CareerLevelFilter = "early" | "all";
 export type RoleScopeFilter = "software_engineering" | "all";

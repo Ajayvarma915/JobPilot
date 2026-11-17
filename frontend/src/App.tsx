@@ -10,6 +10,7 @@ import { ApplicationsView } from "./views/ApplicationsView";
 import { CoverageView } from "./views/CoverageView";
 import { RecommendedView } from "./views/RecommendedView";
 import { DocumentsView } from "./views/DocumentsView";
+import { InsightsView } from "./views/InsightsView";
 import { EmailIntelligenceView, type ApplicationEmailEvent, type EmailConnectionStatus, type EmailEventListResponse, type EmailReviewFilter, type EmailSyncResult } from "./views/EmailIntelligenceView";
 import { JobsView } from "./views/JobsView";
 import { OverviewView } from "./views/OverviewView";
@@ -983,6 +984,8 @@ function App() {
                 {screen === "recommended" && <RecommendedView />}
 
                 {screen === "documents" && <DocumentsView />}
+
+                {screen === "insights" && <InsightsView />}
 
                 {screen === "email" && (
                   <EmailIntelligenceView

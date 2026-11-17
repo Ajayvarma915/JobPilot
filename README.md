@@ -1,44 +1,37 @@
 # JobPilot
 
-JobPilot is a local-first job discovery, evidence-based resume tailoring, application-preparation and application-tracking platform. It is designed to keep the candidate in control of employer submissions.
+JobPilot is a local-first job discovery and application-preparation assistant. It finds suitable software roles at product companies, explains how well each one fits you, helps you prepare honest application materials, and tracks every application, **while you stay in control of every submission.**
 
-## Current architecture
+> **What it will never do:** submit an application for you, send an email or recruiter message for you, invent a skill, employer, number or qualification, or bypass a CAPTCHA, login or anti-bot control. A job marked `ready_to_apply` is *not* applied; only your own confirmation records an application as applied.
 
-- **Backend:** Python, FastAPI, SQLAlchemy and SQLite
-- **Frontend:** React, TypeScript and Vite
-- **Local AI:** Ollama (configured model: `gemma3:4b`) for on-demand structured job-description analysis
-- **Job sources:** Google Careers, Greenhouse and Lever collectors
-- **Resume workflow:** candidate evidence store, tailored DOCX/PDF generation and ATS evaluation
-- **Email intelligence:** Gmail read-only OAuth integration; application events remain subject to review
-- **Browser assistance:** browser-extension foundations for supported application-form workflows
+## What it does
 
-## Default job-search policy
+| Area | What you get |
+|---|---|
+| **Discovery** | A registry of 40 companies (19 active, validated against live career sites). Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM, Amazon and Atlassian connectors. Deduplication, version history, change and removal detection, FULL and FAST sync modes. |
+| **Eligibility** | One rule set decides role family, seniority, experience (0-2 years), PhD requirements and India/remote eligibility, with a stated reason for every exclusion. Undisclosed salary never excludes a job. |
+| **Matching** | An explainable 0-100 score with configurable weights, mandatory-vs-preferred skill gaps, an eligibility cap so keyword overlap can never rescue an excluded job, and side-by-side comparison. |
+| **Recommendations** | Each job gets a next action (apply now, review first, prepare missing skills, skip) with reasons, plus skill gaps counted from your real jobs. |
+| **Local AI** | Optional analysis with a local Ollama model. Output is validated against the job text and your profile, the rules win every conflict, and everything works with AI switched off. |
+| **Documents** | Evidence-based tailored resumes (Word and PDF) with a report of what was reused and a check that blocks any unverified claim; cover letters built only from verified facts; an approved-answer library. |
+| **Applications** | A tracker with a readiness checklist, status history, follow-ups, and funnel analytics that hide percentages until the sample is large enough to mean something. |
+| **Browser extension** | Fills clearly labelled fields on supported application forms. It never clicks Submit, uploads files or answers sensitive questions. |
+| **Email (read-only)** | Gmail read-only matching of recruiter emails to your submitted applications, with every status change waiting for your approval. |
+| **Contacts and prep** | A recruiter/referral contact book (drafts are text only until you send them yourself) and a practice plan per application. |
 
-The default opportunity feed is intentionally narrower than the raw job-board inventory:
+An honest account of what has and has not been verified is in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
-- Software-engineering title families only (SWE, SDE, backend, frontend, full-stack, platform, SRE/DevOps, AI/ML/data engineering, security software engineering and test automation).
-- Excludes support, customer service/success, sales, account executive, recruiting, marketing, finance, administrative and other non-software roles.
-- Defaults to India and India-eligible remote locations; location-restricted roles in other countries are excluded from the default feed.
-- Early-career mode uses the candidate's TCS start date (18 September 2025) and currently allows roles whose stated minimum experience requirement is up to two years.
-- Compensation defaults to **₹25 LPA or higher, or undisclosed**. Explicitly disclosed ranges below ₹25 LPA are hidden by default; unknown ranges stay visible because many postings do not publish salary. Listings with disclosed ranges are labelled as ₹25+ or ₹30+ when detectable.
-
-Salary detection only reads explicit INR/LPA expressions in the saved job description. It does not infer pay, convert foreign currencies, or determine whether a disclosed figure is fixed pay, variable pay or equity. Verify the employer's compensation structure before applying.
-
-The configured source registry currently contains Google Careers, Coinbase's Greenhouse board and KnowBe4's Greenhouse board; Lever is implemented but has no company entries configured yet. A source board can publish every department's vacancies, so the role policy filters board output before it reaches the default feed. Expand `data/job_sources.json` with verified target-company career/ATS identifiers to increase coverage.
-
-## Windows development setup
-
-### Backend
+## Quick start (Windows PowerShell)
 
 ```powershell
+cd "D:\Full stack Projects\Automatic Job Apllication"
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-pip install -r requirements-dev.txt
-uvicorn app.api.main:app --host 127.0.0.1 --port 8000 --reload
+uvicorn app.api.main:app --host 127.0.0.1 --port 8000
 ```
 
-### Frontend
+In a second terminal:
 
 ```powershell
 cd frontend
@@ -46,38 +39,45 @@ npm ci
 npm run dev
 ```
 
-### Local AI
+Open http://127.0.0.1:5173. Full instructions, including Ollama, Gmail and the browser extension, are in [docs/INSTALLATION.md](docs/INSTALLATION.md).
 
-Install Ollama, pull the configured model and check it:
-
-```powershell
-ollama pull gemma3:4b
-python -m scripts.check_ollama
-```
-
-## Useful verification commands
-
-Run tests from the project root using module invocation:
+## Bringing in jobs
 
 ```powershell
-python -m scripts.test_job_filter_policy
-python -m scripts.test_multi_source_collectors
-python -m scripts.test_ollama_jd_analysis
-python -m scripts.test_email_integration
+# Back up first, then sync every verified, active company source into your database.
+.\venv\Scripts\python.exe -m scripts.backup_database
+.\venv\Scripts\python.exe -m scripts.sync_target_companies --mode full --concurrency 3
+
+# See what a source would return without writing anything:
+.\venv\Scripts\python.exe -m scripts.sync_target_companies --dry-run --only databricks
 ```
 
-Build the frontend:
+Only jobs that pass every rule with no review flags are written. For unattended runs see `scripts/run_scheduled_sync.py` (Windows Task Scheduler command inside).
+
+## Testing
 
 ```powershell
-cd frontend
-npm run build
+.\venv\Scripts\python.exe -m scripts.run_offline_tests
+cd frontend; npm run lint; npm run build
 ```
 
-## Secrets and local data
+`run_offline_tests` runs every offline test against a **temporary copy** of your database, so it cannot change your data. Tests that need live career sites, a running Ollama or your personal resume are skipped and listed; they are not counted as passes.
 
-Never commit or share `.env`, `credentials/`, `tokens/`, Gmail OAuth client secrets, Gmail token files, personal resumes, generated resumes, `jobpilot.db`, `venv/`, `node_modules/` or `.git/`. Keep private credentials local. The Gmail integration requests read-only access and does not store full email bodies or attachments.
+## Documentation
 
-## Application-submission boundary
+| Document | Contents |
+|---|---|
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | Setup on Windows: backend, frontend, Ollama, Gmail, extension |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every environment variable |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modules, data flow and tables |
+| [docs/API.md](docs/API.md) | Every endpoint (generated from the code) |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker, API token, reverse proxy, backups, scheduling |
+| [docs/SECURITY_CHECKLIST.md](docs/SECURITY_CHECKLIST.md) | Security and privacy checklist |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and fixes |
+| [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) | What to verify before relying on a release |
+| [docs/CLEANUP_PROPOSAL.md](docs/CLEANUP_PROPOSAL.md) | Stale files you may want to remove |
+| [PROJECT_STATUS.md](PROJECT_STATUS.md) / [ROADMAP.md](ROADMAP.md) | Verified status and what is next |
 
-JobPilot discovers roles and prepares application materials. The user must review the employer form and explicitly submit it. A job marked `ready_to_apply` is not a submitted application; mark it `Applied` only after the employer has accepted the submission. Gmail lifecycle matching is restricted to confirmed JobPilot submissions.
-    
+## Secrets and personal data
+
+Never commit or share `.env`, `credentials/`, `tokens/`, Gmail OAuth files, personal resumes, generated documents, `jobpilot.db`, `backups/`, `venv/`, `node_modules/` or `.git/`. All of these are git-ignored; `.env.example` documents every setting with placeholders only.

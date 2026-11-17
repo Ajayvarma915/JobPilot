@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hmac
 import json
 import logging
 import math
@@ -13,13 +14,13 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from app.applications.tracker import router as applications_router
 from app.email.gmail_integration import router as email_router
-from pydantic import BaseModel, Field
-from sqlalchemy import case, create_engine, func, or_, select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import case, create_engine, func, inspect, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -45,7 +46,9 @@ from app.applications.answers import (
     unresolved_placeholders as unresolved_answer_placeholders,
 )
 from app.applications.cover_letters import cover_letter_docx, cover_letter_pdf, generate_cover_letter
+from app.applications.crm import build_interview_plan, build_outreach_draft
 from app.applications.profile_facts import load_profile_facts
+from app.services.analytics import build_funnel
 from app.services.opportunities import ACTIONS as OPPORTUNITY_ACTIONS, score_opportunity, skill_gap_report
 from app.services.source_health import (
     build_health_report,
@@ -58,7 +61,16 @@ from app.services.target_role_policy import (
     matches_software_role_family,
     requires_phd,
 )
-from app.db.models import Company, CoverLetterVersion, EmployerAnswer, Job, ResumeVersion
+from app.db.models import (
+    Company,
+    Contact,
+    ContactInteraction,
+    CoverLetterVersion,
+    EmployerAnswer,
+    InterviewPrepItem,
+    Job,
+    ResumeVersion,
+)
 from app.profile.candidate_profile import CANDIDATE_PROFILE
 from app.ai.jd_insights import analyze_job_description_with_ollama
 from app.config import OLLAMA_MODEL
@@ -308,15 +320,44 @@ app = FastAPI(
 app.include_router(applications_router)
 app.include_router(email_router)
 
+# Optional API token. When JOBPILOT_API_TOKEN is set, every /api request must send it as
+# "Authorization: Bearer <token>" (or "X-JobPilot-Token"). Unset = local single-user mode,
+# unchanged. The health check and the Gmail OAuth redirect (a browser redirect from Google that
+# cannot carry a header) stay open. This middleware is registered BEFORE CORS so that CORS wraps
+# it and a rejected browser request still gets its CORS headers (a clear 401, not a CORS error).
+API_TOKEN_ENV = "JOBPILOT_API_TOKEN"
+_AUTH_EXEMPT_PREFIXES = ("/api/health", "/api/email/oauth/callback")
+
+
+@app.middleware("http")
+async def require_api_token(request: Request, call_next):
+    token = os.getenv(API_TOKEN_ENV, "").strip()
+    path = request.url.path
+    if not token or request.method == "OPTIONS" or not path.startswith("/api/") or path.startswith(_AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+    supplied = request.headers.get("authorization", "")
+    candidate = supplied[7:].strip() if supplied.lower().startswith("bearer ") else request.headers.get("x-jobpilot-token", "").strip()
+    if candidate and hmac.compare_digest(candidate.encode("utf-8"), token.encode("utf-8")):
+        return await call_next(request)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "A valid API token is required (Authorization: Bearer <token>)."},
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+def _cors_origins() -> list[str]:
+    configured = os.getenv("JOBPILOT_CORS_ORIGINS", "")
+    origins = [item.strip().rstrip("/") for item in configured.split(",") if item.strip()]
+    return origins or ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=_cors_origins(),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization", "X-JobPilot-Token"],
 )
 
 
@@ -2139,6 +2180,259 @@ def approve_employer_answer(answer_id: int, request: AnswerApproveRequest, db: S
 def delete_employer_answer(answer_id: int, db: Session = Depends(get_db)) -> None:
     db.delete(_get_answer(db, answer_id))
     db.commit()
+
+
+# ---------------------------------------------------------------------
+# Analytics, recruiter/referral contacts and interview preparation
+# ---------------------------------------------------------------------
+
+@app.get("/api/analytics/funnel")
+def analytics_funnel(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Application funnel from your own records. Rates stay hidden while the sample is too small."""
+    try:
+        return build_funnel(db)
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="The API cannot read application analytics.") from exc
+
+
+class ContactCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    kind: Literal["recruiter", "referral", "other"] = "recruiter"
+    role_title: str | None = Field(default=None, max_length=200)
+    company_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=320)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    referral_status: Literal["none", "asked", "agreed", "declined", "submitted"] = "none"
+    follow_up_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = Field(default=None, max_length=5000)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if cleaned and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cleaned):
+            raise ValueError("Enter a valid email address.")
+        return cleaned or None
+
+    @field_validator("linkedin_url")
+    @classmethod
+    def _valid_url(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        if cleaned and not re.match(r"^https?://", cleaned, re.IGNORECASE):
+            raise ValueError("Profile links must be http(s) URLs.")
+        return cleaned or None
+
+
+class ContactUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    kind: Literal["recruiter", "referral", "other"] | None = None
+    role_title: str | None = Field(default=None, max_length=200)
+    company_name: str | None = Field(default=None, max_length=255)
+    email: str | None = Field(default=None, max_length=320)
+    linkedin_url: str | None = Field(default=None, max_length=500)
+    referral_status: Literal["none", "asked", "agreed", "declined", "submitted"] | None = None
+    follow_up_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    notes: str | None = Field(default=None, max_length=5000)
+
+
+class InteractionCreate(BaseModel):
+    kind: Literal["note", "call", "meeting"] = "note"
+    body: str = Field(min_length=1, max_length=5000)
+    job_id: int | None = Field(default=None, gt=0)
+
+
+class OutreachDraftRequest(BaseModel):
+    job_id: int | None = Field(default=None, gt=0)
+
+
+class PrepItemUpdate(BaseModel):
+    done: bool
+
+
+def _ensure_crm_tables(db: Session) -> None:
+    for table in (Contact.__table__, ContactInteraction.__table__, InterviewPrepItem.__table__):
+        table.create(bind=db.get_bind(), checkfirst=True)
+
+
+def _contact_dict(contact: Contact) -> dict[str, Any]:
+    return {
+        "id": contact.id, "name": contact.name, "kind": contact.kind, "role_title": contact.role_title,
+        "company_name": contact.company_name, "email": contact.email, "linkedin_url": contact.linkedin_url,
+        "referral_status": contact.referral_status, "follow_up_date": contact.follow_up_date, "notes": contact.notes,
+        "created_at": contact.created_at.isoformat(), "updated_at": contact.updated_at.isoformat(),
+    }
+
+
+def _interaction_dict(item: ContactInteraction) -> dict[str, Any]:
+    return {"id": item.id, "contact_id": item.contact_id, "kind": item.kind, "body": item.body, "job_id": item.job_id,
+            "status": item.status, "occurred_at": item.occurred_at.isoformat()}
+
+
+def _get_contact(db: Session, contact_id: int) -> Contact:
+    _ensure_crm_tables(db)
+    contact = db.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail=f"Contact {contact_id} was not found.")
+    return contact
+
+
+@app.post("/api/contacts", status_code=201)
+def create_contact(request: ContactCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _ensure_crm_tables(db)
+    now = datetime.utcnow()
+    contact = Contact(**request.model_dump(), created_at=now, updated_at=now)
+    db.add(contact)
+    db.commit()
+    return _contact_dict(contact)
+
+
+@app.get("/api/contacts")
+def list_contacts(
+    kind: Literal["recruiter", "referral", "other"] | None = None,
+    company: str | None = Query(None, max_length=255),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    _ensure_crm_tables(db)
+    statement = select(Contact).order_by(Contact.name).limit(500)
+    if kind:
+        statement = statement.where(Contact.kind == kind)
+    if company:
+        statement = statement.where(func.lower(Contact.company_name) == company.strip().lower())
+    return {"items": [_contact_dict(c) for c in db.scalars(statement).all()]}
+
+
+@app.get("/api/contacts/{contact_id}")
+def get_contact(contact_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    contact = _get_contact(db, contact_id)
+    history = db.scalars(select(ContactInteraction).where(ContactInteraction.contact_id == contact_id)
+                         .order_by(ContactInteraction.occurred_at.desc(), ContactInteraction.id.desc())).all()
+    return {**_contact_dict(contact), "interactions": [_interaction_dict(i) for i in history]}
+
+
+@app.patch("/api/contacts/{contact_id}")
+def update_contact(contact_id: int, request: ContactUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    contact = _get_contact(db, contact_id)
+    for field_name, value in request.model_dump(exclude_unset=True).items():
+        setattr(contact, field_name, value)
+    contact.updated_at = datetime.utcnow()
+    db.commit()
+    return _contact_dict(contact)
+
+
+@app.delete("/api/contacts/{contact_id}", status_code=204)
+def delete_contact(contact_id: int, db: Session = Depends(get_db)) -> None:
+    contact = _get_contact(db, contact_id)
+    for item in db.scalars(select(ContactInteraction).where(ContactInteraction.contact_id == contact_id)).all():
+        db.delete(item)
+    db.delete(contact)
+    db.commit()
+
+
+@app.post("/api/contacts/{contact_id}/interactions", status_code=201)
+def add_contact_interaction(contact_id: int, request: InteractionCreate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _get_contact(db, contact_id)
+    item = ContactInteraction(contact_id=contact_id, kind=request.kind, body=request.body.strip(), job_id=request.job_id, status="recorded")
+    db.add(item)
+    db.commit()
+    return _interaction_dict(item)
+
+
+@app.post("/api/contacts/{contact_id}/outreach-draft", status_code=201)
+def draft_outreach(contact_id: int, request: OutreachDraftRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Draft a message for the user to read, edit and send THEMSELVES. JobPilot never sends anything."""
+    contact = _get_contact(db, contact_id)
+    job_info: dict[str, Any] | None = None
+    verified: list[str] = []
+    if request.job_id is not None:
+        job, company_name, selection, _ = _job_context(db, request.job_id)
+        job_info = {"title": job.title, "company": company_name}
+        verified = list(((selection or {}).get("coverage") or {}).get("verified_covered") or [])
+    draft = build_outreach_draft(contact=_contact_dict(contact), facts=load_profile_facts(db), job=job_info, verified_skills=verified)
+    item = ContactInteraction(contact_id=contact_id, kind="outreach_draft", body=draft["body"], job_id=request.job_id, status="draft")
+    db.add(item)
+    db.commit()
+    return {**_interaction_dict(item), "facts_used": draft["facts_used"], "warnings": draft["warnings"],
+            "sent": False, "note": "This is only a draft. JobPilot does not send messages; copy it, edit it and send it yourself."}
+
+
+@app.post("/api/interactions/{interaction_id}/mark-sent")
+def mark_outreach_sent(interaction_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Record that YOU sent a drafted message yourself (this does not send anything)."""
+    _ensure_crm_tables(db)
+    item = db.get(ContactInteraction, interaction_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Interaction {interaction_id} was not found.")
+    if item.kind != "outreach_draft":
+        raise HTTPException(status_code=409, detail="Only an outreach draft can be marked as sent.")
+    item.status = "sent_by_user"
+    item.kind = "message_sent"
+    item.occurred_at = datetime.utcnow()
+    db.commit()
+    return _interaction_dict(item)
+
+
+def _prep_progress(items: list[InterviewPrepItem]) -> dict[str, Any]:
+    done = sum(1 for item in items if item.done)
+    return {"done": done, "total": len(items), "percent": round(100.0 * done / len(items), 1) if items else 0.0}
+
+
+def _prep_response(db: Session, application_id: int) -> dict[str, Any]:
+    items = db.scalars(select(InterviewPrepItem).where(InterviewPrepItem.application_id == application_id)
+                       .order_by(InterviewPrepItem.id)).all()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        grouped.setdefault(item.category, []).append({"id": item.id, "text": item.text, "done": item.done})
+    return {"application_id": application_id, "progress": _prep_progress(list(items)), "categories": grouped}
+
+
+def _tracked_application(db: Session, application_id: int) -> dict[str, Any]:
+    if "applications" not in set(inspect(db.get_bind()).get_table_names()):
+        raise HTTPException(status_code=404, detail=f"Application {application_id} was not found.")
+    row = db.execute(text("SELECT id, job_id, status FROM applications WHERE id = :id"), {"id": application_id}).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Application {application_id} was not found.")
+    return dict(row)
+
+
+@app.post("/api/applications/{application_id}/interview-prep", status_code=201)
+def create_interview_prep(application_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Build a preparation plan from the real job. Existing progress is kept: only new items are added."""
+    _ensure_crm_tables(db)
+    application = _tracked_application(db, application_id)
+    job = db.get(Job, application["job_id"])
+    if job is None:
+        raise HTTPException(status_code=404, detail="The job for this application no longer exists.")
+    company_obj = db.get(Company, job.company_id)
+    match = _serialize_match(JobMatcher(candidate_profile=_candidate_profile()).match(job))
+    plan = build_interview_plan(
+        title=job.title, company=company_obj.name if company_obj else None,
+        required_skills=list(match.get("required_skills") or []), missing_skills=list(match.get("missing_required_skills") or []),
+        role_family=str(match.get("role_family") or "default"), stage=application["status"],
+    )
+    existing = {(i.category, i.text) for i in db.scalars(select(InterviewPrepItem).where(InterviewPrepItem.application_id == application_id)).all()}
+    for entry in plan:
+        if (entry["category"], entry["text"]) not in existing:
+            db.add(InterviewPrepItem(application_id=application_id, category=entry["category"], text=entry["text"]))
+    db.commit()
+    return _prep_response(db, application_id)
+
+
+@app.get("/api/applications/{application_id}/interview-prep")
+def get_interview_prep(application_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _ensure_crm_tables(db)
+    _tracked_application(db, application_id)
+    return _prep_response(db, application_id)
+
+
+@app.patch("/api/interview-prep/{item_id}")
+def update_interview_prep_item(item_id: int, request: PrepItemUpdate, db: Session = Depends(get_db)) -> dict[str, Any]:
+    _ensure_crm_tables(db)
+    item = db.get(InterviewPrepItem, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Preparation item {item_id} was not found.")
+    item.done = request.done
+    db.commit()
+    return _prep_response(db, item.application_id)
 
 
 def _resume_version_summary(version: ResumeVersion) -> dict[str, Any]:

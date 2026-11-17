@@ -325,13 +325,14 @@ function fillSupportedFields(
   // It never clicks buttons, submits forms, uploads files,
   // or answers employer-specific questions automatically.
 
-  const normalize = (value) =>
-    String(value || "")
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim();
+  // The pure matching rules live in field_matcher.js, injected just before this function runs.
+  const matcher = globalThis.JobPilotMatcher;
+
+  if (!matcher) {
+    return { error: "The JobPilot field matcher could not be loaded on this page." };
+  }
+
+  const normalize = matcher.normalize;
 
   const isVisible = (element) => {
     if (!(element instanceof HTMLElement)) return false;
@@ -381,18 +382,11 @@ function fillSupportedFields(
   const profileValue = (key) =>
     String(profile?.[key] || "").trim();
 
-  const fullName = profileValue("contact_name");
-  const nameParts = fullName.split(/\s+/).filter(Boolean);
-
-  const firstName =
-    nameParts.length > 1
-      ? nameParts.slice(0, -1).join(" ")
-      : fullName;
-
-  const lastName =
-    nameParts.length > 1
-      ? nameParts[nameParts.length - 1]
-      : "";
+  const {
+    full: fullName,
+    first: firstName,
+    last: lastName,
+  } = matcher.splitName(profileValue("contact_name"));
 
   const answers = {
     first_name: firstName,
@@ -418,16 +412,7 @@ function fillSupportedFields(
     document.querySelectorAll("input, textarea, select")
   );
 
-  const ignoredTypes = [
-    "hidden",
-    "submit",
-    "button",
-    "reset",
-    "file",
-    "checkbox",
-    "radio",
-    "password",
-  ];
+  const ignoredTypes = matcher.IGNORED_TYPES;
 
   const visibleControls = controls.filter((element) => {
     const type = normalize(element.getAttribute("type"));
@@ -449,152 +434,27 @@ function fillSupportedFields(
 
   let recognizedFieldCount = 0;
 
-  const classify = (element) => {
-    const text = labelFor(element);
-    const type = normalize(element.getAttribute("type"));
-
-    if (ignoredTypes.includes(type)) return null;
-
-    if (/\b(first name|given name|forename)\b/.test(text)) {
-      return "first_name";
-    }
-
-    if (/\b(last name|family name|surname)\b/.test(text)) {
-      return "last_name";
-    }
-
-    if (
-      /\b(full name|applicant name|your name|legal name)\b/.test(text) ||
-      type === "name"
-    ) {
-      return "full_name";
-    }
-
-    if (
-      type === "email" ||
-      /\b(e mail|email address|email)\b/.test(text)
-    ) {
-      return "email";
-    }
-
-    if (
-      type === "tel" ||
-      /\b(phone number|mobile number|telephone number|phone|mobile)\b/.test(text)
-    ) {
-      return "phone";
-    }
-
-    if (/linkedin/.test(text)) return "linkedin_url";
-    if (/github/.test(text)) return "github_url";
-
-    if (
-      /\b(portfolio|personal website|personal site)\b/.test(text)
-    ) {
-      return "portfolio_url";
-    }
-
-    if (
-      /\b(current employer|current company|employer name)\b/.test(text)
-    ) {
-      return "current_employer";
-    }
-
-    if (
-      /\b(current job title|current title|current position|current role)\b/.test(text)
-    ) {
-      return "current_title";
-    }
-
-    if (
-      /\b(years of experience|years experience|total experience|relevant experience)\b/.test(text)
-    ) {
-      return "years_experience";
-    }
-
-    if (
-      /\b(notice period|availability to start|when can you start)\b/.test(text)
-    ) {
-      return "notice_period";
-    }
-
-    if (
-      /\b(work authorization|authorized to work|legally authorized|right to work)\b/.test(text)
-    ) {
-      return "work_authorization";
-    }
-
-    if (
-      /\b(sponsorship|visa sponsorship)\b/.test(text) &&
-      /\b(require|need|requirement|future|now or in the future|visa)\b/.test(text)
-    ) {
-      return "requires_sponsorship";
-    }
-
-    if (
-      /\b(salary expectation|expected salary|salary expectations|compensation expectation|desired compensation)\b/.test(text)
-    ) {
-      return "salary_expectation";
-    }
-
-    if (
-      element.tagName === "TEXTAREA" &&
-      /\bcover letter\b/.test(text)
-    ) {
-      return "cover_letter";
-    }
-
-    if (
-      /\b(current location|city of residence|current city|city state country)\b/.test(text)
-    ) {
-      return "current_location";
-    }
-
-    return null;
-  };
+  const classify = (element) =>
+    matcher.classifyField(
+      labelFor(element),
+      normalize(element.getAttribute("type")),
+      element.tagName
+    );
 
   const setControlValue = (element, value, kind) => {
     if (element.tagName === "SELECT") {
-      const target = normalize(value);
-
-      const options = Array.from(element.options).filter(
-        (option) => option.value !== ""
+      const chosen = matcher.pickSelectOption(
+        Array.from(element.options).map((option) => ({
+          value: option.value,
+          text: option.textContent,
+        })),
+        value,
+        kind
       );
 
-      let choice = options.find(
-        (option) =>
-          normalize(option.textContent) === target ||
-          normalize(option.value) === target
-      );
+      if (chosen === null) return false;
 
-      if (!choice && kind === "requires_sponsorship") {
-        const wantsYes = target === "yes";
-        const wantsNo = target === "no";
-
-        if (wantsYes || wantsNo) {
-          choice = options.find((option) => {
-            const optionText = normalize(
-              `${option.textContent} ${option.value}`
-            );
-
-            if (wantsYes) {
-              return (
-                /\b(yes|i will require|require sponsorship)\b/.test(
-                  optionText
-                ) &&
-                !/\b(no|not require|will not)\b/.test(optionText)
-              );
-            }
-
-            return /\b(no|i will not require|do not require|not require sponsorship)\b/.test(
-              optionText
-            );
-          });
-        }
-      }
-
-      if (!choice) return false;
-
-      element.value = choice.value;
+      element.value = chosen;
     } else {
       const prototype =
         element.tagName === "TEXTAREA"
@@ -671,6 +531,7 @@ function fillSupportedFields(
     formCount,
     pageTitle: document.title || "Untitled page",
     pageUrl: location.href,
+    portal: matcher.detectPortal(location.href),
     missingProfileValues: [...new Set(missingProfileValues)],
     customQuestionsLeftForManualReview: true,
     resumeUploadLeftForManualReview: true,
@@ -789,6 +650,12 @@ async function fillCurrentTab() {
   setStatus("Looking for clearly labelled fields…");
 
   try {
+    // Load the pure matching rules into the page first; they cannot touch the page by themselves.
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["field_matcher.js"],
+    });
+
     const execution = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: fillSupportedFields,
@@ -803,6 +670,10 @@ async function fillCurrentTab() {
 
     if (!result) {
       throw new Error("The page did not return a fill result.");
+    }
+
+    if (result.error) {
+      throw new Error(result.error);
     }
 
     let message;
@@ -853,6 +724,13 @@ async function fillCurrentTab() {
         result.note;
 
       messageType = "error";
+    }
+
+    if (result.portal) {
+      message +=
+        `\nPortal: ${result.portal.name}` +
+        (result.portal.recognised ? "" : " (no dedicated adapter)") +
+        (result.portal.note ? `\n${result.portal.note}` : "");
     }
 
     setStatus(message, messageType);

@@ -8,7 +8,8 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Literal
@@ -51,6 +52,15 @@ APPLICATION_STATUS_ORDER = {
     "withdrawn": 6,
 }
 TERMINAL_APPLICATION_STATUSES = {"offer", "rejected", "withdrawn"}
+# Suggested next step and follow-up delay, applied only when the user approves an event that
+# changes the status, and never over a next action or date the user already entered.
+# Nothing is ever sent to a recruiter; these are reminders for the user.
+SUGGESTED_FOLLOW_UPS = {
+    "assessment": ("Complete the online assessment", 3),
+    "interview": ("Prepare for and attend the interview", 5),
+    "offer": ("Review the offer and reply to the employer", 3),
+}
+
 PROPOSED_STATUS_BY_EVENT = {
     "application_confirmation": "applied",
     "assessment_invitation": "assessment",
@@ -594,11 +604,14 @@ def _received_at(message: dict[str, Any], headers: dict[str, str]) -> str | None
     if date_header:
         try:
             parsed = datetime.fromisoformat(date_header.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
         except ValueError:
-            return None
+            try:
+                parsed = parsedate_to_datetime(date_header)  # e.g. "Mon, 16 Nov 2026 10:00:00 +0530"
+            except (TypeError, ValueError, IndexError):
+                return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat(timespec="seconds")
     return None
 
 
@@ -650,7 +663,10 @@ def _application_match(
 
     Company-name presence alone is deliberately insufficient. A role-title
     overlap is mandatory, and messages substantially older than submission are
-    rejected to avoid matching historical college-placement mail.
+    rejected to avoid matching historical college-placement mail. A job that has
+    since been taken down still matches: interviews and rejections typically
+    arrive after a posting closes. A message whose date cannot be determined
+    never matches, because its consistency with the submission date cannot be shown.
     """
     corpus = _normalise_text(" ".join((subject, sender, snippet, body_text)))
     if not corpus:
@@ -665,18 +681,19 @@ def _application_match(
         JOIN companies c ON c.id = j.company_id
         WHERE a.status IN ('applied', 'assessment', 'interview', 'offer', 'rejected')
           AND a.applied_at IS NOT NULL
-          AND j.is_active = 1
         ORDER BY a.updated_at DESC, a.id DESC
         """
     ).fetchall()
 
     message_time = _parse_iso_datetime(received_at)
+    if message_time is None:
+        return None, 0.0
     candidates: list[tuple[int, float, float, str]] = []
     corpus_words = set(corpus.split())
 
     for row in rows:
         applied_time = _parse_iso_datetime(row["applied_at"])
-        if message_time and applied_time and message_time < applied_time - timedelta(days=3):
+        if applied_time and message_time < applied_time - timedelta(days=3):
             continue
 
         company = _normalise_text(row["company_name"] or "")
@@ -1284,6 +1301,18 @@ def _apply_proposed_status(
             "UPDATE applications SET status = ?, applied_at = ?, updated_at = ? WHERE id = ?",
             (next_status, applied_at, _utc_now(), application_id),
         )
+        suggestion = SUGGESTED_FOLLOW_UPS.get(next_status)
+        if suggestion:
+            action, days = suggestion
+            connection.execute(
+                """
+                UPDATE applications
+                SET next_action = COALESCE(NULLIF(TRIM(next_action), ''), ?),
+                    follow_up_date = COALESCE(NULLIF(TRIM(follow_up_date), ''), ?)
+                WHERE id = ?
+                """,
+                (action, (date.today() + timedelta(days=days)).isoformat(), application_id),
+            )
     return current, next_status
 
 

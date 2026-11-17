@@ -1,0 +1,30 @@
+# JobPilot backend (FastAPI). Build from the project root:
+#   docker build -f Dockerfile.backend -t jobpilot-backend .
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+# Source and the shipped, non-personal data files only (see .dockerignore).
+COPY app ./app
+COPY scripts ./scripts
+COPY data/target_companies.json data/match_weights.json ./data/
+
+# Run as an unprivileged user; /app/storage holds the database and must be a mounted volume.
+RUN useradd --create-home --uid 10001 jobpilot && mkdir -p /app/storage /app/data && chown -R jobpilot /app
+USER jobpilot
+
+ENV JOBPILOT_DATABASE_PATH=/app/storage/jobpilot.db
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"
+
+CMD ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

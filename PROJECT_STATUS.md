@@ -1,31 +1,59 @@
 # JobPilot — Project Status
 
-_Last updated: 2026-11-09 (session 1: repository audit + role-filter regression repair)._
-Status is based on code inspection and test runs. Nothing here is a percentage estimate.
+_Last updated: 2026-11-17. Based on code inspection, automated tests and the live checks listed below. No percentage estimates._
+
+## Verdict
+
+JobPilot is a working **personal tool**: discovery from 19 validated company sources, eligibility and explainable matching, recommendations, evidence-based documents, a tracker with history, an extension, read-only Gmail matching, analytics, contacts and interview prep. It is **not** a finished or production-ready product: several parts have only been tested with mocks or synthetic data (see "Needs your verification"), the registry is 40 companies not 50, and it is single-user with no accounts.
+
+Latest full offline regression (`python -m scripts.run_offline_tests`, temporary database copy): **50 passed, 0 failed, 10 skipped** (48 Python scripts and 2 extension test files). The skipped ones need live career sites, a running Ollama or the personal resume and were **not run** in that pass. Frontend `tsc`, lint and build are clean. The real database was not touched by testing.
 
 ## Safety rules for this repo
 - Never open or print `.env`, `credentials/`, `tokens/`, `frontend/.env.local` or the Gmail token files.
-- Baseline tests were run in a **sandbox copy** (no secrets, copy of `jobpilot.db`) because several tests write to the DB path hard-coded in `app/db/database.py`.
-- Live source sync stays disabled until a source is `verified`. Application submission stays human-controlled.
+- Tests run on temporary databases (`JOBPILOT_DATABASE_PATH`); `run_offline_tests` copies your database first.
+- Live source sync only touches sources that are `active` and verified. Application submission, email and recruiter messages stay human-controlled.
 
 ## Module matrix
 
-| Module | Implemented | Tested (offline) | Real-world verified | Missing / gaps |
-|---|---|---|---|---|
-| Role/eligibility policy (`app/services/target_role_policy.py`) | Yes (PhD, seniority, experience, country, security roles). Single source of truth: the API and sync audit now call it. `evaluate_eligibility()` returns eligible / eligible_needs_review / excluded / source_unverified with reasons and flags | Yes — `test_eligibility_decision` 3/3, `test_target_sync_audit` 11/11, `test_job_filter_policy` 6/6 (full offline suite earlier in the session: 34/35 runnable passed, the 1 failure was the missing Frontend Developer title, then fixed; the 11 role/eligibility/API/matching tests were re-run after the fix and all passed; the whole suite was not re-run end to end after that last fix) | Compared against the 331 stored jobs (see Session 3) | Salary/compensation helpers and location-matching helpers still live in `app/api/main.py`; `evaluate_eligibility` is not yet exposed through an API field |
-| Collectors (Google, Amazon, Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle HCM) | Yes | Mock/unit tests pass (`test_collector_validation_fixes` 4/4) | Live read-only dry runs on 14 Nov: Amazon, Razorpay, Groww, BrowserStack, Uber, Freshworks fetched real data; Adobe failed (Workday wd5 outage). Google, NVIDIA, CRED, Meesho were verified earlier and not re-run today | Pagination/retry/backoff/health states not uniformly verified; no source-health table |
-| 50-company registry (`data/target_companies.json`) | **40 companies** (original 30 + 10 added 15 Nov); 19 active, 8 awaiting validation, 13 discovered | `test_target_company_integrations` 11/11, `test_source_health` 7/7 | 18 active sources: 4 verified earlier, 14 validated by live read-only dry runs on 14-15 Nov | **Target is 50; 10 more companies with evidence-backed public boards still to be found** (no padding); 13 companies still have no connector |
-| Database (`app/db`, SQLite) | Companies + Jobs + SourceHealth via SQLAlchemy; tracker/email tables via raw `sqlite3`. DB path now resolved in one place (`resolve_database_path()`, env `JOBPILOT_DATABASE_PATH`) | `test_database`, `test_dedup_constraint` now use a temp DB and pass repeatedly (session 2) | Live DB: 3 companies, 331 jobs | No migrations, no job versions/source-sync history; `main.py` still builds its own second SQLAlchemy engine; `test_structured_job_matching` reads the live DB path directly (read-only) |
-| Matching (`job_matcher`, `jd_analyzer`, cache) | Yes | Pass (`test_job_matching`, `test_structured_job_matching`, `test_job_match_api`, `test_job_match_cache`, `test_jd_analyzer`) | Not verified on real jobs here | Weights not configurable via UI/config; skill-gap intelligence missing |
-| Local AI (Ollama) | `ollama_client`, `jd_insights` | Ollama-dependent tests **not run** (skipped) | Not verified this session | Provider abstraction, caching/prompt versioning to confirm |
-| Resume Studio | Parser, evidence store/selector, builder, PDF, evaluator | Synthetic tests pass; real-resume tests **not run** (sandbox excluded personal resume) | Not verified | No Resume Studio UI beyond generate/download; no DOCX preview/version history UI |
-| Application tracker (`app/applications/tracker.py`) | Yes (14 routes) | `test_application_tracker` passes | 1 application in live DB | — |
-| Gmail integration | Read-only scope only (`gmail.readonly`) | `test_email_integration`, `test_submission_gmail_lifecycle` pass | 100 messages scanned, 12 events in live DB (not re-verified) | Strict-match rules to re-audit; no live sync run this session |
-| Chrome extension (`browser_extension/jobpilot-form-assistant`) | MV3 popup + scripting, localhost only | `node --check popup.js` OK; manifest valid MV3 (permissions only `activeTab`, `scripting`; host only `127.0.0.1:8000`); `scripts_test_extension_submission_confirmation.mjs` 3/3 pass (12 Nov) | Not verified on a real employer form. Code read: no click/submit calls, fill result reports `submitted: false`, applied status only after `window.confirm` | Single `popup.js` (895 lines); no portal adapters |
-| Frontend (`frontend/`) | One 4,025-line `App.tsx` + 1 component | `npm run build` passes; `npm run lint` had 1 error (`any` in `ApplicationPreparationPanel.tsx`), fixed, now clean (12 Nov) | Smoke-tested in the in-app browser against a throwaway DB copy: Overview and Discover pages load, API connected, 331 jobs, no console errors. Other pages not clicked through | No routing/pages for most planned navigation items; no design system |
-| API security | Local-only, CORS allow-list | — | — | No authentication; fine for localhost, blocker for any hosted use |
+"Real-world verified" means checked against the real system (live site, real model, real browser), not a mock.
 
-## 30-company registry state (from `data/target_companies.json`)
+| Module | Implemented | Automated tests | Real-world verified | Missing / limits |
+|---|---|---|---|---|
+| Source registry and health | 40 companies; 19 active, 8 awaiting validation, 13 discovered; explicit states; fetch history; coverage page | `test_source_health`, `test_target_company_integrations` | Live read-only dry runs on 14-15 Nov for the 18 sources promoted since | 10 companies short of 50; 13 have no connector (Microsoft's official API found, connector not written); Uber and four name-only-evidence sources need your manual ownership check; pagination status not reported by connectors; no retry/backoff in collectors |
+| Collectors and sync | Greenhouse, Lever, Ashby, SmartRecruiters (with details), Workday, Oracle HCM, Amazon, Atlassian, Google; dedup, versions, change and removal detection, FULL/FAST, concurrency | `test_collector_validation_fixes`, `test_sync_modes`, `test_job_versions`, `test_multi_source_collectors` | Yes for the sources above (found and fixed Amazon, Uber and Workday pagination bugs that mocks had hidden). Never run as a live write to your real database from here | NVIDIA predates the Workday pagination fix: re-run it. Salesforce not dry-run (global board) |
+| Eligibility policy | One rule set (role, seniority, PhD, experience, country); states with reasons | `test_eligibility_decision`, `test_job_filter_policy`, `test_target_sync_audit` | Compared on 331 stored jobs | Rules are strict, so most boards yield few candidates |
+| Matching and recommendations | Explainable score, configurable weights, eligibility cap, mismatch categories, comparison, next actions, skill gaps | `test_match_explainability`, `test_opportunities`, `test_structured_job_matching` | Recommendations on your real stored jobs (6 candidates) | Weights not validated against outcomes; deadline and competition not modelled |
+| Local AI | Provider layer, validated fit analysis, cache, retries, off switch | `test_ai_layer` (fake provider) | **Yes**: one real fit analysis on your `gemma3:4b` (rules overrode the model, cache worked) | First call took 3m43s on CPU; set `JOBPILOT_OLLAMA_TIMEOUT=400`. No mock AI interviewer |
+| Resume Studio | Versions per job, tailoring report, fail-closed fabrication check, DOCX/PDF | `test_resume_versions`, `test_resume_builder`, `test_resume_evaluator` | Not with your real resume (synthetic evidence only) | Real-resume tests not run in the last pass |
+| Cover letters and answers | Verified-facts template, versions, exports; answer library with confirmations | `test_cover_letters_answers` | Not with your real profile | No AI polishing (deliberate); extension does not use approved answers |
+| Tracker and history | Readiness checklist, applied-only-on-confirmation, history by trigger, follow-ups | `test_application_lifecycle`, `test_application_tracker` | Existing live data predates history (backfilled) | No archive; extra statuses from the brief not added; no history view in the UI |
+| Gmail | Read-only; strict matching (applied, company, role, date); closed postings still match; approval queue; suggested follow-ups | `test_email_integration` (20 tests, mocked mail), `test_submission_gmail_lifecycle` | **Not verified live** | Needs your account; full bodies are never stored (tested) |
+| Analytics, contacts, interview prep | Funnel with small-sample rule, contact book (draft-only outreach), plan with progress | `test_insights_crm_prep` | Not with real activity | Contacts and prep have API only (no screen) |
+| Browser extension | Pure matcher module (parity-checked against the old rules on 3,744 cases), portal detection, never submits | `test_extension_field_matcher.mjs`, confirmation test | **Not verified on a real form or in Chrome** | Embedded cross-origin frames likely unreadable; no token support |
+| Frontend | Modular; Overview, Discover, Recommended, Applications, Cover letters & answers, Resume studio, Company coverage, Insights, Email | `tsc`, lint, build | Overview, Discover, Applications, Resume, Email and Coverage rendered in a browser on 14-15 Nov with no console errors. **Recommended, Cover letters & answers, Resume versions panel and Insights were not seen in a browser** (pane hidden) | No URL routing; no design-token pass |
+| Security and operations | Optional API token, CORS config, backup/restore, `run_offline_tests`, docs | `test_security_and_backup` | Backup/restore tested on temp files | Token not for extension or download links; no accounts; no monitoring |
+| Deployment | Dockerfiles, compose, nginx, `.env.example` | compose file syntax-checked | **Images never built** (no Docker daemon) | No migrations framework; Postgres untried |
+
+## Needs your verification (cannot be done from here)
+
+1. Click through **Recommended, Cover letters & answers, Resume studio (versions), Insights** in a browser.
+2. Load the extension in Chrome and try it on a real Greenhouse, Lever and Workday form.
+3. Connect Gmail and run a real sync.
+4. Run `scripts.sync_target_companies --mode full` against your real database (back up first) and re-run NVIDIA.
+5. Confirm ownership for Uber, Zscaler, GitLab, Twilio, InMobi, ServiceNow and Swiggy before setting them verified.
+6. `docker compose up --build` once and check the backend is healthy.
+7. Try the resume, cover-letter and answer features with your real resume evidence.
+
+## Session log (the 26-30 Nov work first, then earlier sessions in order)
+
+## Session 10 (17 Nov): work planned for 26-30 Nov
+- **Extension (26 Nov):** the matching rules moved into `field_matcher.js` (pure, no DOM or network); `popup.js` shrank from 895 to 773 lines and injects the matcher first. Behaviour parity was proven on 3,744 label/type/element combinations (0 differences) before the change. Portal detection (Greenhouse, Lever, Ashby, SmartRecruiters, Workday, Oracle) reports which portal was seen; unknown portals still fill only clearly labelled fields and say so. New `scripts/test_extension_field_matcher.mjs` (8 tests, including static checks that nothing can click, submit or upload and that sensitive questions are never matched). **Not tried in Chrome.**
+- **Gmail (27 Nov):** audit with mocked mail. Fixed: a job that had been taken down no longer stops replies matching its submitted application (this mattered because removal detection now marks closed jobs inactive); a message whose date cannot be determined never matches; RFC 2822 `Date` headers are understood; approval now writes a suggested next action and follow-up date (only when you had none; nothing is sent). 5 new tests (20 total, all passing). **Not run against a live account.**
+- **Analytics, contacts, interview prep (28 Nov):** `GET /api/analytics/funnel` (rates hidden below 10 applications), contact book with draft-only outreach (marking as sent only records that you sent it), `POST /api/applications/{id}/interview-prep` with progress tracking (assessment stage skips design rounds). Insights screen added. 3 tests. Contacts and prep have no screen yet. The AI mock interviewer was not built.
+- **Security and operations (29 Nov):** optional API token (`JOBPILOT_API_TOKEN`, constant-time check, registered inside CORS so a rejected browser call still shows a 401), configurable CORS origins, frontend token support via `VITE_API_TOKEN`, `scripts/backup_database.py` (online backup, integrity-checked, retention, restore with a safety copy), Dockerfiles, compose, nginx config, `.dockerignore`, `.env.example`. 4 tests. Images unbuilt.
+- **Docs and regression (30 Nov):** rewritten README; `docs/` with installation, configuration, architecture, deployment, troubleshooting, security checklist, release checklist, cleanup proposal and a generated API reference (88 endpoints); `scripts/run_offline_tests.py` (runs every offline test against a temporary database copy) and `scripts/generate_api_docs.py`.
+
+## Registry state as of 14-15 Nov (historical; current counts are in the matrix above)
 - **Active + verified (18, updated 15 Nov):** Google, NVIDIA, CRED, Meesho, Amazon, Razorpay, Groww, BrowserStack (14 Nov), Adobe, Atlassian, Databricks, Rubrik, Okta, MongoDB, Toast, Stripe, Druva, Elastic (15 Nov).
 - **Awaiting validation (9):** Uber (ownership unconfirmed), Salesforce (not dry-run), ServiceNow / Swiggy / Freshworks (no descriptions), Zscaler / GitLab / Twilio / InMobi (board-name-only evidence).
 - **Discovered, no connector (13):** see Session 7.
