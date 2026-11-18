@@ -39,12 +39,25 @@ def content_hash(values: dict[str, Any]) -> str:
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
+def ensure_support_tables(bind) -> None:
+    """Create the additive tables (job history, review queue) if an older database lacks them.
+
+    Must run BEFORE a session starts writing: creating a table from another connection in the middle
+    of a write transaction makes SQLite answer "database is locked" (found in a sandbox sync).
+    """
+    JobVersion.__table__.create(bind=bind, checkfirst=True)
+    JobReview.__table__.create(bind=bind, checkfirst=True)
+
+
 class JobRepository:
     """Database operations for companies and jobs."""
 
     def __init__(self, db: Session) -> None:
         self.db = db
         self._versions_ready = False
+        if not hasattr(db, "get_bind"):
+            return  # a test double
+        ensure_support_tables(db.get_bind())
 
     # -- schema ---------------------------------------------------------------
     def _ensure_versions_table(self) -> None:

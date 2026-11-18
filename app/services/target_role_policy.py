@@ -279,6 +279,14 @@ def is_india_or_remote_eligible(job: dict[str, Any]) -> tuple[bool, str]:
             if len(code) == 2 and code in iso_alpha2 and code != "IN":
                 return False, "outside_india"
 
+    # "Remote US", "Remote - USA", "Remote (UK)": the location itself names a foreign country, so
+    # it is not open to India (found in a live sync: such jobs were held for review).
+    foreign_remote = re.search(
+        r"\b(?:us|usa|u s|u s a|uk|u k|emea|latam|north america|europe|eu)\b", re.sub(r"[^a-z0-9]+", " ", location_text.casefold())
+    )
+    if foreign_remote and not re.search(r"\b(india|worldwide|global|anywhere)\b", normalized):
+        return False, "outside_india"
+
     remote = bool(re.search(r"\bremote\b|work from anywhere|distributed anywhere", normalized))
     india_eligibility = bool(re.search(
         r"\b(remote|work)\b.{0,80}\b(india|worldwide|global|anywhere|multiple countries)\b|"

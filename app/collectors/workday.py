@@ -5,7 +5,11 @@ from html import unescape
 from typing import Any
 from urllib.parse import quote, urljoin
 
+import time
+
 import requests
+
+from app.collectors.http_retry import with_retries
 from bs4 import BeautifulSoup
 
 from app.collectors.base import JobCollector
@@ -54,7 +58,7 @@ class WorkdayCollector(JobCollector):
         self.known_descriptions: dict[str, str] = {}
         self.source = f"workday:{self.tenant.casefold()}:{self.site.casefold()}"
         self.api_root = f"{self.host}/wday/cxs/{quote(self.tenant, safe='')}/{quote(self.site, safe='')}"
-        self.session = requests.Session()
+        self.session = with_retries(requests.Session())
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
@@ -62,19 +66,31 @@ class WorkdayCollector(JobCollector):
             "X-CALYPSO-CSRF-TOKEN": "", 
         })
 
-    def collect(self) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        offset = 0
-        known_total: int | None = None
-        for _ in range(self.max_pages):
+    def _post_page(self, offset: int) -> Any:
+        """One list page. Workday sometimes answers 200 with an empty body when it is rate
+        limiting (seen live on NVIDIA), so an unreadable body is retried a few times."""
+        last_error: Exception | None = None
+        for attempt in range(3):
             response = self.session.post(
                 f"{self.api_root}/jobs",
                 json={"appliedFacets": {}, "limit": self.page_size, "offset": offset, "searchText": ""},
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            payload = response.json()
+            try:
+                return response.json()
+            except ValueError as exc:
+                last_error = exc
+                time.sleep(1.5 * (attempt + 1))
+        raise ValueError(f"Workday answered '{self.company_name}' with an unreadable body 3 times in a row: {last_error}")
+
+    def collect(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        offset = 0
+        known_total: int | None = None
+        for _ in range(self.max_pages):
+            payload = self._post_page(offset)
             if not isinstance(payload, dict):
                 raise ValueError(f"Unexpected Workday response for '{self.company_name}'.")
             postings = payload.get("jobPostings") or []

@@ -7,6 +7,8 @@ from typing import Any
 from urllib.parse import urljoin
 
 import requests
+
+from app.collectors.http_retry import with_retries
 from bs4 import BeautifulSoup
 
 from app.collectors.base import JobCollector
@@ -49,7 +51,7 @@ class AmazonJobsCollector(JobCollector):
         self.max_detail_fetch = max_detail_fetch
         self.timeout = timeout
         self.source = "amazon_jobs:india_software_development"
-        self.session = requests.Session()
+        self.session = with_retries(requests.Session())
         self.session.headers.update({
             "Accept": "application/json,text/html,*/*",
             "User-Agent": "JobPilot/1.0 (personal job discovery; public career search)",

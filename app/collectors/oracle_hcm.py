@@ -6,6 +6,8 @@ from typing import Any
 from urllib.parse import quote, urljoin
 
 import requests
+
+from app.collectors.http_retry import with_retries
 from bs4 import BeautifulSoup
 
 from app.collectors.base import JobCollector
@@ -53,7 +55,7 @@ class OracleHCMCollector(JobCollector):
         self.source = f"oracle_hcm:{self.site_number.casefold()}"
         self.detail_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails"
         self.api_url = f"{self.base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
-        self.session = requests.Session()
+        self.session = with_retries(requests.Session())
         self.session.headers.update({
             "Accept": "application/json",
             "User-Agent": "JobPilot/1.0 (personal job discovery; public career postings)",

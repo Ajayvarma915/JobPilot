@@ -38,7 +38,7 @@ from app.ai.providers import get_provider
 from app.ai.runner import run_structured
 from app.services.sync_summary import build_change_summary
 from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, decide as decide_job_status, list_only as job_list_only
-from app.db.job_repository import JobRepository
+from app.db.job_repository import JobRepository, ensure_support_tables
 from app.services import job_review
 from app.services.job_compare import build_comparison
 from app.resume.tailoring_report import FabricationError, build_tailoring_report, fabrication_check
@@ -62,6 +62,7 @@ from app.services.source_health import (
 from app.services.target_role_policy import (
     early_career_title_exclusion,
     extract_minimum_experience_years,
+    is_india_or_remote_eligible,
     matches_software_role_family,
     requires_phd,
 )
@@ -305,7 +306,7 @@ def get_db() -> Generator[Session, None, None]:
 
     db = SessionLocal()
     try:
-        job_review.ensure_review_table(db.get_bind())
+        ensure_support_tables(db.get_bind())
         yield db
     except SQLAlchemyError:
         db.rollback()
@@ -470,6 +471,12 @@ def _find_matching_location(
 
         for entry in entries:
             if re.search(r"\bindia\b", entry, re.IGNORECASE):
+                return entry
+
+        # Feeds that name a city or use a country code ("IN, TS, Hyderabad", "bengaluru") are India
+        # too. Use the same rule the sync uses, so a stored job is never invisible to the filter.
+        for entry in entries:
+            if is_india_or_remote_eligible({"location": [entry]})[1] == "india_location":
                 return entry
 
         unrestricted_remote_pattern = re.compile(

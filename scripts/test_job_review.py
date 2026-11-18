@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.api import main as api_main  # noqa: E402
 from app.db.database import Base, SessionLocal, engine  # noqa: E402
-from app.db.models import Job, JobReview  # noqa: E402
+from app.db.models import Job, JobReview, JobVersion  # noqa: E402
 from scripts import sync_target_companies as sync  # noqa: E402
 
 STATED = "Minimum qualifications: 1 year of software development experience. Build backend services in Python."
@@ -41,9 +41,9 @@ class FakeCollector:
         return [dict(job) for job in self.jobs]
 
 
-def posting(key: str, description: str, title: str = "Software Engineer") -> dict:
+def posting(key: str, description: str, title: str = "Software Engineer", location: str = "Pune, India") -> dict:
     return {"external_id": key, "title": f"{title} {key}", "url": f"https://acme.example/{key}", "source": "lever:acme",
-            "location": ["Pune, India"], "description": description}
+            "location": [location], "description": description}
 
 
 def run_sync(jobs, company=COMPANY):
@@ -129,11 +129,36 @@ def test_unverified_sources_never_store_review_jobs() -> None:
     check(result.inserted == 0 and not titles(client, "review") and not titles(client, "main"), f"nothing is written: {result}")
 
 
+def test_older_database_without_the_new_tables() -> None:
+    """Regression: a sandbox sync on a pre-existing database failed with 'database is locked'
+    because the new tables were created in the middle of a write."""
+    client = fresh_client()
+    JobReview.__table__.drop(bind=engine)
+    JobVersion.__table__.drop(bind=engine)
+    result = run_sync([posting("a1", STATED), posting("b1", UNSTATED)])
+    check(result.status == "success" and result.inserted == 2, f"sync works on an older database: {result}")
+    check(list(titles(client, "review")) == ["Software Engineer b1"], "review queue works after the tables were added")
+    JobReview.__table__.drop(bind=engine)
+    check(client.get("/api/jobs", params={"location": "India"}).status_code == 200, "the API recreates a missing table")
+
+
+def test_india_filter_sees_city_and_code_locations() -> None:
+    """Regression: Amazon ("IN, TS, Hyderabad") and CRED ("bengaluru") were stored but invisible
+    to the default India filter, which only matched the literal word India."""
+    client = fresh_client()
+    run_sync([posting("a1", STATED, location="IN, TS, Hyderabad"), posting("b1", STATED, location="bengaluru"),
+              posting("c1", STATED, location="US, WA, Seattle")])
+    shown = set(titles(client, "main"))
+    check(shown == {"Software Engineer a1", "Software Engineer b1"}, f"India cities and codes are found, Seattle is not: {shown}")
+
+
 TESTS = [
     ("Sync stores ambiguous jobs and the API separates them", test_sync_stores_ambiguous_jobs_for_review),
     ("Accept, dismiss and reset are kept across syncs", test_decisions_are_kept_across_syncs),
     ("A job that becomes clear leaves the queue; removal still works", test_job_that_becomes_clear_leaves_the_queue_and_closed_jobs_still_close),
     ("Unverified sources store nothing", test_unverified_sources_never_store_review_jobs),
+    ("The India filter finds city names and country codes", test_india_filter_sees_city_and_code_locations),
+    ("An older database without the new tables syncs without locking", test_older_database_without_the_new_tables),
 ]
 
 

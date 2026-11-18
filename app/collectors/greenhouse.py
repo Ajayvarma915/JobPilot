@@ -5,6 +5,8 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+
+from app.collectors.http_retry import with_retries
 from bs4 import BeautifulSoup
 
 from app.collectors.base import JobCollector
@@ -40,7 +42,7 @@ class GreenhouseCollector(JobCollector):
         self.timeout = timeout
         self.source = f"greenhouse:{self.board_token.casefold()}"
 
-        self.session = requests.Session()
+        self.session = with_retries(requests.Session())
         self.session.headers.update(
             {
                 "Accept": "application/json",

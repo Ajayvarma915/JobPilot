@@ -194,6 +194,23 @@ def test_iso_country_codes_and_country_names() -> None:
         is_india_or_remote_eligible({"location": ["Taipei City, Taiwan"]}) == (False, "outside_india"),
         "Taiwan location should be explicitly outside India.",
     )
+    for foreign in ("Remote US", "Remote - USA", "Remote (UK)", "Remote, EMEA"):
+        check(
+            is_india_or_remote_eligible({"location": [foreign]}) == (False, "outside_india"),
+            f"{foreign!r} names a foreign region and must not be held as India-eligible.",
+        )
+    check(
+        is_india_or_remote_eligible({"location": ["Remote"]})[1] == "remote_country_eligibility_unverified",
+        "A plain Remote label is still kept for review.",
+    )
+    check(
+        is_india_or_remote_eligible({"location": ["Remote - India"]}) == (True, "india_location"),
+        "Remote - India is India.",
+    )
+    check(
+        is_india_or_remote_eligible({"location": ["Remote, US or India"]})[0] is True,
+        "A location that names India among others stays eligible.",
+    )
 
 
 def test_review_rows_are_not_auto_sync_eligible() -> None:

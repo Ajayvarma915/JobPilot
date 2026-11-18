@@ -43,9 +43,11 @@ Delete or archive `*.bak`, backup `.db` files, root `target_sync_*` reports and 
 ## Progress note (17 Nov)
 Built since the last note: extension matcher and portal detection, Gmail hardening (closed postings still match, undated mail never matches, suggested follow-ups), funnel analytics, contact book with draft-only outreach, interview preparation, optional API token, backup/restore, Docker files, full documentation set and a one-command offline regression. See PROJECT_STATUS.md for exactly what is verified.
 
+Done since: needs-review job tab, still-open check, per-skill resume choices, India filter fix, collector retry/backoff (see PROJECT_STATUS.md Sessions 11-12).
+
 Next, in priority order:
 1. **Verify with your own accounts and browser** (list in PROJECT_STATUS.md): extension on real forms, live Gmail, the new screens, a real sync.
 2. Reach 50 companies honestly: 10 more with verified public boards; write the Microsoft connector; confirm ownership for the held sources; re-run NVIDIA.
 3. Screens for contacts and interview prep; history view in Applications; archive and the extra statuses.
-4. Quality: collector retry/backoff, URL routing, a design pass, a migration framework if existing columns ever need to change.
+4. Quality: URL routing, a design pass, a migration framework if existing columns ever need to change.
 5. Only if needed: Postgres, multi-user accounts, a mock AI interviewer.

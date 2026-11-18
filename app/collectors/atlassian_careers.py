@@ -5,6 +5,8 @@ from html import unescape
 from typing import Any
 
 import requests
+
+from app.collectors.http_retry import with_retries
 from bs4 import BeautifulSoup
 
 from app.collectors.base import JobCollector
@@ -28,7 +30,7 @@ class AtlassianCareersCollector(JobCollector):
             raise ValueError("Atlassian company_name is required.")
         self.timeout = timeout
         self.source = "atlassian_careers"
-        self.session = requests.Session()
+        self.session = with_retries(requests.Session())
         self.session.headers.update({
             "Accept": "application/json",
             "User-Agent": "JobPilot/1.0 (personal job discovery; public career postings)",
