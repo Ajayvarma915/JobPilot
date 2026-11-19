@@ -6,8 +6,8 @@ from typing import Any
 
 
 SOFTWARE_ROLE_RE = re.compile(
-    r"\b(?:software engineer|software developer|software development engineer|"
-    r"sde|swe|back[ -]?end (?:engineer|developer)|front[ -]?end (?:engineer|developer)|"
+    r"\b(?:software engineer|software developer|software development engineer|software dev engineer|"
+    r"software dev eng|sde ?[0-9]|sde|swe|back[ -]?end (?:engineer|developer)|front[ -]?end (?:engineer|developer)|"
     r"full[ -]?stack (?:engineer|developer)|platform engineer|site reliability engineer|\bsre\b|"
     r"software security engineer|test automation engineer|"
     r"devops engineer|infrastructure software engineer|systems software engineer|"
@@ -24,14 +24,40 @@ SOFTWARE_ROLE_RE = re.compile(
     re.IGNORECASE,
 )
 
-NON_SOFTWARE_ROLE_RE = re.compile(
+# Job titles that name a non-engineering ROLE. These always exclude, whatever else the title says.
+_HARD_NON_SOFTWARE_RE = re.compile(
     r"\b(?:customer support|technical support|support associate|support analyst|"
     r"account executive|account manager|sales|business development|talent acquisition|"
-    r"recruiter|human resources|\bhr\b|finance|accounting|operations manager|"
-    r"warehouse|supply chain|marketing|copywriter|designer|product manager|"
+    r"recruiter|human resources|\bhr\b|operations manager|"
+    r"copywriter|designer|product manager|"
     r"program manager|project manager|customer success|technical account manager)\b",
     re.IGNORECASE,
 )
+# Business DOMAIN words. They name the team a software engineer works for ("Software Dev Engineer,
+# Finance Technology", "SDE, Supply Chain Automation"), so they only exclude a title that is not
+# clearly a software engineering title.
+_SOFT_NON_SOFTWARE_RE = re.compile(r"\b(?:finance|accounting|warehouse|supply chain|marketing)\b", re.IGNORECASE)
+_STRONG_SOFTWARE_TITLE_RE = re.compile(
+    r"\b(?:software (?:dev(?:elopment)? )?(?:engineer|developer)|software engineer|sde ?[0-9]?|swe|"
+    r"(?:back|front)[ -]?end (?:engineer|developer)|full[ -]?stack (?:engineer|developer))\b",
+    re.IGNORECASE,
+)
+
+
+class _NonSoftwareMatcher:
+    """Drop-in for the old NON_SOFTWARE_ROLE_RE (callers only use .search)."""
+
+    @staticmethod
+    def search(text: str):
+        found = _HARD_NON_SOFTWARE_RE.search(text)
+        if found:
+            return found
+        if _STRONG_SOFTWARE_TITLE_RE.search(text):
+            return None
+        return _SOFT_NON_SOFTWARE_RE.search(text)
+
+
+NON_SOFTWARE_ROLE_RE = _NonSoftwareMatcher()
 
 SENIORITY_TITLE_RE = re.compile(
     r"\b(?:senior|sr\.?|staff|principal|distinguished|fellow|lead|manager|"
@@ -282,10 +308,14 @@ def is_india_or_remote_eligible(job: dict[str, Any]) -> tuple[bool, str]:
     # "Remote US", "Remote - USA", "Remote (UK)": the location itself names a foreign country, so
     # it is not open to India (found in a live sync: such jobs were held for review).
     foreign_remote = re.search(
-        r"\b(?:us|usa|u s|u s a|uk|u k|emea|latam|north america|europe|eu)\b", re.sub(r"[^a-z0-9]+", " ", location_text.casefold())
+        r"\b(?:us|usa|u s|u s a|uk|u k|emea|latam|latin america|south america|north america|europe|africa|middle east|eu)\b", re.sub(r"[^a-z0-9]+", " ", location_text.casefold())
     )
-    if foreign_remote and not re.search(r"\b(india|worldwide|global|anywhere)\b", normalized):
+    if foreign_remote and not re.search(r"\b(india|worldwide|global)\b", normalized):
         return False, "outside_india"
+
+    # "Remote - Worldwide" (how the remote boards write a job open to any country) is open to India.
+    if not foreign_remote and re.search(r"\bremote\b", normalized) and re.search(r"\b(worldwide|global|anywhere)\b", normalized):
+        return True, "remote_india_or_global_eligible"
 
     remote = bool(re.search(r"\bremote\b|work from anywhere|distributed anywhere", normalized))
     india_eligibility = bool(re.search(

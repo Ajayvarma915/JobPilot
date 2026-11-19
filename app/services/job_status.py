@@ -47,3 +47,22 @@ def decide(
         return UNKNOWN, (f"The source listed only {len(fetched_ids)} jobs against {stored_active_count} stored, "
                          "which looks like a partial answer, so the job was not closed.")
     return CLOSED, "The source answered normally and this job is no longer listed."
+
+
+def classify_google_page(status_code: int, text: str) -> tuple[str, str]:
+    """Decide from one Google Careers job page whether the job is still posted.
+
+    Google answers a taken-down job with a normal page that says "Job not found / This job may have
+    been taken down" (seen live), and an open job's page lists its Responsibilities. Anything else,
+    including a failed request, is unknown and changes nothing.
+    """
+    if status_code in (404, 410):
+        return CLOSED, "Google's career site no longer has this page."
+    if status_code != 200:
+        return UNKNOWN, f"Google's career site answered with status {status_code}, so nothing can be concluded."
+    lowered = text.lower()
+    if "job not found" in lowered and "taken down" in lowered:
+        return CLOSED, "Google's career site says this job was taken down."
+    if "responsibilities" in lowered:
+        return OPEN, "The job is still posted on Google's career site."
+    return UNKNOWN, "The page did not clearly show the job, so it was left unchanged."

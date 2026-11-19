@@ -60,4 +60,7 @@ def scope_clause(scope: str):
         return Job.id.in_(select(JobReview.job_id).where(JobReview.status == PENDING))
     if scope == "dismissed":
         return Job.id.in_(select(JobReview.job_id).where(JobReview.status == DISMISSED))
+    if scope == "remote":
+        # Remote jobs keep their review chip and Accept/Dismiss, so only dismissed ones are hidden.
+        return Job.id.not_in(select(JobReview.job_id).where(JobReview.status == DISMISSED))
     return not_hidden_clause()

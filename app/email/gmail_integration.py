@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from app.applications.tracker import get_application_db
+from app.email import untracked
 from app.db.database import resolve_database_path
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,18 @@ def _ensure_email_schema(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    # One-time: look again at recent mail that was skipped as "not classified", now that unmatched
+    # application confirmations are kept as suggestions instead of being dropped.
+    suggestions_migration = "untracked_application_suggestions_v1"
+    if not connection.execute("SELECT 1 FROM email_processing_migrations WHERE name = ?", (suggestions_migration,)).fetchone():
+        untracked.ensure_table(connection)
+        connection.execute(
+            "DELETE FROM email_scanned_messages WHERE disposition = 'unclassified' AND processed_at >= ?",
+            ((datetime.now(timezone.utc) - timedelta(days=45)).isoformat(),),
+        )
+        connection.execute(
+            "INSERT INTO email_processing_migrations(name, applied_at) VALUES (?, ?)", (suggestions_migration, _utc_now())
+        )
     strict_migration = "strict_submitted_application_events_v1"
     migration_done = connection.execute(
         "SELECT 1 FROM email_processing_migrations WHERE name = ?",
@@ -835,6 +848,12 @@ def _record_message(
             """,
             (message_id, str(message.get("threadId", ""))[:255] or None, _utc_now()),
         )
+        # A confirmation for a job you are not tracking becomes a suggestion (never an automatic change).
+        if classification is not None and classification["event_type"] == "application_confirmation":
+            untracked.record_suggestion(
+                connection, message_id=message_id, received_at=received_at, sender=sender,
+                subject=subject, snippet=snippet, body_text=body_text,
+            )
         return "unclassified"
 
     connection.execute(
@@ -1069,6 +1088,9 @@ def _service_for_credentials(credentials: Any) -> Any:
     return build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
 
+MAX_LISTED_PER_SYNC = 5000
+
+
 @router.post("/sync")
 def sync_gmail(
     request: GmailSyncRequest,
@@ -1086,48 +1108,53 @@ def sync_gmail(
     sync_state = connection.execute(
         "SELECT next_page_token, sync_query_days_back FROM email_sync_state WHERE id = 1"
     ).fetchone()
-    page_token: str | None = None
+    stored_token: str | None = None
     if (
         sync_state
         and sync_state["sync_query_days_back"] == request.days_back
         and sync_state["next_page_token"]
     ):
-        page_token = str(sync_state["next_page_token"])
+        stored_token = str(sync_state["next_page_token"])
+    page_token: str | None = None
+    fetched = 0
 
-    try:
-        while scanned < request.max_messages:
-            page_size = min(100, request.max_messages - scanned)
-            list_args: dict[str, Any] = {
-                "userId": "me",
-                "q": query,
-                "maxResults": page_size,
-            }
-            if page_token:
-                list_args["pageToken"] = page_token
+    def scan_pages(start_token: str | None, *, stop_when_all_known: bool) -> tuple[str | None, bool]:
+        """Scan Gmail result pages from start_token. Returns (token for the next older page, stopped_early).
+
+        With stop_when_all_known the scan ends at the first page whose messages were all scanned
+        before: that is where the new mail ends and the old backlog begins.
+        """
+        nonlocal scanned, fetched, imported, duplicates, unclassified, errors
+        token = start_token
+        # The budget limits how many NEW messages are downloaded, not how many ids are listed, so
+        # messages already scanned never use it up (and a hard cap keeps one sync bounded).
+        while fetched < request.max_messages and scanned < MAX_LISTED_PER_SYNC:
+            page_size = min(100, request.max_messages - fetched)
+            list_args: dict[str, Any] = {"userId": "me", "q": query, "maxResults": page_size}
+            if token:
+                list_args["pageToken"] = token
 
             try:
                 listing = service.users().messages().list(**list_args).execute()
             except Exception:
-                # Gmail page tokens can expire or become invalid as the mailbox
-                # changes. Retry once from the newest page; dedupe is ID-based.
-                if not page_token:
+                # Gmail page tokens can expire or become invalid as the mailbox changes.
+                # Retry once from the newest page; dedupe is ID-based.
+                if not token:
                     raise
                 logger.info("Stored Gmail page token failed; restarting from the newest result page")
-                page_token = None
-                connection.execute(
-                    "UPDATE email_sync_state SET next_page_token = NULL WHERE id = 1"
-                )
+                token = None
+                connection.execute("UPDATE email_sync_state SET next_page_token = NULL WHERE id = 1")
                 connection.commit()
                 list_args.pop("pageToken", None)
                 listing = service.users().messages().list(**list_args).execute()
 
             messages = listing.get("messages", []) or []
             if not messages:
-                page_token = listing.get("nextPageToken")
-                break
+                return listing.get("nextPageToken"), False
 
+            new_on_page = 0
             for item in messages:
-                if scanned >= request.max_messages:
+                if fetched >= request.max_messages:
                     break
                 scanned += 1
                 message_id = str(item.get("id", "")).strip()
@@ -1141,12 +1168,10 @@ def sync_gmail(
                 if exists:
                     duplicates += 1
                     continue
+                new_on_page += 1
+                fetched += 1
                 try:
-                    message = service.users().messages().get(
-                        userId="me",
-                        id=message_id,
-                        format="full",
-                    ).execute()
+                    message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
                     outcome = _record_message(connection, message)
                     if outcome == "imported":
                         imported += 1
@@ -1163,9 +1188,26 @@ def sync_gmail(
                         type(exc).__name__,
                     )
             connection.commit()
-            page_token = listing.get("nextPageToken")
-            if not page_token:
-                break
+            token = listing.get("nextPageToken")
+            if stop_when_all_known and new_on_page == 0:
+                return token, True
+            if not token:
+                return None, False
+        return token, False
+
+    try:
+        # 1) Newest first, so mail that arrived since the last sync is never skipped. (Before this,
+        #    a sync resumed from the stored "older messages" position and never looked at new mail.)
+        newest_next, caught_up = scan_pages(None, stop_when_all_known=True)
+        if caught_up and stored_token:
+            # 2) Then keep working through the older backlog where the last sync stopped.
+            page_token = stored_token
+            if fetched < request.max_messages:
+                page_token, _ = scan_pages(stored_token, stop_when_all_known=False)
+        elif caught_up:
+            page_token = None  # nothing older has been left behind
+        else:
+            page_token = newest_next  # the budget ran out inside new mail: continue older from here
     except HTTPException:
         raise
     except Exception as exc:

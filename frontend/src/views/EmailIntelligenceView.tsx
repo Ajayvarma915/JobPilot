@@ -1,5 +1,6 @@
 import { CheckCircle2, ExternalLink, LoaderCircle, Mail, RefreshCw, ShieldCheck } from "lucide-react";
 import { formatNumber } from "../lib";
+import { EmailSuggestions } from "./EmailSuggestions";
 import { type ApplicationStatus, type TrackedApplication } from "../types";
 
 export interface EmailConnectionStatus {
@@ -100,6 +101,7 @@ export function EmailIntelligenceView({
   applications,
   loading,
   syncing,
+  suggestionsKey,
   error,
   notice,
   selectedApplicationIds,
@@ -119,6 +121,7 @@ export function EmailIntelligenceView({
   applications: TrackedApplication[];
   loading: boolean;
   syncing: boolean;
+  suggestionsKey?: number;
   error: string | null;
   notice: string | null;
   selectedApplicationIds: Record<number, string>;
@@ -423,6 +426,8 @@ export function EmailIntelligenceView({
           </div>
         )}
       </section>
+
+      <EmailSuggestions refreshKey={suggestionsKey} />
 
       <section className="rounded-2xl border border-slate-800/70 bg-white/[0.015] p-4">
         <div className="flex items-start gap-3">

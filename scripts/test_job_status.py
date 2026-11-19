@@ -16,7 +16,7 @@ from app.api import main as api_main  # noqa: E402
 from app.db.database import Base, SessionLocal, engine  # noqa: E402
 from app.db.job_repository import JobRepository  # noqa: E402
 from app.db.models import Job, JobVersion  # noqa: E402
-from app.services.job_status import CLOSED, OPEN, UNKNOWN, decide, list_only  # noqa: E402
+from app.services.job_status import CLOSED, OPEN, UNKNOWN, classify_google_page, decide, list_only  # noqa: E402
 from scripts import sync_target_companies as sync  # noqa: E402
 
 
@@ -115,14 +115,25 @@ def test_endpoint_updates_jobs_only_when_sure() -> None:
 
         no_connector = client.post(f"/api/jobs/{ids['n']}/verify-open").json()
         check(no_connector["status"] == "unknown" and "no connector" in no_connector["reason"].lower(), no_connector)
+        # Google: read the job's own page. The link in this test is not a Google page, so nothing is fetched.
         google = client.post(f"/api/jobs/{ids['g']}/verify-open").json()
-        check(google["status"] == "unknown" and "full sync" in google["reason"], google)
+        check(google["status"] == "unknown" and "not a Google careers page" in google["reason"], google)
         check(client.post("/api/jobs/99999/verify-open").status_code == 404, "unknown job -> 404")
     finally:
         api_main.load_registry_companies, sync._build_collector = original
 
 
+def test_google_page_rules() -> None:
+    gone = "<h1>Job not found.</h1><p>This job may have been taken down.</p>"
+    check(classify_google_page(200, gone)[0] == CLOSED, "the taken-down page closes the job")
+    check(classify_google_page(200, "<h2>Responsibilities</h2> Build things")[0] == OPEN, "a page with its responsibilities is open")
+    check(classify_google_page(404, "")[0] == CLOSED, "a 404 means the page is gone")
+    check(classify_google_page(503, "")[0] == UNKNOWN and classify_google_page(200, "<html>captcha</html>")[0] == UNKNOWN,
+          "errors and unclear pages change nothing")
+
+
 TESTS = [
+    ("Google page rules", test_google_page_rules),
     ("Decision rules never close a job on doubt", test_decision_rules),
     ("Endpoint closes, reopens and leaves doubtful jobs alone", test_endpoint_updates_jobs_only_when_sure),
 ]

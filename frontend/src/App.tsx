@@ -5,12 +5,13 @@ import { Brand, StatusPill } from "./components";
 import { API_BASE } from "./config";
 import { apiRequest, errorText, formatNumber, makeResumeRequest } from "./lib";
 import { NAV_ITEMS } from "./nav";
-import { type ApiStatus, type ApplicationListResponse, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type CompanyDirectoryResponse, type CompanyOption, type DashboardStats, type EvidenceSelection, type EvidenceSummary, type FilterOption, type GeneratedResume, type Job, type JobFilters, type JobListResponse, type JobSuggestionResponse, type JobTitleSuggestion, type LocationDirectoryResponse, type LocationOption, type ReviewScope, type Screen, type TrackedApplication } from "./types";
+import { type ApiStatus, type ApplicationListResponse, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type CompanyCoverage, type DashboardStats, type EvidenceSelection, type EvidenceSummary, type FilterOption, type GeneratedResume, type Job, type JobFilters, type JobListResponse, type JobSuggestionResponse, type JobTitleSuggestion, type LocationDirectoryResponse, type LocationOption, type ReviewScope, type Screen, type TrackedApplication } from "./types";
 import { ApplicationsView } from "./views/ApplicationsView";
 import { CoverageView } from "./views/CoverageView";
 import { RecommendedView } from "./views/RecommendedView";
 import { DocumentsView } from "./views/DocumentsView";
 import { InsightsView } from "./views/InsightsView";
+import { NetworkView } from "./views/NetworkView";
 import { EmailIntelligenceView, type ApplicationEmailEvent, type EmailConnectionStatus, type EmailEventListResponse, type EmailReviewFilter, type EmailSyncResult } from "./views/EmailIntelligenceView";
 import { JobsView } from "./views/JobsView";
 import { OverviewView } from "./views/OverviewView";
@@ -43,11 +44,12 @@ function App() {
   const [emailEventTotal, setEmailEventTotal] = useState(0);
   const [emailLoading, setEmailLoading] = useState(false);
   const [emailSyncing, setEmailSyncing] = useState(false);
+  const [emailSyncCount, setEmailSyncCount] = useState(0);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailNotice, setEmailNotice] = useState<string | null>(null);
   const [emailSelectedApplicationIds, setEmailSelectedApplicationIds] = useState<Record<number, string>>({});
 
-  const [companyOptions, setCompanyOptions] = useState<CompanyOption[]>([]);
+  const [companyCoverage, setCompanyCoverage] = useState<CompanyCoverage[]>([]);
   const [locationOptions, setLocationOptions] = useState<LocationOption[]>([]);
 
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -69,7 +71,7 @@ function App() {
     source: "",
     career_level: "early",
     role_scope: "software_engineering",
-    compensation_filter: "target_or_unknown",
+    compensation_filter: "all",
     review_scope: "main",
   });
 
@@ -79,7 +81,7 @@ function App() {
     source: "",
     career_level: "early",
     role_scope: "software_engineering",
-    compensation_filter: "target_or_unknown",
+    compensation_filter: "all",
     review_scope: "main",
   });
 
@@ -110,14 +112,14 @@ function App() {
         dashboard,
         jobsResponse,
         evidenceSummary,
-        companiesResponse,
+        coverageResponse,
         locationsResponse,
       ] = await Promise.all([
         apiRequest<{ status: string }>("/api/health"),
         apiRequest<DashboardStats>("/api/dashboard/stats"),
-        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0&location=India&role_scope=software_engineering&compensation_filter=target_or_unknown"),
+        apiRequest<JobListResponse>("/api/jobs?limit=5&offset=0&location=India&role_scope=software_engineering"),
         apiRequest<EvidenceSummary>("/api/evidence/summary"),
-        apiRequest<CompanyDirectoryResponse>("/api/companies?limit=1000"),
+        apiRequest<{ items: CompanyCoverage[] }>("/api/companies/coverage"),
         apiRequest<LocationDirectoryResponse>("/api/locations?limit=1000"),
       ]);
 
@@ -128,7 +130,7 @@ function App() {
       setStats(dashboard);
       setPreviewJobs(jobsResponse.items);
       setEvidence(evidenceSummary);
-      setCompanyOptions(companiesResponse.items);
+      setCompanyCoverage(coverageResponse.items);
       setLocationOptions(locationsResponse.items);
       setApiStatus("connected");
     } catch (error) {
@@ -232,13 +234,28 @@ function App() {
     setEmailError(null);
     setEmailNotice(null);
     try {
-      const result = await apiRequest<EmailSyncResult>("/api/email/sync", {
-        method: "POST",
-        body: JSON.stringify({ days_back: 180, max_messages: 100 }),
-      });
+      // One click reads up to five batches (500 messages), newest first, so a single press is enough.
+      let scanned = 0;
+      let imported = 0;
+      let duplicates = 0;
+      let review = 0;
+      let morePending = false;
+      for (let round = 0; round < 5; round += 1) {
+        const result = await apiRequest<EmailSyncResult>("/api/email/sync", {
+          method: "POST",
+          body: JSON.stringify({ days_back: 180, max_messages: 100 }),
+        });
+        scanned += result.scanned;
+        imported += result.imported;
+        duplicates += result.duplicates;
+        review += result.review_required;
+        morePending = result.more_pages_pending;
+        if (!morePending) break;
+      }
       setEmailNotice(
-        `Sync complete: scanned ${result.scanned}, imported ${result.imported}, skipped ${result.duplicates} duplicates, and left ${result.review_required} event(s) for review.${result.more_pages_pending ? " More pages remain; run Sync again to continue through older messages." : ""}`,
+        `Sync complete: scanned ${scanned}, imported ${imported}, skipped ${duplicates} duplicates, and left ${review} event(s) for review.${morePending ? " Older messages remain; press Sync Gmail again to continue." : " Your whole mailbox window has been read."} Applications found for jobs you do not track are listed under "Applications found in your email".`,
       );
+      setEmailSyncCount((count) => count + 1);
       setEmailEventFilter("pending");
       await Promise.all([loadEmailIntelligence("pending"), loadApplications()]);
     } catch (error) {
@@ -655,11 +672,13 @@ function App() {
     (item) => item.source,
   );
 
-  const companyFilterOptions: FilterOption[] = companyOptions.map((item) => ({
+  // Every known company is listed, with what you can expect from it (jobs, jobs to review, or none).
+  const companyFilterOptions: FilterOption[] = companyCoverage.map((item) => ({
     value: item.name,
     label: item.name,
-    meta: `${formatNumber(item.active_job_count)} active`,
+    meta: item.shown + item.review > 0 ? `${formatNumber(item.shown)} jobs${item.review ? ` · ${formatNumber(item.review)} to review` : ""}` : "0 jobs",
   }));
+  const companyNotes = Object.fromEntries(companyCoverage.map((item) => [item.name, item.note]));
 
   const locationFilterOptions: FilterOption[] = locationOptions.map((item) => ({
     value: item.value || item.city,
@@ -959,6 +978,7 @@ function App() {
                     filterDraft={filterDraft}
                     setFilterDraft={setFilterDraft}
                     companyOptions={companyFilterOptions}
+                    companyNotes={companyNotes}
                     locationOptions={locationFilterOptions}
                     sourceOptions={sourceOptions}
                     onApplyFilters={applyJobFilters}
@@ -1031,6 +1051,8 @@ function App() {
 
                 {screen === "insights" && <InsightsView />}
 
+                {screen === "network" && <NetworkView />}
+
                 {screen === "email" && (
                   <EmailIntelligenceView
                     connection={emailConnection}
@@ -1038,6 +1060,7 @@ function App() {
                     applications={applications}
                     loading={emailLoading}
                     syncing={emailSyncing}
+                    suggestionsKey={emailSyncCount}
                     error={emailError}
                     notice={emailNotice}
                     selectedApplicationIds={emailSelectedApplicationIds}

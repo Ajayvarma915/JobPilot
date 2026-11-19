@@ -198,18 +198,20 @@ export function SearchableFilter({
   const [open, setOpen] = useState(false);
 
   const normalizedValue = value.trim().toLocaleLowerCase();
-  const filteredOptions = options
-    .filter(
-      (option) =>
-        !normalizedValue ||
-        option.label.toLocaleLowerCase().includes(normalizedValue) ||
-        option.value.toLocaleLowerCase().includes(normalizedValue),
-    )
-    .slice(0, 10);
-
   const exactOptionExists = options.some(
     (option) => option.value.toLocaleLowerCase() === normalizedValue,
   );
+
+  // Typing narrows the list. But once a value is chosen (or the box is empty) show every option,
+  // otherwise the list would only ever show the company that is already selected.
+  const filteredOptions =
+    !normalizedValue || exactOptionExists
+      ? options
+      : options.filter(
+          (option) =>
+            option.label.toLocaleLowerCase().includes(normalizedValue) ||
+            option.value.toLocaleLowerCase().includes(normalizedValue),
+        );
 
   return (
     <div className="relative min-w-0">

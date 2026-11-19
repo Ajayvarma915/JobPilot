@@ -79,7 +79,7 @@ class _PagedFakeGmailService:
         return self._users
 
 
-def _message(*, message_id: str = "gmail-message-1", subject: str | None = None, body: str | None = None) -> dict:
+def _message(*, message_id: str = "gmail-message-1", subject: str | None = None, body: str | None = None, sender: str | None = None) -> dict:
     subject = subject or "Interview invitation: Software Engineer at ExampleCo"
     body = body or "We would like to invite you to interview for the Software Engineer role at ExampleCo."
     encoded_body = base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=")
@@ -91,7 +91,7 @@ def _message(*, message_id: str = "gmail-message-1", subject: str | None = None,
         "payload": {
             "mimeType": "text/plain",
             "headers": [
-                {"name": "From", "value": "ExampleCo Recruiting <recruiting@exampleco.com>"},
+                {"name": "From", "value": sender or "ExampleCo Recruiting <recruiting@exampleco.com>"},
                 {"name": "Subject", "value": subject},
             ],
             "body": {"data": encoded_body},
@@ -153,6 +153,9 @@ class GmailIntegrationTests(unittest.TestCase):
         cls.app = FastAPI()
         cls.app.include_router(applications_router)
         cls.app.include_router(email_router)
+        from app.email.untracked import router as untracked_router
+
+        cls.app.include_router(untracked_router)
         cls.client = TestClient(cls.app)
 
     @classmethod
@@ -342,6 +345,50 @@ class GmailIntegrationTests(unittest.TestCase):
         self.assertEqual(sync.json()["unclassified"], 1)
         self.assertEqual(self.client.get("/api/email/events").json()["total"], 0)
 
+    def test_confirmation_for_an_untracked_job_becomes_a_suggestion_you_approve(self) -> None:
+        """A referral application the user never saved (for example a Qualcomm one) is suggested, never added silently."""
+        message = _message(
+            message_id="gmail-qualcomm-confirmation",
+            subject="Successfully submitted application for Ajay Varma Kammampati",
+            sender="qualcomm@myworkday.com",
+            body="Thank you for choosing Qualcomm. We have received your application for the position Associate Engineer - 3098178 . "
+                 "Our team is currently reviewing your profile.",
+        )
+        fake = _FakeGmailService(message)
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"max_messages": 10})
+        before = self.client.get("/api/applications").json()["total"]
+        self.assertEqual(self.client.get("/api/email/events").json()["total"], 0, "it is not a tracker event")
+        pending = self.client.get("/api/email/suggestions").json()["items"]
+        self.assertEqual([(s["company_guess"], s["title_guess"]) for s in pending], [("Qualcomm", "Associate Engineer")])
+        self.assertEqual(self.client.get("/api/applications").json()["total"], before, "nothing is tracked until the user adds it")
+
+        added = self.client.post(f"/api/email/suggestions/{pending[0]['id']}/add", json={"company": "Qualcomm", "title": "Associate Engineer"})
+        self.assertEqual(added.status_code, 201, added.text)
+        application = self.client.get(f"/api/applications/{added.json()['application_id']}").json()
+        self.assertEqual((application["status"], application["job"]["company"], application["job"]["title"]),
+                         ("applied", "Qualcomm", "Associate Engineer"))
+        self.assertEqual(self.client.post(f"/api/email/suggestions/{pending[0]['id']}/add", json={"company": "Qualcomm", "title": "x"}).status_code, 409)
+        self.assertEqual(self.client.get("/api/email/suggestions").json()["items"], [], "an added suggestion leaves the pending list")
+
+    def test_only_confirmations_are_suggested_and_dismiss_works(self) -> None:
+        rejection = _message(message_id="gmail-untracked-rejection", subject="Update on your application",
+                             body="We regret to inform you that your application for the Data Analyst role was not successful.")
+        confirmation = _message(message_id="gmail-untracked-confirmation", sender="Initech Careers <careers@initech.com>",
+                                subject="Thank you for applying", body="Thank you for applying to the Platform Engineer role at Initech.")
+        fake = _PagedFakeGmailService(
+            {"gmail-untracked-rejection": rejection, "gmail-untracked-confirmation": confirmation},
+            {None: {"messages": [{"id": "gmail-untracked-rejection", "threadId": "a"}, {"id": "gmail-untracked-confirmation", "threadId": "b"}]}},
+        )
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"max_messages": 10})
+        items = self.client.get("/api/email/suggestions").json()["items"]
+        self.assertEqual([s["company_guess"] for s in items if s["gmail_message_id"] == "gmail-untracked-confirmation"], ["Initech"])
+        self.assertFalse([s for s in items if s["gmail_message_id"] == "gmail-untracked-rejection"], "other mail kinds are not suggested")
+        target = next(s for s in items if s["gmail_message_id"] == "gmail-untracked-confirmation")
+        self.assertEqual(self.client.post(f"/api/email/suggestions/{target['id']}/dismiss").status_code, 200)
+        self.assertFalse([s for s in self.client.get("/api/email/suggestions").json()["items"] if s["id"] == target["id"]])
+
     def test_review_cannot_apply_event_to_an_unsubmitted_application(self) -> None:
         saved = self.client.post("/api/applications", json={"job_id": 2}).json()
         fake = _FakeGmailService(_message(message_id="gmail-review-submitted-only"))
@@ -522,13 +569,35 @@ class GmailIntegrationTests(unittest.TestCase):
             self.assertEqual(second_sync.json()["imported"], 1)
             self.assertFalse(second_sync.json()["more_pages_pending"])
 
-        self.assertNotIn("pageToken", fake._users.messages().list_calls[0])
-        self.assertEqual(
-            fake._users.messages().list_calls[1].get("pageToken"),
-            "next-page-token",
-        )
+        # Each sync now starts from the newest page (so new mail is never skipped) and then continues
+        # through the older backlog from the stored position.
+        calls = fake._users.messages().list_calls
+        self.assertNotIn("pageToken", calls[0])
+        self.assertNotIn("pageToken", calls[1], "the second sync looks at the newest page first")
+        self.assertEqual(calls[2].get("pageToken"), "next-page-token", "then it continues the older backlog")
         events = self.client.get("/api/email/events?review_status=all").json()
         self.assertEqual(events["total"], 2)
+
+    def test_mail_that_arrives_after_a_stored_cursor_is_still_scanned(self) -> None:
+        """Regression: once a sync stored its older-messages position, later syncs only walked
+        further back and never looked at mail that arrived since (a real referral and application
+        confirmation were missed)."""
+        messages = {"gmail-old-1": _message(message_id="gmail-old-1"), "gmail-old-2": _message(message_id="gmail-old-2")}
+        pages = {
+            None: {"messages": [{"id": "gmail-old-1", "threadId": "t1"}], "nextPageToken": "older"},
+            "older": {"messages": [{"id": "gmail-old-2", "threadId": "t2"}]},
+        }
+        fake = _PagedFakeGmailService(messages, pages)
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            self.client.post("/api/email/sync", json={"days_back": 90, "max_messages": 1})  # stores the cursor
+            messages["gmail-new"] = _message(message_id="gmail-new")
+            pages[None] = {"messages": [{"id": "gmail-new", "threadId": "t3"}, {"id": "gmail-old-1", "threadId": "t1"}],
+                           "nextPageToken": "older"}
+            result = self.client.post("/api/email/sync", json={"days_back": 90, "max_messages": 5}).json()
+        self.assertEqual(result["imported"], 2, "the new message and the remaining older one are both imported")
+        ids = {row["gmail_message_id"] for row in self.client.get("/api/email/events?review_status=all").json()["items"]}
+        self.assertIn("gmail-new", ids)
+        self.assertFalse(result["more_pages_pending"])
 
     def test_ignoring_event_does_not_change_application(self) -> None:
         fake = _FakeGmailService(_message(message_id="gmail-message-ignore"))

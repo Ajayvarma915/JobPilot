@@ -60,16 +60,9 @@ def company_points(priority: int | None) -> tuple[float, str]:
 
 
 def compensation_points(compensation: dict[str, Any] | None) -> tuple[float, str]:
-    status = (compensation or {}).get("status")
-    table = {
-        "target_30_plus": (100.0, "Disclosed pay is 30 LPA or more"),
-        "target_25_plus": (80.0, "Disclosed pay meets the 25 LPA target"),
-        "target_possible": (50.0, "Disclosed range overlaps the 25 LPA target"),
-        "below_target": (0.0, "Disclosed pay is below the 25 LPA target"),
-    }
-    if status in table:
-        return table[status]
-    return 50.0, "Pay not disclosed (neutral, not a penalty)"
+    """Pay is shown on each job for information only. Product companies pay in a similar range, so it
+    never filters or re-ranks jobs (every job gets the same neutral points)."""
+    return 50.0, "Pay is shown for information only and does not affect ranking"
 
 
 def decide_action(match: dict[str, Any]) -> tuple[str, list[str]]:

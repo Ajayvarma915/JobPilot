@@ -1,9 +1,9 @@
-export type Screen = "overview" | "jobs" | "recommended" | "applications" | "documents" | "resume" | "email" | "coverage" | "insights";
+export type Screen = "overview" | "jobs" | "recommended" | "applications" | "documents" | "resume" | "email" | "coverage" | "insights" | "network";
 export type ApiStatus = "checking" | "connected" | "offline";
 export type CareerLevelFilter = "early" | "all";
 export type RoleScopeFilter = "software_engineering" | "all";
 export type CompensationFilter = "target_or_unknown" | "target_only" | "all";
-export type ReviewScope = "main" | "review" | "dismissed";
+export type ReviewScope = "main" | "remote" | "review" | "dismissed";
 
 export interface Company {
   id: number;
@@ -16,6 +16,16 @@ export interface CompanyOption extends Company {
   job_count: number;
   active_job_count: number;
   source_types: string[];
+}
+
+// One line per company JobPilot knows, so no company silently disappears from the Company filter.
+export interface CompanyCoverage {
+  name: string;
+  shown: number;
+  review: number;
+  state: string | null;
+  in_registry: boolean;
+  note: string;
 }
 
 export interface LocationOption {

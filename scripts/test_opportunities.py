@@ -51,12 +51,12 @@ def test_scoring_signals() -> None:
                               compensation={"status": "target_30_plus"}, now=now)
     stale = score_opportunity(match=_match(), posted_at=now - timedelta(days=90), company_priority=3,
                               compensation={"status": "not_disclosed"}, now=now)
-    check(fresh["opportunity_score"] > stale["opportunity_score"], "fresher, higher-priority, better-paid ranks higher")
+    check(fresh["opportunity_score"] > stale["opportunity_score"], "fresher, higher-priority ranks higher")
     check(sum(fresh["weights"].values()) == 100.0, "weights add to 100")
     undisclosed = score_opportunity(match=_match(), posted_at=now, company_priority=1, compensation={"status": "not_disclosed"}, now=now)
     below = score_opportunity(match=_match(), posted_at=now, company_priority=1, compensation={"status": "below_target"}, now=now)
-    check(undisclosed["components"]["compensation"] == 50.0 and below["components"]["compensation"] == 0.0, "undisclosed pay is neutral; disclosed low pay is not")
-    check(any("not a penalty" in s for s in undisclosed["signals"]), "the neutral treatment is stated")
+    check(undisclosed["components"]["compensation"] == 50.0 and below["components"]["compensation"] == 50.0, "pay never changes the score")
+    check(any("does not affect ranking" in s for s in undisclosed["signals"]), "the neutral treatment is stated")
     unknown_date = score_opportunity(match=_match(), now=now)
     check(any("unknown" in s.lower() for s in unknown_date["signals"]), "unknown dates are reported")
     skipped = score_opportunity(match=_match(eligibility="excluded", reasons=["x"], score=95), posted_at=now, company_priority=1,

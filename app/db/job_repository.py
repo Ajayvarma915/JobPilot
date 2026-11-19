@@ -279,6 +279,24 @@ class JobRepository:
         self.db.flush()
         self._record_version(job, "removed")
 
+    def mark_source_missing_inactive(self, source: str, seen_external_ids: set[str]) -> list[Job]:
+        """For a feed that mixes many employers: close this source's jobs that are no longer listed."""
+        now = datetime.utcnow()
+        removed: list[Job] = []
+        for job in self.db.scalars(select(Job).where(Job.source == source, Job.is_active.is_(True))).all():
+            if job.external_id is not None and job.external_id in seen_external_ids:
+                continue
+            if not self._has_versions(job):
+                self._record_version(job, "baseline", now=job.last_seen_at)
+            job.is_active = False
+            self.db.flush()
+            self._record_version(job, "removed", now=now)
+            removed.append(job)
+        return removed
+
+    def active_source_count(self, source: str) -> int:
+        return int(self.db.scalar(select(func.count()).select_from(Job).where(Job.source == source, Job.is_active.is_(True))) or 0)
+
     # -- removal detection ----------------------------------------------------
     def active_job_count(self, company: Company, sources: Iterable[str]) -> int:
         return int(

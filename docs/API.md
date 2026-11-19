@@ -53,6 +53,7 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 | Method | Path | What it does |
 |---|---|---|
 | GET | `/api/companies` | List Companies |
+| GET | `/api/companies/coverage` | Every company JobPilot knows (all registry companies plus any with stored jobs), with an honest line |
 
 ## contacts
 
@@ -93,6 +94,9 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 | GET | `/api/email/oauth/callback` | Complete Gmail Oauth |
 | GET | `/api/email/oauth/start` | Start Gmail Oauth |
 | GET | `/api/email/status` | Get Email Status |
+| GET | `/api/email/suggestions` | List Suggestions |
+| POST | `/api/email/suggestions/{suggestion_id}/add` | Track this application as Applied (you confirm the company and role first). |
+| POST | `/api/email/suggestions/{suggestion_id}/dismiss` | Dismiss Suggestion |
 | POST | `/api/email/sync` | Sync Gmail |
 
 ## evidence
@@ -132,9 +136,12 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 |---|---|---|
 | GET | `/api/jobs` | List Jobs |
 | GET | `/api/jobs/compare` | Compare several jobs side by side using their match data (computed and cached if missing). |
+| POST | `/api/jobs/import-link` | Add one job from its page link (for a referral at a company with no public job list). |
 | GET | `/api/jobs/{job_id}` | Get Job |
 | POST | `/api/jobs/{job_id}/ai-analysis` | Run on-demand LLM extraction beside the deterministic JD analysis. |
 | POST | `/api/jobs/{job_id}/ai-fit` | Explain how the candidate fits this job. |
+| POST | `/api/jobs/{job_id}/review-decision` | Accept a held job into the normal list, dismiss it, or put it back to waiting. |
+| POST | `/api/jobs/{job_id}/verify-open` | Check against the employer's own career source whether this job is still listed. |
 
 ## locations
 
@@ -178,4 +185,6 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 
 | Method | Path | What it does |
 |---|---|---|
+| POST | `/api/sync/start` | Update jobs now: every company career page (closing jobs that were taken down), then the remote boards. |
+| GET | `/api/sync/status` | Job Update Status |
 | GET | `/api/sync/summary` | What changed in the stored jobs recently: new, updated, reactivated and removed. |

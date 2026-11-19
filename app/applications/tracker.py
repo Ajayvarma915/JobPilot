@@ -2054,6 +2054,12 @@ def delete_application(
         "DELETE FROM applications WHERE id = ?",
         (application_id,),
     )
+    # Its status history goes with it, so a removed entry leaves nothing behind.
+    # (The job listing and any resume files stay.)
+    try:
+        connection.execute("DELETE FROM application_status_history WHERE application_id = ?", (application_id,))
+    except sqlite3.OperationalError:
+        pass  # older database without the history table
     connection.commit()
 
     return {

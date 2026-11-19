@@ -1,10 +1,12 @@
 import { VerifyOpenButton } from "./VerifyOpenButton";
+import { UpdateJobsButton } from "./UpdateJobsButton";
+import { AddJobByLink } from "./AddJobByLink";
 import { type FormEvent } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { BriefcaseBusiness, Building2, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink, Filter, Globe2, LoaderCircle, MapPin, Plus, RefreshCw, Search, Sparkles, Target } from "lucide-react";
 import { CompensationBadge, EmptyState, MatchBadge, MatchDetails, SearchableFilter, SectionHeading } from "../components";
 import { compactText, formatNumber } from "../lib";
-import { type CareerLevelFilter, type CompensationFilter, type FilterOption, type Job, type JobFilters, type JobTitleSuggestion, type ReviewScope, type RoleScopeFilter } from "../types";
+import { type CareerLevelFilter, type FilterOption, type Job, type JobFilters, type JobTitleSuggestion, type ReviewScope, type RoleScopeFilter } from "../types";
 
 export function JobsView({
   jobs,
@@ -24,6 +26,7 @@ export function JobsView({
   filterDraft,
   setFilterDraft,
   companyOptions,
+  companyNotes,
   locationOptions,
   sourceOptions,
   onApplyFilters,
@@ -55,6 +58,7 @@ export function JobsView({
   filterDraft: JobFilters;
   setFilterDraft: (value: JobFilters) => void;
   companyOptions: FilterOption[];
+  companyNotes: Record<string, string>;
   locationOptions: FilterOption[];
   sourceOptions: string[];
   onApplyFilters: (event: FormEvent<HTMLFormElement>) => void;
@@ -76,22 +80,28 @@ export function JobsView({
       <SectionHeading
         eyebrow="Discover"
         title="Explore opportunities"
-        description="Default feed: software-engineering roles in India/India-eligible remote locations, early-career suitable, prioritizing disclosed compensation of ₹25 LPA or more."
+        description="Default feed: software-engineering roles in India/India-eligible remote locations, early-career suitable. Pay is shown when a posting discloses it, but it never filters or ranks jobs."
         right={
-          <button
-            className="secondary-button"
-            onClick={onRefresh}
-            disabled={loading}
-          >
-            <RefreshCw size={14} className={loading ? "loading-ring" : ""} />
-            Refresh
-          </button>
+          <div className="flex flex-wrap items-start gap-2">
+            <UpdateJobsButton onFinished={onRefresh} />
+            <button
+              className="secondary-button"
+              onClick={onRefresh}
+              disabled={loading}
+            >
+              <RefreshCw size={14} className={loading ? "loading-ring" : ""} />
+              Refresh
+            </button>
+          </div>
         }
       />
+
+      <AddJobByLink onAdded={onRefresh} />
 
       <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Job lists">
         {([
           ["main", "Jobs"],
+          ["remote", "Remote jobs"],
           ["review", "Needs your review"],
           ["dismissed", "Dismissed"],
         ] as Array<[ReviewScope, string]>).map(([scope, label]) => (
@@ -105,6 +115,11 @@ export function JobsView({
             {label}
           </button>
         ))}
+        {reviewScope === "remote" && (
+          <p className="text-[11px] text-slate-400">
+            Remote-only roles that are not limited to another country. Check each posting for the countries it can be worked from. The location filter does not apply here.
+          </p>
+        )}
         {reviewScope === "review" && (
           <p className="text-[11px] text-slate-400">
             These roles fit your location and role rules, but something is unclear (often the years of experience). Accept the ones that look right.
@@ -264,22 +279,6 @@ export function JobsView({
             <option value="all">All job functions</option>
           </select>
 
-          <select
-            className="field"
-            value={filterDraft.compensation_filter}
-            aria-label="Compensation target filter"
-            onChange={(event) =>
-              setFilterDraft({
-                ...filterDraft,
-                compensation_filter: event.target.value as CompensationFilter,
-              })
-            }
-          >
-            <option value="target_or_unknown">₹25+ LPA or undisclosed</option>
-            <option value="target_only">Confirmed ₹25+ LPA only</option>
-            <option value="all">All salary levels</option>
-          </select>
-
           <button className="secondary-button" type="submit">
             <Filter size={14} />
             Apply filters
@@ -288,7 +287,7 @@ export function JobsView({
 
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
           <span>
-            {companyOptions.length} companies with active jobs
+            {companyOptions.length} companies tracked, {companyOptions.filter((option) => !option.meta?.startsWith("0 ")).length} with jobs
           </span>
           <span>
             {locationOptions.length} locations in collected listings
@@ -331,9 +330,12 @@ export function JobsView({
             icon={Search}
             title="No matching opportunities"
             message={
-              filterDraft.career_level === "early"
+              (filterDraft.company && companyNotes[filterDraft.company]
+                ? `${filterDraft.company}: ${companyNotes[filterDraft.company]}. `
+                : "") +
+              (filterDraft.career_level === "early"
                 ? "No jobs matched all filters and the early-career rules. Choose All role levels to inspect other jobs."
-                : "Try another keyword, company, location or source."
+                : "Try another keyword, company, location or source.")
             }
           />
         </div>

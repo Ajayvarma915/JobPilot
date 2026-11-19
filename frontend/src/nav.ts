@@ -1,4 +1,4 @@
-import { BriefcaseBusiness, Building2, TrendingUp, FileText, Target, ClipboardList, FileCheck2, LayoutDashboard, Mail, type LucideIcon } from "lucide-react";
+import { BriefcaseBusiness, Building2, TrendingUp, FileText, Target, ClipboardList, FileCheck2, LayoutDashboard, Mail, Users, type LucideIcon } from "lucide-react";
 import { type Screen } from "./types";
 
 export const NAV_ITEMS: Array<{
@@ -48,6 +48,12 @@ export const NAV_ITEMS: Array<{
     label: "Insights",
     description: "Funnel and follow-ups",
     icon: TrendingUp,
+  },
+  {
+    id: "network",
+    label: "Network",
+    description: "Recruiters and referrals",
+    icon: Users,
   },
   {
     id: "coverage",

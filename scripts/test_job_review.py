@@ -152,11 +152,33 @@ def test_india_filter_sees_city_and_code_locations() -> None:
     check(shown == {"Software Engineer a1", "Software Engineer b1"}, f"India cities and codes are found, Seattle is not: {shown}")
 
 
+def test_remote_jobs_have_their_own_section() -> None:
+    client = fresh_client()
+    run_sync([posting("a1", STATED, location="Pune, India"),
+              posting("r1", STATED, location="Remote - India"),
+              posting("r2", STATED, location="Remote"),
+              posting("r3", STATED, location="Remote US"),
+              posting("h1", STATED, location="Remote; Pune, India")])
+    main, remote = set(titles(client, "main")), titles(client, "remote")
+    check(main == {"Software Engineer a1", "Software Engineer h1"}, f"office and hybrid jobs only in the main list: {main}")
+    check(set(remote) == {"Software Engineer r1", "Software Engineer r2"}, f"remote-only jobs in the remote section, not Remote US: {set(remote)}")
+    check(remote["Software Engineer r2"]["review"]["status"] == "pending", "a plain Remote job still shows why it needs a check")
+    check(not any(t.startswith("Software Engineer r") for t in titles(client, "review")), "remote jobs are not duplicated in the review tab")
+    session = SessionLocal()
+    try:
+        rid = session.query(Job).filter(Job.external_id == "r2").one().id
+    finally:
+        session.close()
+    client.post(f"/api/jobs/{rid}/review-decision", json={"decision": "dismiss"})
+    check("Software Engineer r2" not in titles(client, "remote"), "a dismissed remote job is hidden")
+
+
 TESTS = [
     ("Sync stores ambiguous jobs and the API separates them", test_sync_stores_ambiguous_jobs_for_review),
     ("Accept, dismiss and reset are kept across syncs", test_decisions_are_kept_across_syncs),
     ("A job that becomes clear leaves the queue; removal still works", test_job_that_becomes_clear_leaves_the_queue_and_closed_jobs_still_close),
     ("Unverified sources store nothing", test_unverified_sources_never_store_review_jobs),
+    ("Remote jobs have their own section", test_remote_jobs_have_their_own_section),
     ("The India filter finds city names and country codes", test_india_filter_sees_city_and_code_locations),
     ("An older database without the new tables syncs without locking", test_older_database_without_the_new_tables),
 ]

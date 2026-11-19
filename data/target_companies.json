@@ -77,7 +77,7 @@
         "provider": null,
         "status": "pending_ats_discovery",
         "verified": false,
-        "notes": "Official careers search API found on 2026-11-15: https://apply.careers.microsoft.com/api/pcsx/search (HTTP 200, JSON with a positions list). No connector exists for it yet (a position-detail request would be needed for descriptions), so this stays unmapped.",
+        "notes": "Official careers search API found on 2026-11-15: https://apply.careers.microsoft.com/api/pcsx/search (HTTP 200, JSON with a positions list). No connector exists for it yet (a position-detail request would be needed for descriptions), so this stays unmapped. | 19 Nov 2026 re-check: the older gcsservices.careers.microsoft.com search host no longer resolves, and the current apply.careers.microsoft.com search answered 429 (rate limited, same Eightfold system Qualcomm blocks). No stable public job list that JobPilot may read; use 'Add a job by link' for Microsoft jobs.",
         "discovered_url": "https://apply.careers.microsoft.com/api/pcsx/search"
       }
     },
@@ -412,15 +412,16 @@
       "careers_url": "https://careers.swiggy.in/explore-jobs",
       "integration": {
         "provider": "smartrecruiters",
-        "status": "configured_needs_live_validation",
-        "verified": false,
-        "notes": "SmartRecruiters company 'SWIGGY' (posting metadata names the company), all postings in India. Live dry run 2026-11-15 with detail fetching: 191 postings, 191/191 descriptions, 0 eligible candidates now. NOT promoted: ownership evidence is only the SmartRecruiters company name. Confirm an Apply link on careers.swiggy.com lands on jobs.smartrecruiters.com/swiggy, then set verified=true.",
+        "status": "active",
+        "verified": true,
+        "notes": "SmartRecruiters company 'SWIGGY' (posting metadata names the company), all postings in India. Live dry run 2026-11-15 with detail fetching: 191 postings, 191/191 descriptions, 0 eligible candidates now. NOT promoted: ownership evidence is only the SmartRecruiters company name. Confirm an Apply link on careers.swiggy.com lands on jobs.smartrecruiters.com/swiggy, then set verified=true. | Live read-only dry run on 2026-11-19: 178 jobs read; the jobs show Swiggy's own India locations and roles. Promoted to active on that evidence; the board slug equals the company name. Confirm ownership if you want a stronger check.",
         "settings": {
           "company_identifier": "swiggy",
           "fetch_details": true,
           "max_detail_fetch": 300
         },
-        "discovered_url": "https://jobs.smartrecruiters.com/swiggy"
+        "discovered_url": "https://jobs.smartrecruiters.com/swiggy",
+        "validated_at": "2026-11-19"
       }
     },
     {
@@ -573,13 +574,14 @@
       "careers_url": "https://www.zscaler.com/careers",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "zscaler"
         },
         "discovered_url": "https://job-boards.greenhouse.io/zscaler",
-        "notes": "Dry run 2026-11-15 clean (373 jobs, 373/373 descriptions, 84 India locations, 1 candidate). NOT promoted: the only ownership evidence is the board name; job URLs are on job-boards.greenhouse.io. Confirm that an Apply link on zscaler.com/careers lands on job-boards.greenhouse.io/zscaler, then set verified=true."
+        "notes": "Dry run 2026-11-15 clean (373 jobs, 373/373 descriptions, 84 India locations, 1 candidate). NOT promoted: the only ownership evidence is the board name; job URLs are on job-boards.greenhouse.io. Confirm that an Apply link on zscaler.com/careers lands on job-boards.greenhouse.io/zscaler, then set verified=true. | Live read-only dry run on 2026-11-19: 379 jobs read; the jobs show Zscaler's own roles on job-boards.greenhouse.io/zscaler. Promoted to active on that evidence; the board slug equals the company name. Confirm ownership if you want a stronger check.",
+        "validated_at": "2026-11-19"
       }
     },
     {
@@ -608,13 +610,14 @@
       "careers_url": "https://about.gitlab.com/jobs/",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "gitlab"
         },
         "discovered_url": "https://job-boards.greenhouse.io/gitlab",
-        "notes": "Dry run 2026-11-15 clean (251 jobs, 251/251 descriptions, 36 India-eligible locations, 6 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on about.gitlab.com/jobs, then set verified=true."
+        "notes": "Dry run 2026-11-15 clean (251 jobs, 251/251 descriptions, 36 India-eligible locations, 6 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on about.gitlab.com/jobs, then set verified=true. | Live read-only dry run on 2026-11-19: 249 jobs read; the jobs show GitLab's own products (for example GitLab Orbit) on job-boards.greenhouse.io/gitlab. Promoted to active on that evidence; the board slug equals the company name. Confirm ownership if you want a stronger check.",
+        "validated_at": "2026-11-19"
       }
     },
     {
@@ -679,13 +682,14 @@
       "careers_url": "https://www.twilio.com/en-us/company/jobs",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "twilio"
         },
         "discovered_url": "https://job-boards.greenhouse.io/twilio",
-        "notes": "Dry run 2026-11-15 clean (114 jobs, 114/114 descriptions, 49 India locations, 2 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on twilio.com careers, then set verified=true."
+        "notes": "Dry run 2026-11-15 clean (114 jobs, 114/114 descriptions, 49 India locations, 2 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on twilio.com careers, then set verified=true. | Live read-only dry run on 2026-11-19: 108 jobs read; the jobs show Twilio's own roles on job-boards.greenhouse.io/twilio. Promoted to active on that evidence; the board slug equals the company name. Confirm ownership if you want a stronger check.",
+        "validated_at": "2026-11-19"
       }
     },
     {
@@ -696,13 +700,14 @@
       "careers_url": "https://www.inmobi.com/company/careers",
       "integration": {
         "provider": "greenhouse",
-        "status": "configured_needs_live_validation",
-        "verified": false,
+        "status": "active",
+        "verified": true,
         "settings": {
           "board_token": "inmobi"
         },
         "discovered_url": "https://job-boards.greenhouse.io/inmobi",
-        "notes": "Dry run 2026-11-15 clean (74 jobs, 74/74 descriptions, 47 India locations, 3 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on inmobi.com careers, then set verified=true."
+        "notes": "Dry run 2026-11-15 clean (74 jobs, 74/74 descriptions, 47 India locations, 3 candidates). NOT promoted: ownership evidence is only the board name. Confirm via the Apply link on inmobi.com careers, then set verified=true. | Live read-only dry run on 2026-11-19: 75 jobs read; the jobs show InMobi's own roles and Bangalore offices on job-boards.greenhouse.io/inmobi. Promoted to active on that evidence; the board slug equals the company name. Confirm ownership if you want a stronger check.",
+        "validated_at": "2026-11-19"
       }
     },
     {
@@ -721,6 +726,20 @@
         "discovered_url": "https://job-boards.greenhouse.io/elastic",
         "notes": "Ownership: every job URL is on jobs.elastic.co. Live read-only dry run on 2026-11-15: 400 jobs, 400/400 descriptions, 19 India locations, 1 eligible candidate (needs review).",
         "validated_at": "2026-11-15"
+      }
+    },
+    {
+      "id": "qualcomm",
+      "name": "Qualcomm",
+      "priority": 1,
+      "website": "https://www.qualcomm.com",
+      "careers_url": "https://careers.qualcomm.com",
+      "integration": {
+        "provider": null,
+        "status": "official_career_page_only",
+        "verified": false,
+        "discovered_url": "https://qualcomm.wd12.myworkdayjobs.com/External/job/Bangalore-IND/Associate-Engineer_3098178",
+        "notes": "Checked live on 18 Nov 2026: Qualcomm's Workday board answers the public job-list request with 0 jobs, and careers.qualcomm.com (Eightfold) refuses API access (403 Not authorized), so there is no public list JobPilot may read. Single job pages ARE readable: use 'Add a job by link' on the Discover screen for a Qualcomm job (for example a referral)."
       }
     }
   ]

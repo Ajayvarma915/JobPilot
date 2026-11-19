@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { motion } from "motion/react";
-import { Building2, CheckCircle2, CalendarDays, ClipboardList, Clock3, ExternalLink, LoaderCircle, MapPin, Plus, RefreshCw, Save, Search, Zap } from "lucide-react";
+import { Building2, CheckCircle2, CalendarDays, ClipboardList, Clock3, ExternalLink, LoaderCircle, MapPin, Plus, RefreshCw, Save, Search, Trash2, Zap } from "lucide-react";
 import ApplicationPreparationPanel from "../components/ApplicationPreparationPanel";
+import { ApplicationHistory } from "./ApplicationHistory";
+import { InterviewPrep } from "./InterviewPrep";
 import { EmptyState, SectionHeading } from "../components";
-import { errorText, formatNumber } from "../lib";
+import { apiRequest, errorText, formatNumber } from "../lib";
 import { APPLICATION_STATUSES, type ApplicationStats, type ApplicationStatus, type ApplicationUpdatePayload, type TrackedApplication } from "../types";
 
 function ApplicationCard({
@@ -26,7 +28,24 @@ function ApplicationCard({
   const [followUpDate, setFollowUpDate] = useState(application.follow_up_date ?? "");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
   const [savedMessage, setSavedMessage] = useState(false);
+
+  const handleUntrack = async () => {
+    if (!window.confirm(`Remove "${application.job.title}" at ${application.job.company} from your pipeline? The job listing stays; only your tracking, notes and status history for it are removed.`)) {
+      return;
+    }
+    setRemoving(true);
+    setSaveError(null);
+    try {
+      await apiRequest(`/api/applications/${application.id}`, { method: "DELETE" });
+      onRefresh();
+    } catch (error) {
+      setSaveError(errorText(error));
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -160,10 +179,16 @@ function ApplicationCard({
             <span className="text-slate-600">Save changes to persist your status and notes.</span>
           )}
         </div>
-        <button className="primary-button !px-3 !py-2" onClick={() => void handleSave()} disabled={saving}>
-          {saving ? <LoaderCircle size={13} className="loading-ring" /> : <Save size={13} />}
-          {saving ? "Saving..." : "Save changes"}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button className="secondary-button !px-3 !py-2" onClick={() => void handleUntrack()} disabled={removing} title="Remove this from your pipeline. The job listing itself stays.">
+            {removing ? <LoaderCircle size={13} className="loading-ring" /> : <Trash2 size={13} />}
+            {removing ? "Removing..." : "Untrack"}
+          </button>
+          <button className="primary-button !px-3 !py-2" onClick={() => void handleSave()} disabled={saving}>
+            {saving ? <LoaderCircle size={13} className="loading-ring" /> : <Save size={13} />}
+            {saving ? "Saving..." : "Save changes"}
+          </button>
+        </div>
       </div>
 
       <ApplicationPreparationPanel
@@ -174,6 +199,9 @@ function ApplicationCard({
         onTailorResume={onTailorResume}
         onRefresh={onRefresh}
       />
+
+      <ApplicationHistory applicationId={application.id} status={application.status} />
+      {["assessment", "interview", "offer"].includes(application.status) && <InterviewPrep applicationId={application.id} />}
     </motion.article>
   );
 }

@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from app.applications.tracker import router as applications_router
 from app.email.gmail_integration import router as email_router
+from app.email.untracked import router as untracked_email_router
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import case, create_engine, func, inspect, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -37,9 +38,10 @@ from app.ai.fit_analysis import (
 from app.ai.providers import get_provider
 from app.ai.runner import run_structured
 from app.services.sync_summary import build_change_summary
-from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, decide as decide_job_status, list_only as job_list_only
+from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, classify_google_page, decide as decide_job_status, list_only as job_list_only
 from app.db.job_repository import JobRepository, ensure_support_tables
-from app.services import job_review
+from app.services import job_review, sync_runner
+from app.services.job_import import ImportError_, fetch_job
 from app.services.job_compare import build_comparison
 from app.resume.tailoring_report import FabricationError, build_tailoring_report, fabrication_check
 from app.applications.answers import (
@@ -326,6 +328,7 @@ app = FastAPI(
 
 app.include_router(applications_router)
 app.include_router(email_router)
+app.include_router(untracked_email_router)
 
 # Optional API token. When JOBPILOT_API_TOKEN is set, every /api request must send it as
 # "Authorization: Bearer <token>" (or "X-JobPilot-Token"). Unset = local single-user mode,
@@ -451,6 +454,15 @@ def _location_contains_country(
         bool(country_pattern.search(entry))
         for entry in _location_entries(stored_location)
     )
+
+
+_REMOTE_ENTRY_RE = re.compile(r"\bremote\b|work\s+from\s+anywhere|\bdistributed\b|anywhere\s+in\s+the\s+world", re.IGNORECASE)
+
+
+def _is_remote_only(stored_location: str | None) -> bool:
+    """True when every listed location is a remote one (a job also listing a city is not remote-only)."""
+    entries = _location_entries(stored_location)
+    return bool(entries) and all(_REMOTE_ENTRY_RE.search(entry) for entry in entries)
 
 
 def _find_matching_location(
@@ -957,6 +969,60 @@ def dashboard_stats(db: Session = Depends(get_db)) -> dict[str, Any]:
 # Searchable company directory
 # ---------------------------------------------------------------------
 
+@app.get("/api/companies/coverage")
+def company_coverage(db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Every company JobPilot knows (all registry companies plus any with stored jobs), with an honest line
+    on what you can expect: how many jobs show, how many wait for review, or why there are none.
+
+    This feeds the Company filter, so a company never silently disappears from the list.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    rows = db.execute(
+        select(Company.name, func.count(Job.id), func.sum(case((job_review.scope_clause("review"), 1), else_=0)))
+        .join(Job, Job.company_id == Company.id)
+        .where(Job.is_active.is_(True), job_review.not_hidden_clause() | job_review.scope_clause("review"))
+        .group_by(Company.name)
+    ).all()
+    for name, total, review in rows:
+        review = int(review or 0)
+        counts[name] = {"shown": int(total or 0) - review, "review": review}
+
+    try:
+        health = {item["name"]: item for item in build_health_report(load_registry_companies(), load_health_rows(db))["items"]}
+    except (OSError, ValueError, SQLAlchemyError):
+        health = {}
+
+    def note_for(name: str, shown: int, review: int) -> str:
+        info = health.get(name)
+        if shown or review:
+            parts = [f"{shown} job{'s' if shown != 1 else ''}"]
+            if review:
+                parts.append(f"{review} to review")
+            return ", ".join(parts)
+        if info is None:
+            return "No jobs stored"
+        state = info["state"]
+        if state == "active":
+            if info["never_fetched"]:
+                return "Not read yet: press Update jobs now"
+            raw = info.get("raw_jobs")
+            return (f"{raw} jobs read, none fit your role, location and experience rules" if raw is not None
+                    else "Read, but no job fits your rules")
+        if state in ("discovered", "awaiting_validation", "configured", "verified"):
+            return "No public job list JobPilot can read yet (use Add a job by link)"
+        return "Source unavailable right now"
+
+    names = set(counts) | set(health)
+    items = []
+    for name in sorted(names, key=str.casefold):
+        c = counts.get(name, {"shown": 0, "review": 0})
+        info = health.get(name) or {}
+        items.append({"name": name, "shown": c["shown"], "review": c["review"], "state": info.get("state"),
+                      "in_registry": name in health, "note": note_for(name, c["shown"], c["review"])})
+    items.sort(key=lambda item: (-(item["shown"] + item["review"]), item["name"].casefold()))
+    return {"items": items}
+
+
 @app.get("/api/companies")
 def list_companies(
     q: str | None = Query(default=None, max_length=200),
@@ -1247,10 +1313,12 @@ def list_jobs(
     active_only: bool = True,
     career_level: Literal["early", "all"] = Query(default="early"),
     role_scope: Literal["software_engineering", "all"] = Query(default="software_engineering"),
-    compensation_filter: Literal["target_or_unknown", "target_only", "all"] = Query(default="target_or_unknown"),
-    review_scope: Literal["main", "review", "dismissed"] = Query(
+    compensation_filter: Literal["target_or_unknown", "target_only", "all"] = Query(
+        default="all", description="Optional. Pay is information only, so the default shows every salary level."),
+    review_scope: Literal["main", "remote", "review", "dismissed"] = Query(
         default="main",
-        description="main = normal jobs, review = jobs waiting for your Accept/Dismiss, dismissed = jobs you dismissed.",
+        description=("main = office and hybrid jobs, remote = remote-only jobs you could work from India, "
+                     "review = jobs waiting for your Accept/Dismiss, dismissed = jobs you dismissed."),
     ),
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -1293,7 +1361,16 @@ def list_jobs(
     for job, company_obj in db.execute(statement).all():
         matched_location = None
 
-        if location and location.strip():
+        remote_only = _is_remote_only(job.location)
+        if review_scope == "remote":
+            # Remote jobs have their own section: they are not tied to a city, so the location
+            # filter does not apply, but foreign-only remote jobs ("Remote US") never show.
+            if not remote_only or not is_india_or_remote_eligible({"location": _location_entries(job.location)})[0]:
+                continue
+            matched_location = job.location
+        elif remote_only:
+            continue  # kept out of the office/hybrid lists on purpose
+        elif location and location.strip():
             matched_location = _find_matching_location(
                 job.location,
                 location,
@@ -1695,7 +1772,25 @@ def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any
     if entry is None or not (integration.get("provider") and integration.get("settings")):
         return answer(JOB_UNKNOWN, "This company has no connector, so JobPilot cannot look the job up. Open the original posting to check.")
     if integration.get("provider") == "google_careers":
-        return answer(JOB_UNKNOWN, "Google jobs are re-checked during a full sync; a single job cannot be looked up on its own.")
+        # Google has no per-job lookup in its list feed, so read the job's own page instead.
+        from urllib.parse import urlparse
+
+        import requests
+
+        if urlparse(job.url or "").hostname not in {"www.google.com", "google.com", "careers.google.com"}:
+            return answer(JOB_UNKNOWN, "This job's link is not a Google careers page, so it cannot be checked.")
+        try:
+            page = requests.get(job.url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (JobPilot personal job check)"})
+        except requests.RequestException as exc:
+            return answer(JOB_UNKNOWN, f"Google's career site could not be reached ({type(exc).__name__}); the job was left unchanged.")
+        status, reason = classify_google_page(page.status_code, page.text)
+        repository = JobRepository(db)
+        if status == JOB_OPEN:
+            repository.confirm_open(job)
+        elif status == JOB_CLOSED:
+            repository.mark_closed(job)
+        db.commit()
+        return answer(status, reason)
 
     from scripts.sync_target_companies import _build_collector  # lazy: keeps the API importable without the scripts folder
 
@@ -1714,6 +1809,48 @@ def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any
         repository.mark_closed(job)
     db.commit()
     return answer(status, reason)
+
+
+@app.post("/api/sync/start", status_code=202)
+def start_job_update() -> dict[str, Any]:
+    """Update jobs now: every company career page (closing jobs that were taken down), then the remote boards.
+
+    Runs in the background; poll GET /api/sync/status. Only one update runs at a time.
+    """
+    if not sync_runner.start():
+        raise HTTPException(status_code=409, detail="A job update is already running.")
+    return sync_runner.status()
+
+
+@app.get("/api/sync/status")
+def job_update_status() -> dict[str, Any]:
+    return sync_runner.status()
+
+
+class ImportLinkRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+
+
+@app.post("/api/jobs/import-link", status_code=201)
+def import_job_from_link(request: ImportLinkRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Add one job from its page link (for a referral at a company with no public job list).
+
+    Reads only that page. Returns 422 with a readable reason when the page cannot be read.
+    """
+    try:
+        details = fetch_job(request.url)
+    except ImportError_ as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    repository = JobRepository(db)
+    company = repository.get_or_create_company(details["company"], source_type="imported_link")
+    outcome = repository.upsert_job_detailed(company, {
+        "source": "imported_link", "external_id": details["external_id"], "title": details["title"],
+        "location": details["location"], "url": details["url"], "description": details["description"] or details["title"],
+        "employment_type": details["employment_type"], "posted_at": details["posted_at"],
+    })
+    db.commit()
+    return {"job_id": outcome.job.id, "created": outcome.created, "title": details["title"], "company": details["company"],
+            "location": details["location"], "url": details["url"]}
 
 
 class ReviewDecisionRequest(BaseModel):

@@ -104,7 +104,21 @@ def test_decision_states() -> None:
     check(evaluate_eligibility(_job(salary=None)).status == ELIGIBLE, "Missing salary must not matter.")
 
 
+def test_amazon_style_titles_and_business_domain_words() -> None:
+    """Regression: Amazon's own entry-level titles were dropped as 'not a software role family', and a team
+    name such as Finance or Supply Chain made a software engineer look non-software (found in a live sync)."""
+    for title in ("Software Dev Engineer", "Software Dev Engineer II, Amazon India CFX team", "SDE2, Amazon Business - External Integrations",
+                  "Software Development Engineer, Finance Technology", "Software Development Engineer II, Infrastructure Supply Chain Automation"):
+        check(matches_software_role_family(title), f"{title!r} is a software role")
+    for title in ("Finance Analyst", "Account Executive", "Marketing Engineer", "Technical Program Manager, Data Operations",
+                  "Customer Engineer, Google Cloud", "Data Analyst, Risk"):
+        check(not matches_software_role_family(title), f"{title!r} is not a software role")
+    check(early_career_title_exclusion("Sr. Software Dev Engineer, Finance Technology") == "senior_or_lead_title", "seniority still applies")
+    check(not _is_target_software_role("Manager, Software Development, Accounting Insights"), "managers are still excluded")
+
+
 TESTS = [
+    ("Amazon-style titles and business-domain words", test_amazon_style_titles_and_business_domain_words),
     ("Degree length is not experience", test_degree_length_is_not_experience),
     ("API delegates to the central policy", test_api_delegates_to_policy),
     ("Explicit eligibility states with reasons", test_decision_states),

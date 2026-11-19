@@ -43,3 +43,6 @@ data/sync_reports/
 
 # Database backups
 backups/
+
+# Job update runner state and log
+data/job_update*
