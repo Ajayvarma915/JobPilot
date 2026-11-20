@@ -157,66 +157,28 @@ def test_build_store_from_parsed_text() -> None:
         )
 
 
+def _find_real_resume() -> Path:
+    """The one resume PDF in data/master_resume (whatever it is called), so the test follows your latest resume."""
+    folder = PROJECT_ROOT / "data" / "master_resume"
+    pdfs = sorted(folder.glob("*.pdf")) if folder.exists() else []
+    if len(pdfs) != 1:
+        raise FileNotFoundError(f"Keep exactly one resume PDF in data/master_resume (found {len(pdfs)}).")
+    return pdfs[0]
+
+
 def test_real_resume_pdf_store() -> None:
-    candidates = [
-        PROJECT_ROOT
-        / "data"
-        / "master_resume"
-        / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
-        PROJECT_ROOT / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
-    ]
-
-    resume_path = next(
-        (item for item in candidates if item.exists()),
-        None,
-    )
-
-    if resume_path is None:
-        raise FileNotFoundError(
-            "Real resume PDF not found. Place it in data/master_resume/ "
-            "before running this test."
-        )
-
+    resume_path = _find_real_resume()
     with tempfile.TemporaryDirectory() as temp_dir:
-        store_path = Path(temp_dir) / "real_resume_evidence.json"
-        store = MasterResumeEvidenceStore(store_path)
+        store = MasterResumeEvidenceStore(Path(temp_dir) / "real_resume_evidence.json")
         data = store.build_from_file(resume_path)
-
-        projects = [
-            item["title"]
-            for item in store.list_evidence(category="project")
-        ]
-
-        certs = [
-            item["title"]
-            for item in store.list_evidence(category="certification")
-        ]
-
-        check(
-            data["source_resume"]["sha256"],
-            "Resume fingerprint missing.",
-        )
-        check(
-            len(data["candidate"]["name"] or "") > 3,
-            "Candidate name missing from store.",
-        )
-        check(
-            projects
-            == [
-                "Crypto Tracker",
-                "User Management System",
-                "Rule Based Chatbot",
-            ],
-            f"Unexpected project evidence: {projects!r}",
-        )
-        check(
-            "Microsoft Azure Fundamentals (AZ900)" in certs,
-            f"Azure certification missing or split: {certs!r}",
-        )
-        check(
-            data["evidence_count"] == len(data["evidence"]),
-            "Evidence count is inconsistent.",
-        )
+        check(bool(data["source_resume"]["sha256"]), "Resume fingerprint missing.")
+        check(len(data["candidate"]["name"] or "") > 3, "Candidate name missing from store.")
+        counts = data["counts_by_category"]
+        for category in ("skill", "project", "experience", "education"):
+            check(counts.get(category, 0) >= 1, f"No {category} evidence was built: {counts!r}")
+        check(data["evidence_count"] == len(data["evidence"]), "Evidence count is inconsistent.")
+        check(all(not item["review"]["user_verified"] for item in data["evidence"]), "A new store must start with nothing verified.")
+        check(all(item["source"].get("text") or item.get("statement") for item in data["evidence"]), "A record has no source text.")
 
 
 def main() -> int:

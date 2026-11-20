@@ -1,3 +1,4 @@
+import { EvidenceReviewPanel } from "./EvidenceReviewPanel";
 import { ResumeVersionsPanel } from "./ResumeVersionsPanel";
 import { type FormEvent } from "react";
 import { ArrowRight, CheckCircle2, Download, FileCheck2, FileText, Gauge, LoaderCircle, ShieldCheck, Target, WandSparkles } from "lucide-react";
@@ -83,6 +84,8 @@ export function ResumeView({
         title="Tailor your resume"
         description="Paste a real job description, identify its skills, and select evidence from your verified master resume."
       />
+
+      <EvidenceReviewPanel />
 
       <div className="grid grid-cols-1 gap-5 2xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
         <form

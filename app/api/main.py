@@ -356,6 +356,23 @@ async def require_api_token(request: Request, call_next):
     )
 
 
+@app.middleware("http")
+async def explain_unexpected_errors(request: Request, call_next):
+    """Turn an unexpected server error into a readable JSON 500.
+
+    Without this the browser only saw "Unable to reach the API" for a bug on the server (the error page
+    carries no CORS headers). Registered before CORS, so CORS wraps it and the message reaches the screen.
+    """
+    try:
+        return await call_next(request)
+    except Exception as exc:  # noqa: BLE001 - last line of defence; the full traceback is logged
+        logger.exception("Unhandled error in %s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"The server hit an unexpected error ({type(exc).__name__}: {str(exc)[:160]}). The terminal running the API has the full details."},
+        )
+
+
 def _cors_origins() -> list[str]:
     configured = os.getenv("JOBPILOT_CORS_ORIGINS", "")
     origins = [item.strip().rstrip("/") for item in configured.split(",") if item.strip()]
@@ -2111,6 +2128,58 @@ def evidence_summary() -> dict[str, Any]:
             "sha256": data.get("source_resume", {}).get("sha256"),
         },
     }
+
+
+class EvidenceReviewRequest(BaseModel):
+    evidence_ids: list[str] = Field(min_length=1, max_length=500)
+    verified: bool = True
+
+
+@app.get("/api/evidence/records")
+def list_evidence_records(
+    review: Literal["pending", "verified", "all"] = Query("pending"),
+) -> dict[str, Any]:
+    """Your resume's evidence records and whether you have confirmed each one is accurate.
+
+    Only confirmed records can be used in a tailored resume.
+    """
+    if not EVIDENCE_STORE_PATH.exists():
+        return {"items": [], "pending_count": 0, "verified_count": 0}
+    records = _load_evidence_store().get("evidence", [])
+
+    def verified(item: dict[str, Any]) -> bool:
+        return (item.get("review") or {}).get("user_verified") is True
+
+    chosen = [r for r in records if review == "all" or (verified(r) if review == "verified" else not verified(r))]
+    return {
+        "items": [
+            {
+                "evidence_id": r.get("evidence_id"),
+                "category": r.get("category"),
+                "title": r.get("title"),
+                "statement": r.get("statement"),
+                "verified": verified(r),
+            }
+            for r in chosen
+        ],
+        "pending_count": sum(1 for r in records if not verified(r)),
+        "verified_count": sum(1 for r in records if verified(r)),
+    }
+
+
+@app.post("/api/evidence/review")
+def review_evidence_records(request: EvidenceReviewRequest) -> dict[str, Any]:
+    """Confirm (or withdraw confirmation of) the listed evidence records. Nothing is verified automatically."""
+    from app.resume.evidence_store import MasterResumeEvidenceStore
+
+    store = MasterResumeEvidenceStore(EVIDENCE_STORE_PATH)
+    known = {item.get("evidence_id") for item in _load_evidence_store().get("evidence", [])}
+    missing = [evidence_id for evidence_id in request.evidence_ids if evidence_id not in known]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Unknown evidence record(s): {', '.join(missing[:5])}")
+    for evidence_id in request.evidence_ids:
+        store.set_verified(evidence_id, request.verified, note="Confirmed in the app by you." if request.verified else None)
+    return list_evidence_records(review="all")
 
 
 @app.post("/api/evidence/select")

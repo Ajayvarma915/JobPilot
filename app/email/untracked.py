@@ -210,6 +210,7 @@ def add_suggestion(
             "company_id": company_id, "external_id": external_id, "title": title, "location": None, "url": url,
             "description": "Added from an application confirmation email. Open the original email for the posting details.",
             "source": "email_application", "first_seen_at": now, "last_seen_at": now, "is_active": 1,
+            "created_at": now, "updated_at": now,  # NOT NULL in the real jobs table
         })
     else:
         job_id = int(job["id"])

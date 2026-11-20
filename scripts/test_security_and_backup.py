@@ -123,15 +123,18 @@ def test_cli_requires_confirmation() -> None:
     _make_db(live, 3)
     other = root / "other.db"
     _make_db(other, 9)
-    original_argv, original_resolve = sys.argv, backup.resolve_database_path
+    original_argv, original_resolve, original_restore = sys.argv, backup.resolve_database_path, backup.restore_backup
     backup.resolve_database_path = lambda: live
+    # The command line tool saves a safety copy before a restore; keep that inside the temporary folder
+    # (it used to write a pre_restore file into the project's real backups folder on every test run).
+    backup.restore_backup = lambda source, target: original_restore(source, target, root / "backups")
     try:
         sys.argv = ["backup_database.py", "--restore", str(other)]
         check(backup.main() == 2 and _count(live) == 3, "restore without --yes changes nothing")
         sys.argv = ["backup_database.py", "--restore", str(other), "--yes"]
         check(backup.main() == 0 and _count(live) == 9, "restore with --yes works")
     finally:
-        sys.argv, backup.resolve_database_path = original_argv, original_resolve
+        sys.argv, backup.resolve_database_path, backup.restore_backup = original_argv, original_resolve, original_restore
 
 
 TESTS = [

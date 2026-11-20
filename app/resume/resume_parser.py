@@ -91,7 +91,17 @@ TECHNOLOGY_ALIASES: dict[str, tuple[str, ...]] = {
     "Tailwind CSS": ("Tailwind CSS", "Tailwind"),
     "Next.js": ("Next.js", "NextJS"),
     "Node.js": ("Node.js", "NodeJS"),
-    "Express.js": ("Express.js", "ExpressJS"),
+    "Express.js": ("Express.js", "ExpressJS", "Express"),
+    "Kafka": ("Kafka", "Apache Kafka", "KafkaJS", "Apache Kafka (KafkaJS)"),
+    "MongoDB": ("MongoDB", "Mongo DB"),
+    "OAuth 2.0": ("OAuth 2.0", "OAuth2", "OAuth"),
+    "REST APIs": ("REST APIs", "REST API", "RESTful APIs", "RESTful API"),
+    "Microservices": ("Microservices", "Microservice"),
+    "CI/CD": ("CI/CD", "CI CD"),
+    "Jest": ("Jest",),
+    "SonarQube": ("SonarQube",),
+    "Redis": ("Redis",),
+    "LangChain": ("LangChain",),
     "Auth.js": ("Auth.js", "AuthJS"),
     "Chart.js": ("Chart.js", "ChartJS"),
     "GitHub": ("GitHub", "Git Hub"),
@@ -237,6 +247,63 @@ def _strip_bullet(line: str) -> tuple[str, bool]:
         break
 
     return cleaned.strip(), found_bullet
+
+
+def _starts_new_bullet(previous: str, text: str) -> bool:
+    """For PDFs whose bullets lose their marker: a line starts a new bullet when the previous one is a
+    finished sentence (ends with a full stop or semicolon) and this one starts with a capital letter."""
+    return previous.rstrip().endswith((".", ";")) and (text[:1].isupper() or text[:1].isdigit())
+
+
+def _split_outside_brackets(text: str, separator: str = ",") -> list[str]:
+    """Split on a separator, ignoring separators inside (...) or [...]."""
+    parts: list[str] = []
+    depth, current = 0, []
+    for char in text:
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        if char == separator and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _canonical_items(items: list[str]) -> list[str]:
+    """Use the built-in canonical name for an item when it is one known technology ("React" -> "React.js")."""
+    # Only an exact match is renamed: "CI/CD (Azure Pipelines)" must keep its detail, "React" becomes "React.js".
+    by_alias: dict[str, str] = {}
+    for canonical, aliases in TECHNOLOGY_ALIASES.items():
+        by_alias[canonical.casefold()] = canonical
+        for alias in aliases:
+            by_alias.setdefault(alias.casefold(), canonical)
+    return [by_alias.get(item.casefold(), item) for item in items]
+
+
+def _listed_skills(lines: list[str]) -> list[str]:
+    """Skills written as "Label: a, b, c" lines (wrapped lines continue the previous line)."""
+    joined: list[str] = []
+    for line in lines:
+        text, _ = _strip_bullet(line)
+        if not text:
+            continue
+        if re.match(r"^[A-Za-z][A-Za-z &/+.-]{1,40}:\s", text) or not joined:
+            joined.append(text)
+        else:
+            joined[-1] = f"{joined[-1]} {text}"
+    skills: list[str] = []
+    for entry in joined:
+        if ":" not in entry:
+            continue
+        for item in _split_outside_brackets(entry.split(":", 1)[1]):
+            item = item.strip(" .;")
+            if 1 < len(item) <= 60:
+                skills.append(item)
+    return _canonical_items(skills)
 
 
 def _dedupe(items: Iterable[str]) -> list[str]:
@@ -387,6 +454,24 @@ def _parse_education(lines: list[str]) -> list[ResumeEducation]:
         else:
             normalized.append(line.strip())
 
+    for entry in normalized:
+        pipe = [part.strip() for part in entry.split(" | ")]
+        if len(pipe) >= 3 and re.search(r"cgpa|gpa|%", entry, re.I) and DATE_RANGE_RE.search(entry):
+            degree, _, subject = pipe[0].partition(",")
+            institution, _, place = pipe[1].partition(",")
+            cgpa = re.search(r"(\d+(?:\.\d+)?)", next((p for p in pipe if re.search(r"cgpa|gpa", p, re.I)), ""))
+            span = DATE_RANGE_RE.search(entry)
+            return [ResumeEducation(
+                degree=degree.strip() or None,
+                field_of_study=subject.strip() or None,
+                institution=institution.strip() or None,
+                cgpa=float(cgpa.group(1)) if cgpa else None,
+                start_date=span.group("start") if span else None,
+                end_date=span.group("end") if span else None,
+                location=place.strip() or None,
+                raw_text=entry,
+            )]
+
     degree_re = re.compile(
         r"\b(B\s*\.?\s*Tech|BTech|Bachelor(?:'s)?|M\s*\.?\s*Tech|MTech|"
         r"Master(?:'s)?|Ph\.?D|PhD|B\.?Sc|M\.?Sc)\b",
@@ -495,6 +580,24 @@ def _is_project_title(text: str, is_bullet: bool) -> bool:
     return bool(re.search(r"[A-Za-z]", text))
 
 
+def _is_pipe_project_title(text: str, is_bullet: bool) -> bool:
+    """"Name | what it is": a heading line with a pipe, no link and not a long list of technologies."""
+    return (
+        not is_bullet
+        and " | " in text
+        and len(text) <= 110
+        and text.count(",") < 3
+        and not re.search(r"https?://|github\.com|linkedin\.com", text, re.I)
+        and not re.search(r"[.!?]$", text)
+    )
+
+
+def _is_tech_line(text: str) -> bool:
+    """"Python, FastAPI, React | github.com/user/repo": the technologies line under a project title."""
+    head = text.split(" | ", 1)[0]
+    return text.count(",") >= 2 and len(head) <= 200 and not re.search(r"[.!?]$", head)
+
+
 def _parse_projects(lines: list[str]) -> list[ResumeProject]:
     projects: list[ResumeProject] = []
     current = None
@@ -504,7 +607,17 @@ def _parse_projects(lines: list[str]) -> list[ResumeProject]:
         if not text or text.casefold() == "languages/tools/frameworks/concepts":
             continue
 
-        if _is_project_title(text, is_bullet):
+        if _is_pipe_project_title(text, is_bullet) and (current is None or not current.bullets or
+                                                          current.bullets[-1].rstrip().endswith((".", ";"))):
+            current = ResumeProject(name=text)
+            projects.append(current)
+        elif current is not None and not current.bullets and not current.technologies and _is_tech_line(text) and " | " in text:
+            head = text.split(" | ", 1)[0]
+            current.technologies = _dedupe([*extract_technologies(head), *_canonical_items(_split_outside_brackets(head))])
+        elif current is not None and current.bullets and not is_bullet and not _is_project_title(text, is_bullet) \
+                and not _starts_new_bullet(current.bullets[-1], text):
+            current.bullets[-1] = f"{current.bullets[-1]} {text}".strip()  # a wrapped line of the same bullet
+        elif _is_project_title(text, is_bullet):
             current = ResumeProject(name=text)
             projects.append(current)
         elif current is not None and re.match(
@@ -544,6 +657,23 @@ def _parse_experience(lines: list[str]) -> list[ResumeExperience]:
         if not text:
             continue
 
+        # "Role | Company | 09/2025 - Present"
+        pipe = [part.strip() for part in text.split(" | ")]
+        if len(pipe) >= 2 and not is_bullet and DATE_RANGE_RE.search(pipe[-1]) and role_re.search(pipe[0]):
+            span = DATE_RANGE_RE.search(pipe[-1])
+            current = ResumeExperience(
+                role=pipe[0],
+                company=pipe[1] if len(pipe) >= 3 else None,
+                start_date=span.group("start"),
+                end_date=span.group("end"),
+            )
+            experiences.append(current)
+            continue
+
+        # "Client: ..." only says who the work was for; it is not an achievement, so it is not kept as evidence.
+        if current is not None and not current.bullets and re.match(r"^client\s*:", text, re.I):
+            continue
+
         date = DATE_RANGE_RE.search(text)
         if date and current:
             current.start_date = date.group("start")
@@ -576,7 +706,8 @@ def _parse_experience(lines: list[str]) -> list[ResumeExperience]:
         if current is None:
             continue
 
-        if re.match(r"^project\s*\d*\s*:", text, re.I) or is_bullet or not current.bullets:
+        if (re.match(r"^project\s*\d*\s*:", text, re.I) or is_bullet or not current.bullets
+                or _starts_new_bullet(current.bullets[-1], text)):
             current.bullets.append(text)
         else:
             # Unbulleted PDF line wraps continue the previous detail.
@@ -594,7 +725,12 @@ def _parse_certifications(lines: list[str]) -> list[ResumeCertification]:
         re.I,
     )
 
+    expanded: list[str] = []
     for line in lines:
+        # "AWS Certified Cloud Practitioner | Microsoft Azure Fundamentals (AZ-900)" lists several on one line.
+        expanded.extend(part for part in re.split(r"\s+\|\s+", line) if part.strip())
+
+    for line in expanded:
         text, _ = _strip_bullet(line)
         text = text.strip(" •-–—")
         if not text:
@@ -637,7 +773,7 @@ def _parse_achievements(lines: list[str]) -> list[str]:
         if not text:
             continue
 
-        if is_bullet or not achievements or new_item_re.match(text):
+        if is_bullet or not achievements or new_item_re.match(text) or _starts_new_bullet(achievements[-1], text):
             achievements.append(text)
         else:
             # Join soft-wrapped PDF lines into the preceding achievement.
@@ -683,6 +819,10 @@ class ResumeParser:
             normalized.splitlines() if normalized else []
         )
         skills = extract_technologies("\n".join(sections.get("skills", [])))
+        # Skills the resume lists by name ("Backend and Cloud: Node.js, Apache Kafka (KafkaJS), ...") are all
+        # kept, not only the ones in the built-in alias table.
+        listed = _listed_skills(sections.get("skills", []))
+        skills = _dedupe([*skills, *listed])
 
         return ParsedResume(
             raw_text=normalized,

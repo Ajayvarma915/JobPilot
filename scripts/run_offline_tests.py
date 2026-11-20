@@ -28,6 +28,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 NEEDS_LIVE_SERVICES = {
     "test_environment": "checks the local machine setup",
     "test_google_careers": "calls Google Careers live",
+    # These four also fetch the real Google Careers site (they failed on a slow connection, so they are not offline).
+    "test_google_collector": "calls Google Careers live",
+    "test_google_job_details": "calls Google Careers live",
+    "test_google_pagination": "calls Google Careers live",
+    "test_google_pagination_details": "calls Google Careers live",
     "test_greenhouse": "calls Greenhouse live",
     "test_greenhouse_connection": "calls Greenhouse live",
     "test_requests": "makes a live HTTP request",

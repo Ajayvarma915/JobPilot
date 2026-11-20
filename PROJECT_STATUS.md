@@ -6,7 +6,7 @@ _Last updated: 2026-11-17. Based on code inspection, automated tests and the liv
 
 JobPilot is a working **personal tool**: discovery from 19 validated company sources, eligibility and explainable matching, recommendations, evidence-based documents, a tracker with history, an extension, read-only Gmail matching, analytics, contacts and interview prep. It is **not** a finished or production-ready product: several parts have only been tested with mocks or synthetic data (see "Needs your verification"), the registry is 40 companies not 50, and it is single-user with no accounts.
 
-Latest full offline regression (`python -m scripts.run_offline_tests`, temporary database copy): **56 passed, 0 failed, 10 skipped** (54 Python scripts and 2 extension test files). The skipped ones need live career sites, a running Ollama or the personal resume and were **not run** in that pass. Frontend `tsc`, lint and build are clean. The real database was not touched by testing.
+Latest full offline regression (`python -m scripts.run_offline_tests`, temporary database copy): **56 passed, 0 failed, 14 skipped** (54 Python scripts and 2 extension test files). The skipped ones need live career sites, a running Ollama or the personal resume and were **not run** in that pass. Frontend `tsc`, lint and build are clean. The real database was not touched by testing.
 
 ## Safety rules for this repo
 - Never open or print `.env`, `credentials/`, `tokens/`, `frontend/.env.local` or the Gmail token files.
@@ -100,6 +100,20 @@ Checked against your running app's real data (read-only) and a sandbox copy:
 - **Not possible without bypassing protection:** Microsoft (old search host gone, current one rate-limited) and Qualcomm (Eightfold/Workday list blocked) have no public job list; use Add a job by link. Meta, Apple, LinkedIn, Intuit, Zoho, PhonePe, Flipkart, Zomato, Zepto, Dream11, Postman and Confluent have no public ATS board JobPilot could find (probed Greenhouse, Lever, Ashby and SmartRecruiters).
 - **Browser verification limit:** the Browser pane here is hidden, so animations (and therefore screen changes) do not run; the new Company filter, Email panel and update progress were checked through the API and type/lint/build only, not clicked in a browser.
 - 56 offline tests pass; tsc, lint clean.
+
+## Session 16 (19 Nov): your updated resume
+- **What I found:** `data/master_resume` now holds `Ajay_Varma_Kammampati_Resume.pdf` (18 Nov), but the evidence store was still built from the October resume. Rebuilding it first returned almost nothing (no experience, no projects, 1 certification) because the new layout was not understood: "Role | Company | dates" headers, bullets without markers that wrap over lines, "Name | subtitle" project headings with a technologies line, "Label: a, b, c" skills, several certifications on one line, and an education line with pipes.
+- **Parser fixed** for that layout and still reads the older one (4 new tests with a made-up resume). Your resume now parses to: 1 job (Systems Engineer, TCS, 8 bullets), 2 projects, 50 skills, 2 certifications, 3 achievements, 1 education entry. The "Client: ..." line is not kept as evidence. Aliases added so job skills match your skills (for example a job asking for "Kafka" now matches "Apache Kafka (KafkaJS)").
+- **Evidence store rebuilt** (60 records). All of them are unconfirmed: nothing is marked verified for you. **New in the app:** the Resume screen starts with a panel listing every statement waiting for your confirmation (tick, or select all, then "Confirm selected as accurate"; it asks first). Until you confirm, tailoring has nothing to use. A copy of the old store is in `backups/`.
+- **Profile refreshed** from the new resume without overwriting anything you typed: current employer and title are filled (TCS, Systems Engineer); your LinkedIn and GitHub links were kept; the matcher now uses the new skills. A copy of the database before this is in `backups/`.
+- **Checked end to end on a temporary copy** (everything marked verified in the copy only): evidence selection, then a generated tailored DOCX and PDF with the new experience and projects, no errors.
+- The tests that read your real resume (parser, evidence store) now follow whichever single PDF is in the folder and check structure, not one resume's wording.
+- 58 offline tests pass; tsc and lint clean. Not clicked in a browser.
+
+## Session 17 (19 Nov): "Add to tracker" failed with a server error
+- **Bug (found in your terminal log):** adding the Qualcomm email suggestion returned a 500, `NOT NULL constraint failed: jobs.created_at`. The real `jobs` table requires `created_at` and `updated_at`; my insert did not set them. The other email tests use a cut-down schema, which hid it. Fixed, and a new test (`test_email_suggestion_real_schema`) runs the whole flow (suggestion, add, status history, untrack) against the real tables.
+- **Misleading message fixed:** a server bug showed on screen as "Unable to reach the JobPilot API" because the error page carries no CORS headers. Unexpected server errors now come back as readable JSON ("The server hit an unexpected error (IntegrityError: ...)"), with the full traceback still in the API terminal. Test added.
+- 56 offline tests pass; four Google tests that really call google.com (they timed out on a slow connection) moved from the offline group to the skipped live group, so the count dropped from 60 passed to 56 passed and 14 skipped. Press **Add to tracker as Applied** on the Qualcomm suggestion again (your API reloads on its own).
 
 ## Registry state as of 14-15 Nov (historical; current counts are in the matrix above)
 - **Active + verified (18, updated 15 Nov):** Google, NVIDIA, CRED, Meesho, Amazon, Razorpay, Groww, BrowserStack (14 Nov), Adobe, Atlassian, Databricks, Rubrik, Okta, MongoDB, Toast, Stripe, Druva, Elastic (15 Nov).

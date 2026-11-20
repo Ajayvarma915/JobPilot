@@ -154,46 +154,32 @@ def test_sample_resume_text() -> None:
     )
 
 
+def _find_real_resume() -> Path:
+    """The one resume PDF in data/master_resume (whatever it is called), so the test follows your latest resume."""
+    folder = PROJECT_ROOT / "data" / "master_resume"
+    pdfs = sorted(folder.glob("*.pdf")) if folder.exists() else []
+    if len(pdfs) != 1:
+        raise FileNotFoundError(f"Keep exactly one resume PDF in data/master_resume (found {len(pdfs)}).")
+    return pdfs[0]
+
+
 def test_real_resume_pdf() -> None:
-    candidates = [
-        PROJECT_ROOT / "data/master_resume/AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
-        PROJECT_ROOT / "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf",
-    ]
-    pdf = next((path for path in candidates if path.exists()), None)
-
-    if pdf is None:
-        raise FileNotFoundError(
-            "Place your PDF at data/master_resume/"
-            "AJAY_VARMA_KAMMAMPATI_RESUME(2).pdf before running this test."
-        )
-
-    resume = parse_resume_file(pdf)
-    check(len(resume.raw_text) > 1000, "Extracted PDF text is too short.")
-    check(resume.contact.name == "AJAY VARMA KAMMAMPATI", f"PDF name: {resume.contact.name!r}")
-    check(resume.contact.email == "2100100055iot@gmail.com", "PDF email was not extracted.")
+    # Structure only: this runs against whatever resume is in data/master_resume, so it must not depend on
+    # one particular resume's wording.
+    resume = parse_resume_file(_find_real_resume())
+    check(len(resume.raw_text) > 800, "Extracted PDF text is too short.")
+    check(bool(resume.contact.name), f"PDF name: {resume.contact.name!r}")
+    check(bool(resume.contact.email) and "@" in resume.contact.email, "PDF email was not extracted.")
     check(len(resume.skills) >= 10, f"Too few PDF skills: {resume.skills!r}")
-
-    names = [project.name for project in resume.projects]
-    check(
-        names == ["Crypto Tracker", "User Management System", "Rule Based Chatbot"],
-        f"PDF project titles: {names!r}",
-    )
-    check(
-        "Firebase" in resume.projects[1].technologies,
-        "PDF Firebase bullet is attached to the wrong project.",
-    )
-
-    certs = [item.name for item in resume.certifications]
-    check("Microsoft Azure Fundamentals (AZ900)" in certs, f"PDF Azure certification split: {certs!r}")
-    check(
-        len(resume.achievements) == 2
-        and "HackerRank combined." in resume.achievements[-1],
-        f"PDF achievements: {resume.achievements!r}",
-    )
-    check(
-        resume.experience and resume.experience[0].role == "Web Development Intern",
-        "PDF internship role was not extracted.",
-    )
+    check(len(resume.projects) >= 1, "No projects were parsed from the PDF.")
+    check(all(project.bullets for project in resume.projects), "A project came back with no bullets.")
+    check(len(resume.experience) >= 1, "No experience entry was parsed from the PDF.")
+    check(all(entry.bullets and entry.role for entry in resume.experience), "An experience entry has no role or no bullets.")
+    check(len(resume.education) >= 1 and resume.education[0].institution, f"PDF education: {resume.education!r}")
+    check(len(resume.certifications) >= 1, "No certifications were parsed.")
+    # a bullet is a whole sentence, not a fragment of a wrapped line
+    long_bullets = [b for entry in resume.experience for b in entry.bullets]
+    check(all(b[:1].isupper() for b in long_bullets), f"Experience bullets start mid-sentence: {long_bullets!r}")
 
 
 def main() -> int:
