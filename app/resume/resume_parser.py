@@ -34,6 +34,8 @@ class ResumeProject:
     description: str = ""
     technologies: list[str] = field(default_factory=list)
     bullets: list[str] = field(default_factory=list)
+    # The italic line under the project title, exactly as written ("Python, FastAPI | github.com/me/repo").
+    tech_line: str = ""
 
 
 @dataclass(slots=True)
@@ -44,6 +46,8 @@ class ResumeExperience:
     end_date: str | None = None
     location: str | None = None
     bullets: list[str] = field(default_factory=list)
+    # The italic line under the job heading, exactly as written ("Client: a US health-insurance payer").
+    context: str = ""
 
 
 @dataclass(slots=True)
@@ -67,6 +71,9 @@ class ParsedResume:
     certifications: list[ResumeCertification] = field(default_factory=list)
     achievements: list[str] = field(default_factory=list)
     sections: dict[str, list[str]] = field(default_factory=dict)
+    # The summary paragraph, and the skills as the resume groups them: [("Languages", ["Java", ...]), ...]
+    summary: str = ""
+    skill_groups: list[tuple[str, list[str]]] = field(default_factory=list)
 
 
 # Alias values normalize spelling variants into a single canonical skill.
@@ -306,6 +313,29 @@ def _listed_skills(lines: list[str]) -> list[str]:
     return _canonical_items(skills)
 
 
+def _listed_skill_groups(lines: list[str]) -> list[tuple[str, list[str]]]:
+    """The skills section as written: [("Languages", ["Java", "Python"]), ("Backend and Cloud", [...]), ...]."""
+    joined: list[str] = []
+    for line in lines:
+        text, _ = _strip_bullet(line)
+        if not text:
+            continue
+        if re.match(r"^[A-Za-z][A-Za-z &/+.-]{1,40}:\s", text) or not joined:
+            joined.append(text)
+        else:
+            joined[-1] = f"{joined[-1]} {text}"
+    groups: list[tuple[str, list[str]]] = []
+    for entry in joined:
+        if ":" not in entry:
+            continue
+        label, _, rest = entry.partition(":")
+        items = [item.strip(" .;") for item in _split_outside_brackets(rest)]
+        items = [item for item in items if 1 < len(item) <= 60]
+        if items:
+            groups.append((label.strip(), items))
+    return groups
+
+
 def _dedupe(items: Iterable[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -382,6 +412,17 @@ def _parse_contact(lines: list[str]) -> ResumeContact:
     )
 
     phone_pattern = re.compile(r"^\s*\+?\d[\d\s().-]{8,}\d\s*$")
+    # Contact details written on one line, separated by pipes.
+    pipe_parts = [part.strip() for line in lines if " | " in line for part in line.split(" | ")]
+    pipe_phone = next((part for part in pipe_parts if phone_pattern.match(part)), None)
+    pipe_location = next(
+        (
+            part for part in pipe_parts
+            if "," in part and "@" not in part and not phone_pattern.match(part)
+            and "linkedin.com/" not in part.casefold() and "github.com/" not in part.casefold()
+        ),
+        None,
+    )
     phone_line = next(
         (
             line
@@ -393,7 +434,7 @@ def _parse_contact(lines: list[str]) -> ResumeContact:
             and phone_pattern.match(line)
         ),
         None,
-    )
+    ) or pipe_phone
 
     name = None
     for line in lines:
@@ -412,8 +453,8 @@ def _parse_contact(lines: list[str]) -> ResumeContact:
             name = line.strip(" |,;")
             break
 
-    location = None
-    for line in reversed(lines):
+    location = re.sub(r"\s*,\s*", ", ", pipe_location).strip(" ,") if pipe_location else None
+    for line in ([] if location else reversed(lines)):
         if (
             ","
             in line
@@ -613,6 +654,7 @@ def _parse_projects(lines: list[str]) -> list[ResumeProject]:
             projects.append(current)
         elif current is not None and not current.bullets and not current.technologies and _is_tech_line(text) and " | " in text:
             head = text.split(" | ", 1)[0]
+            current.tech_line = text
             current.technologies = _dedupe([*extract_technologies(head), *_canonical_items(_split_outside_brackets(head))])
         elif current is not None and current.bullets and not is_bullet and not _is_project_title(text, is_bullet) \
                 and not _starts_new_bullet(current.bullets[-1], text):
@@ -672,6 +714,7 @@ def _parse_experience(lines: list[str]) -> list[ResumeExperience]:
 
         # "Client: ..." only says who the work was for; it is not an achievement, so it is not kept as evidence.
         if current is not None and not current.bullets and re.match(r"^client\s*:", text, re.I):
+            current.context = text
             continue
 
         date = DATE_RANGE_RE.search(text)
@@ -824,7 +867,11 @@ class ResumeParser:
         listed = _listed_skills(sections.get("skills", []))
         skills = _dedupe([*skills, *listed])
 
+        summary_lines = [_strip_bullet(line)[0] for line in sections.get("summary", [])]
+
         return ParsedResume(
+            summary=" ".join(line for line in summary_lines if line).strip(),
+            skill_groups=_listed_skill_groups(sections.get("skills", [])),
             raw_text=normalized,
             contact=_parse_contact(preamble),
             skills=skills,

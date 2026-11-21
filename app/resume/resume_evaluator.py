@@ -371,6 +371,79 @@ def _achievement_quality(selection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+TARGET_OVERALL_SCORE = 85
+_STOP_WORDS = {"the", "and", "for", "with", "that", "this", "from", "into", "across", "each", "per", "its", "our", "their", "also", "using"}
+
+
+def _word_list(text: str) -> list[str]:
+    return [w.casefold() for w in re.findall(r"[a-zA-Z0-9+#.]+", text)]
+
+
+def _style_checks(selection: dict[str, Any]) -> dict[str, Any]:
+    """Repetition and measurable results in the selected bullets (their wording is yours; nothing is rewritten).
+
+    - repeated openers: the same first word starting more than two bullets
+    - repeated content: two bullets that say nearly the same thing, or the same 4-word phrase twice
+    - metrics: the share of bullets that contain a number (count, percent, size, time)
+    """
+    selected = selection.get("selected_evidence", [])
+    selected = selected if isinstance(selected, list) else []
+    bullets: list[str] = []
+    for item in selected:
+        if str(item.get("category", "")).casefold() in {"project", "experience", "achievement"}:
+            bullets.extend(_bullet_text(item))
+    if not bullets:
+        return {"score": 0, "label": "Insufficient detail to assess", "bullet_count": 0, "issues": [], "metric_share": None,
+                "repeated_openers": [], "similar_pairs": 0, "repeated_phrases": []}
+
+    issues: list[str] = []
+    penalty = 0
+
+    openers: dict[str, int] = {}
+    for text in bullets:
+        words = _word_list(text)
+        if words:
+            openers[words[0]] = openers.get(words[0], 0) + 1
+    repeated_openers = sorted(((word, n) for word, n in openers.items() if n > 2), key=lambda pair: -pair[1])
+    for word, n in repeated_openers:
+        penalty += min(30, 6 * (n - 2))
+        issues.append(f"{n} bullets start with \"{word}\". Vary the opening verbs (edit the wording in your master resume).")
+    penalty = min(penalty, 30)
+
+    sets = [set(w for w in _word_list(text) if len(w) > 3 and w not in _STOP_WORDS) for text in bullets]
+    similar = 0
+    for i in range(len(sets)):
+        for j in range(i + 1, len(sets)):
+            union = sets[i] | sets[j]
+            if union and len(sets[i] & sets[j]) / len(union) >= 0.7:
+                similar += 1
+    if similar:
+        penalty += min(30, 15 * similar)
+        issues.append(f"{similar} pair(s) of bullets say almost the same thing. Keep the stronger one.")
+
+    grams: dict[tuple[str, ...], set[int]] = {}
+    for index, text in enumerate(bullets):
+        words = [w for w in _word_list(text) if w not in _STOP_WORDS]
+        for k in range(len(words) - 3):
+            grams.setdefault(tuple(words[k:k + 4]), set()).add(index)
+    repeated_phrases = [" ".join(gram) for gram, where in grams.items() if len(where) >= 2]
+    repeated_phrases = repeated_phrases[:5]
+    if repeated_phrases:
+        penalty += min(20, 5 * len(repeated_phrases))
+        issues.append(f"The phrase \"{repeated_phrases[0]}\" appears in more than one bullet.")
+
+    with_numbers = sum(1 for text in bullets if re.search(r"\d", text))
+    share = with_numbers / len(bullets)
+    if share < 0.5:
+        penalty += round((0.5 - share) * 60)
+        issues.append(f"Only {with_numbers} of {len(bullets)} bullets contain a number. Add real figures you can stand behind (users, records, tests, percent, time). JobPilot never invents metrics.")
+
+    score = max(0, 100 - penalty)
+    return {"score": score, "label": _score_label(score), "bullet_count": len(bullets), "metric_share": round(share, 2),
+            "repeated_openers": [{"word": w, "count": n} for w, n in repeated_openers], "similar_pairs": similar,
+            "repeated_phrases": repeated_phrases, "issues": issues}
+
+
 def evaluate_generated_resume(
     docx_path: str | Path,
     pdf_path: str | Path,
@@ -388,10 +461,14 @@ def evaluate_generated_resume(
     ats = _ats_readability(docx_path, pdf_path, name)
     relevance = _job_relevance(selection)
     quality = _achievement_quality(selection)
+    style = _style_checks(selection)
+    # One headline number: how well this resume fits THIS job and reads cleanly. Relevance weighs most.
+    overall_score = round(0.25 * ats["score"] + 0.40 * relevance["score"] + 0.20 * quality["score"] + 0.15 * style["score"])
 
     recommendations: list[str] = []
     recommendations.extend(ats.get("issues", []))
     recommendations.extend(relevance.get("blockers", []))
+    recommendations.extend(style.get("issues", []))
     if quality.get("recommendation"):
         recommendations.append(str(quality["recommendation"]))
     if selection.get("review_queue"):
@@ -401,8 +478,25 @@ def evaluate_generated_resume(
 
     missing = relevance.get("required_skill_coverage", {}).get("missing", [])
     pending = relevance.get("required_skill_coverage", {}).get("awaiting_review", [])
-    ready = ats["score"] >= 90 and relevance["score"] >= 80 and quality["score"] >= 70 and not missing and not pending
+    ready = (ats["score"] >= 90 and relevance["score"] >= 80 and quality["score"] >= 70 and not missing and not pending
+             and overall_score >= TARGET_OVERALL_SCORE)
+    meets_target = overall_score >= TARGET_OVERALL_SCORE
+    to_reach_target: list[str] = []
+    if not meets_target:
+        if missing:
+            to_reach_target.append("Required skills with no confirmed evidence: " + ", ".join(missing) + ". Add one only if you really have it.")
+        if pending:
+            to_reach_target.append("Confirm these statements on the Resume screen so they can be used: " + ", ".join(pending) + ".")
+        to_reach_target.extend(style.get("issues", []))
+        to_reach_target.extend(ats.get("issues", []))
+        if not to_reach_target:
+            to_reach_target.append("The fit is limited by how much of this job your verified evidence covers; add real experience to your master resume.")
     return {
+        "overall": {"score": overall_score, "target": TARGET_OVERALL_SCORE, "meets_target": meets_target,
+                    "label": "Meets your 85+ target" if meets_target else "Below your 85+ target",
+                    "to_reach_target": list(dict.fromkeys(to_reach_target)),
+                    "weights": "25% file readability, 40% fit to this job, 20% bullet quality, 15% repetition and metrics"},
+        "writing_style": style,
         "readiness_label": "Ready for your review" if ready else "Needs review before applying",
         "readiness_passes_local_checks": bool(ready),
         "ats_readability": ats,

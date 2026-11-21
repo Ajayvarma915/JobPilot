@@ -31,7 +31,8 @@ def _verified_records(store: dict[str, Any], selection: dict[str, Any]) -> list[
     for record in store.get("evidence", []):
         if (record.get("review") or {}).get("user_verified") is not True:
             continue
-        if record.get("evidence_id") in selected_ids or record.get("category") == "education":
+        # Education, summary, certifications and achievements always print (they are short and not job-specific).
+        if record.get("evidence_id") in selected_ids or record.get("category") in {"education", "summary", "certification", "achievement"}:
             records.append(record)
     return records
 
@@ -54,6 +55,17 @@ def fabrication_check(docx_path: str | Path, store: dict[str, Any], selection: d
     bullets = [p.text.strip() for p in document.paragraphs if p.style.name == "List Bullet" and p.text.strip()]
     violations = [bullet for bullet in bullets if _norm(bullet) not in allowed]
     return {"ok": not violations, "bullets_checked": len(bullets), "violations": violations[:20]}
+
+
+def _tailored_for_job(selection: dict[str, Any], store: dict[str, Any]) -> dict[str, Any]:
+    """What was done for this job compared with your master resume (the same plan the builders use)."""
+    from app.resume.tailoring_logic import tailor_for_job
+
+    try:
+        content = tailor_for_job(selection, store)
+    except ValueError:
+        return {"changes": [], "relevant_skills": []}
+    return {"changes": content.changes, "relevant_skills": content.matches}
 
 
 def build_tailoring_report(selection: dict[str, Any], store: dict[str, Any]) -> dict[str, Any]:
@@ -129,6 +141,7 @@ def build_tailoring_report(selection: dict[str, Any], store: dict[str, Any]) -> 
             for category, count in sorted(by_category.items())
         ],
         "needs_review": needs_review,
+        "tailored_for_job": _tailored_for_job(selection, store),
         "wording": {"bullets_rewritten": False, "claims_generated": False},
         "original_resume": {
             "modified": False,

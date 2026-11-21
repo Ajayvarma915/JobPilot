@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Inches, Mm, Pt, RGBColor
+
+from app.resume.resume_layout import STYLE, Bullet, LayoutDocument, Line, Run, build_layout
 
 
 class ResumeBuildError(ValueError):
@@ -121,6 +123,97 @@ def _add_entry_heading(document: Document, title: str, detail: str | None = None
         _set_run_font(detail_run, size=8.9, color=MUTED)
 
 
+def _rgb(hex_colour: str) -> RGBColor:
+    value = hex_colour.lstrip("#")
+    return RGBColor(int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16))
+
+
+_RUN_COLOURS = {"text": STYLE["text"], "muted": STYLE["muted"], "link": STYLE["link"]}
+
+
+def _style_run(run, *, size: float, bold: bool = False, italic: bool = False, colour: str = STYLE["text"]) -> None:
+    run.font.name = "Calibri"
+    properties = run._element.get_or_add_rPr()
+    for attribute in ("w:ascii", "w:hAnsi", "w:cs"):
+        properties.rFonts.set(qn(attribute), "Calibri")
+    run.font.size = Pt(size)
+    run.bold = bold
+    run.italic = italic
+    run.font.color.rgb = _rgb(colour)
+
+
+def _fixed_line(paragraph, leading: float, *, before: float = 0, after: float = 0) -> None:
+    paragraph.paragraph_format.space_before = Pt(before)
+    paragraph.paragraph_format.space_after = Pt(after)
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    paragraph.paragraph_format.line_spacing = Pt(leading)
+
+
+def _add_runs(paragraph, runs: list[Run], *, size: float, bold: bool = False, italic: bool = False) -> None:
+    for run in runs:
+        text = re.sub(r"\s+", " ", run.text)  # one space stays at either edge ("Languages: " + "Java")
+        if not text.strip():
+            continue
+        piece = paragraph.add_run(text)
+        _style_run(piece, size=size, bold=bold or run.bold, italic=italic or run.italic, colour=_RUN_COLOURS.get(run.kind, STYLE["text"]))
+
+
+def _render_docx(layout: LayoutDocument) -> Document:
+    """Draw the shared layout as a DOCX in the master resume's style (A4, Calibri, same sizes and spacing)."""
+    document = Document()
+    section = document.sections[0]
+    section.page_width, section.page_height = Mm(210), Mm(297)
+    section.left_margin, section.right_margin = Pt(STYLE["margin_left"]), Pt(STYLE["margin_right"])
+    section.top_margin, section.bottom_margin = Pt(STYLE["margin_top"]), Pt(STYLE["margin_bottom"])
+
+    for style_name in ("Normal", "List Bullet"):
+        style = document.styles[style_name]
+        style.font.name = "Calibri"
+        style._element.get_or_add_rPr().rFonts.set(qn("w:ascii"), "Calibri")
+        style._element.get_or_add_rPr().rFonts.set(qn("w:hAnsi"), "Calibri")
+        style.font.size = Pt(STYLE["body_size"])
+        style.font.color.rgb = _rgb(STYLE["text"])
+
+    body, leading = STYLE["body_size"], STYLE["body_leading"]
+    name = document.add_paragraph()
+    name.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _fixed_line(name, STYLE["name_leading"])
+    _add_runs(name, [Run(layout.name)], size=STYLE["name_size"], bold=True)
+    for contact in layout.contact:
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _fixed_line(paragraph, leading)
+        _add_runs(paragraph, contact, size=body)
+
+    for block in layout.sections:
+        heading = document.add_paragraph()
+        heading.paragraph_format.keep_with_next = True
+        _fixed_line(heading, STYLE["heading_leading"], before=6, after=2)
+        _add_runs(heading, [Run(block.title.upper())], size=STYLE["heading_size"], bold=True)
+        borders = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "6")  # eighths of a point: 0.75 pt, like the master's rule
+        bottom.set(qn("w:space"), "1")
+        bottom.set(qn("w:color"), STYLE["rule"].lstrip("#"))
+        borders.append(bottom)
+        heading._p.get_or_add_pPr().append(borders)
+
+        for item in block.items:
+            if isinstance(item, Bullet):
+                paragraph = document.add_paragraph(style="List Bullet")
+                paragraph.paragraph_format.left_indent = Pt(STYLE["bullet_indent"])
+                paragraph.paragraph_format.first_line_indent = Pt(-STYLE["bullet_indent"] + 1.5)
+                _fixed_line(paragraph, leading)
+                _add_runs(paragraph, item.runs, size=body)
+                continue
+            paragraph = document.add_paragraph()
+            _fixed_line(paragraph, leading, before=1.5 if item.style == "entry" else 0)
+            paragraph.paragraph_format.keep_with_next = item.style in {"entry", "sub"}
+            _add_runs(paragraph, item.runs, size=body)
+    return document
+
+
 def _validated_records(selection: dict[str, Any], store: dict[str, Any]) -> list[dict[str, Any]]:
     safety = selection.get("safety", {})
     if safety.get("generated_claims") is True:
@@ -193,6 +286,29 @@ def _validated_records(selection: dict[str, Any], store: dict[str, Any]) -> list
         baseline = dict(current)
         baseline["score"] = 0
         baseline["reason"] = ["included as a core resume section: verified education"]
+        baseline["included_as_core_section"] = True
+        validated.append(baseline)
+        selected_ids.add(evidence_id)
+
+    # The master resume always has its summary and a full grouped skills section. Include them from the verified
+    # store (like education above): skills the job asks for are listed first within their group by the layout.
+    grouped_store = any(
+        isinstance(item.get("metadata"), dict) and "print_group" in item["metadata"] for item in store.get("evidence", [])
+    )
+    for current in store.get("evidence", []):
+        category = current.get("category")
+        is_core_skill = category == "skill" and grouped_store and isinstance(current.get("metadata"), dict) and "print_group" in current["metadata"]
+        # Credentials (certifications, achievements) are short and not job-specific: like the master, all verified ones print.
+        if category not in {"summary", "certification", "achievement"} and not is_core_skill:
+            continue
+        if current.get("review", {}).get("user_verified") is not True:
+            continue
+        evidence_id = current.get("evidence_id")
+        if not evidence_id or evidence_id in selected_ids:
+            continue
+        baseline = dict(current)
+        baseline["score"] = 0
+        baseline["reason"] = ["included as a core resume section: verified " + ("skill" if category == "skill" else str(category))]
         baseline["included_as_core_section"] = True
         validated.append(baseline)
         selected_ids.add(evidence_id)
@@ -292,86 +408,14 @@ def build_tailored_resume(
     if not isinstance(candidate, dict) or not candidate.get("name"):
         raise ResumeBuildError("Evidence store has no candidate name.")
 
-    records = _validated_records(selection, store)
+    from app.resume.tailoring_logic import tailor_for_job
+
+    content = tailor_for_job(selection, store)
+    records = content.records
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    document = Document()
-    section = document.sections[0]
-    section.top_margin = Inches(0.48)
-    section.bottom_margin = Inches(0.48)
-    section.left_margin = Inches(0.62)
-    section.right_margin = Inches(0.62)
-
-    normal = document.styles["Normal"]
-    normal.font.name = "Arial"
-    normal._element.rPr.rFonts.set(qn("w:ascii"), "Arial")
-    normal._element.rPr.rFonts.set(qn("w:hAnsi"), "Arial")
-    normal.font.size = Pt(9.2)
-    normal.font.color.rgb = DARK
-    normal.paragraph_format.space_after = Pt(2)
-
-    bullet_style = document.styles["List Bullet"]
-    bullet_style.font.name = "Arial"
-    bullet_style._element.rPr.rFonts.set(qn("w:ascii"), "Arial")
-    bullet_style._element.rPr.rFonts.set(qn("w:hAnsi"), "Arial")
-    bullet_style.font.size = Pt(9.1)
-
-    name_paragraph = document.add_paragraph()
-    name_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_paragraph_spacing(name_paragraph, after=2)
-    name_run = name_paragraph.add_run(str(candidate["name"]).strip())
-    _set_run_font(name_run, size=19, bold=True, color=NAVY)
-
-    for contact_line in _contact_lines(candidate):
-        _add_text(
-            document,
-            contact_line,
-            size=8.3,
-            color=MUTED,
-            align=WD_ALIGN_PARAGRAPH.CENTER,
-            after=1,
-        )
-
-    by_category: dict[str, list[dict[str, Any]]] = {}
-    for item in records:
-        by_category.setdefault(str(item.get("category", "")), []).append(item)
-
-    # The order is intentionally one-column and ATS-friendly.
-    skill_text = _skills_text(by_category.get("skill", []))
-    if skill_text:
-        _add_section_heading(document, "Technical Skills")
-        _add_text(document, skill_text, size=9.2, after=1)
-
-    experience = by_category.get("experience", [])
-    if experience:
-        _add_section_heading(document, "Experience")
-        for item in experience:
-            _render_experience(document, item)
-
-    projects = by_category.get("project", [])
-    if projects:
-        _add_section_heading(document, "Projects")
-        for item in projects:
-            _render_project(document, item)
-
-    education = by_category.get("education", [])
-    if education:
-        _add_section_heading(document, "Education")
-        for item in education:
-            _render_education(document, item)
-
-    certifications = by_category.get("certification", [])
-    if certifications:
-        _add_section_heading(document, "Certifications")
-        for item in certifications:
-            _add_bullet(document, str(item.get("title") or item.get("statement", "")))
-
-    achievements = by_category.get("achievement", [])
-    if achievements:
-        _add_section_heading(document, "Achievements")
-        for item in achievements:
-            _add_bullet(document, str(item.get("statement", "")))
+    document = _render_docx(build_layout(records, candidate, content.matches))
 
     document.core_properties.title = f"Tailored Resume - {selection.get('job', {}).get('title', 'Job Application')}"
     document.core_properties.subject = "Resume generated from user-verified evidence"

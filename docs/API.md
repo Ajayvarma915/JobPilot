@@ -93,6 +93,8 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 | POST | `/api/email/events/{event_id}/review` | Review Email Event |
 | GET | `/api/email/oauth/callback` | Complete Gmail Oauth |
 | GET | `/api/email/oauth/start` | Start Gmail Oauth |
+| GET | `/api/email/settings` | Get Email Settings |
+| PUT | `/api/email/settings` | Turn automatic updates on or off. Off: every matched email waits in Pending for you to approve. |
 | GET | `/api/email/status` | Get Email Status |
 | GET | `/api/email/suggestions` | List Suggestions |
 | POST | `/api/email/suggestions/{suggestion_id}/add` | Track this application as Applied (you confirm the company and role first). |
@@ -103,6 +105,8 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 
 | Method | Path | What it does |
 |---|---|---|
+| GET | `/api/evidence/records` | Your resume's evidence records and whether you have confirmed each one is accurate. |
+| POST | `/api/evidence/review` | Confirm (or withdraw confirmation of) the listed evidence records. Nothing is verified automatically. |
 | POST | `/api/evidence/select` | Select Evidence |
 | GET | `/api/evidence/summary` | Evidence Summary |
 
@@ -137,6 +141,7 @@ Authentication: none by default (local single-user mode). When `JOBPILOT_API_TOK
 | GET | `/api/jobs` | List Jobs |
 | GET | `/api/jobs/compare` | Compare several jobs side by side using their match data (computed and cached if missing). |
 | POST | `/api/jobs/import-link` | Add one job from its page link (for a referral at a company with no public job list). |
+| POST | `/api/jobs/import-page` | Save a job the extension read from your open tab (works behind logins and script-rendered pages). |
 | GET | `/api/jobs/{job_id}` | Get Job |
 | POST | `/api/jobs/{job_id}/ai-analysis` | Run on-demand LLM extraction beside the deterministic JD analysis. |
 | POST | `/api/jobs/{job_id}/ai-fit` | Explain how the candidate fits this job. |

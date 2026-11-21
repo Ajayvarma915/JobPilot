@@ -53,6 +53,13 @@ APPLICATION_STATUS_ORDER = {
     "withdrawn": 6,
 }
 TERMINAL_APPLICATION_STATUSES = {"offer", "rejected", "withdrawn"}
+# A job you track but have not yet marked as applied. Only an application CONFIRMATION email can move it
+# forward (to Applied): that email is the proof that you applied.
+PRE_APPLIED_STATUSES = {"saved", "preparing", "ready_to_apply"}
+# A match this strong (company and role both clearly in the email) is applied without waiting for you,
+# when automatic updates are on. Offers and rejections need an even stronger match.
+AUTO_APPLY_MATCH = 0.90
+AUTO_APPLY_MATCH_TERMINAL = 0.95
 # Suggested next step and follow-up delay, applied only when the user approves an event that
 # changes the status, and never over a next action or date the user already entered.
 # Nothing is ever sent to a recruiter; these are reminders for the user.
@@ -159,6 +166,11 @@ def _ensure_email_schema(connection: sqlite3.Connection) -> None:
             last_error TEXT,
             next_page_token TEXT,
             sync_query_days_back INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS email_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS email_scanned_messages (
@@ -513,6 +525,18 @@ def classify_email(
                 "we invite you to complete the assessment",
                 "complete the assessment for your application",
                 "take the coding assessment for",
+                # Shortlisting is the step between applying and the interviews. JobPilot has no separate
+                # "Shortlisted" status, so these move the application to the next stage, "Assessment".
+                "you have been shortlisted",
+                "your profile has been shortlisted",
+                "your application has been shortlisted",
+                "shortlisted for the next round",
+                "selected for the next round",
+                "move you to the next round",
+                "complete the coding challenge",
+                "take-home assignment",
+                "invite you to take the online test",
+                "invited to take the online test",
             ),
             0.95,
         ),
@@ -528,6 +552,12 @@ def classify_email(
                 "schedule an interview for the",
                 "please select a time for your interview",
                 "arrange an interview for the",
+                "your interview has been scheduled",
+                "your interview is scheduled",
+                "interview has been scheduled for",
+                "invite you for a technical interview",
+                "invite you to a technical interview",
+                "schedule your technical round",
             ),
             0.96,
         ),
@@ -671,8 +701,13 @@ def _application_match(
     snippet: str,
     body_text: str,
     received_at: str | None = None,
+    event_type: str | None = None,
 ) -> tuple[int | None, float]:
-    """Match only to a JobPilot application the user has marked as submitted.
+    """Match an email to one of your tracked applications.
+
+    Interviews, assessments, offers and rejections match only applications you have marked as submitted.
+    An application CONFIRMATION also matches a job you track but have not marked as applied yet, because
+    that email is the proof you applied.
 
     Company-name presence alone is deliberately insufficient. A role-title
     overlap is mandatory, and messages substantially older than submission are
@@ -687,13 +722,12 @@ def _application_match(
 
     rows = connection.execute(
         """
-        SELECT a.id AS application_id, a.status, a.applied_at,
+        SELECT a.id AS application_id, a.status, a.applied_at, a.created_at,
                j.title AS job_title, c.name AS company_name
         FROM applications a
         JOIN jobs j ON j.id = a.job_id
         JOIN companies c ON c.id = j.company_id
-        WHERE a.status IN ('applied', 'assessment', 'interview', 'offer', 'rejected')
-          AND a.applied_at IS NOT NULL
+        WHERE a.status IN ('saved', 'preparing', 'ready_to_apply', 'applied', 'assessment', 'interview', 'offer', 'rejected')
         ORDER BY a.updated_at DESC, a.id DESC
         """
     ).fetchall()
@@ -705,9 +739,18 @@ def _application_match(
     corpus_words = set(corpus.split())
 
     for row in rows:
-        applied_time = _parse_iso_datetime(row["applied_at"])
-        if applied_time and message_time < applied_time - timedelta(days=3):
-            continue
+        if row["status"] in PRE_APPLIED_STATUSES:
+            if event_type != "application_confirmation":
+                continue
+            created_time = _parse_iso_datetime(row["created_at"])
+            if created_time and message_time < created_time - timedelta(days=1):
+                continue  # older than the moment you started tracking it
+        else:
+            if not row["applied_at"]:
+                continue
+            applied_time = _parse_iso_datetime(row["applied_at"])
+            if applied_time and message_time < applied_time - timedelta(days=3):
+                continue
 
         company = _normalise_text(row["company_name"] or "")
         if not company:
@@ -833,6 +876,7 @@ def _record_message(
             snippet=snippet,
             body_text=body_text,
             received_at=received_at,
+            event_type=classification["event_type"],
         )
 
     # The Gmail lifecycle queue is intentionally limited to confirmed JobPilot
@@ -856,7 +900,7 @@ def _record_message(
             )
         return "unclassified"
 
-    connection.execute(
+    cursor = connection.execute(
         """
         INSERT INTO application_email_events (
             gmail_message_id, gmail_thread_id, received_at, sender, subject,
@@ -888,6 +932,32 @@ def _record_message(
         """,
         (message_id, str(message.get("threadId", ""))[:255] or None, _utc_now()),
     )
+
+    # A strong match updates the application right away (unless you turned that off). Everything is kept in the
+    # Approved tab with the reason, so it can be checked and undone; anything less certain waits for you.
+    needed = AUTO_APPLY_MATCH_TERMINAL if classification["event_type"] in {"offer", "rejection"} else AUTO_APPLY_MATCH
+    if (
+        matched_application_id is not None
+        and match_confidence >= needed
+        and float(classification["confidence"]) >= 0.9
+        and _auto_update_enabled(connection)
+    ):
+        try:
+            before_status, after_status = _apply_proposed_status(
+                connection, int(matched_application_id), str(classification["proposed_status"]), occurred_at=received_at
+            )
+        except HTTPException:
+            return "imported"  # not allowed for this application's stage: leave it for you to review
+        connection.execute(
+            """
+            UPDATE application_email_events
+            SET review_status = 'approved', review_note = ?, before_status = ?, after_status = ?, reviewed_at = ?
+            WHERE id = ?
+            """,
+            ("Updated automatically: the company and role in this email clearly match your tracked job.",
+             before_status, after_status, _utc_now(), cursor.lastrowid),
+        )
+        return "auto_applied"
     return "imported"
 
 def _gmail_query(days_back: int) -> str:
@@ -895,7 +965,7 @@ def _gmail_query(days_back: int) -> str:
     # entire inbox. Search is read-only and never fetches attachments.
     return (
         f"newer_than:{days_back}d "
-        "{application interview assessment offer rejection recruiter hiring}"
+        "{application applied interview assessment offer rejection recruiter hiring shortlisted \"next round\" screening}"
     )
 
 
@@ -1088,6 +1158,33 @@ def _service_for_credentials(credentials: Any) -> Any:
     return build("gmail", "v1", credentials=credentials, cache_discovery=False)
 
 
+def _auto_update_enabled(connection: sqlite3.Connection) -> bool:
+    row = connection.execute("SELECT value FROM email_settings WHERE key = 'auto_update'").fetchone()
+    return row is None or str(row["value"]) != "0"  # on unless you turned it off
+
+
+class EmailSettings(BaseModel):
+    auto_update: bool
+
+
+@router.get("/settings")
+def get_email_settings(connection: sqlite3.Connection = Depends(get_application_db)) -> dict[str, Any]:
+    _ensure_email_schema(connection)
+    return {"auto_update": _auto_update_enabled(connection)}
+
+
+@router.put("/settings")
+def put_email_settings(request: EmailSettings, connection: sqlite3.Connection = Depends(get_application_db)) -> dict[str, Any]:
+    """Turn automatic updates on or off. Off: every matched email waits in Pending for you to approve."""
+    _ensure_email_schema(connection)
+    connection.execute(
+        "INSERT INTO email_settings (key, value) VALUES ('auto_update', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ("1" if request.auto_update else "0",),
+    )
+    connection.commit()
+    return {"auto_update": request.auto_update}
+
+
 MAX_LISTED_PER_SYNC = 5000
 
 
@@ -1117,6 +1214,7 @@ def sync_gmail(
         stored_token = str(sync_state["next_page_token"])
     page_token: str | None = None
     fetched = 0
+    auto_applied = 0
 
     def scan_pages(start_token: str | None, *, stop_when_all_known: bool) -> tuple[str | None, bool]:
         """Scan Gmail result pages from start_token. Returns (token for the next older page, stopped_early).
@@ -1124,7 +1222,7 @@ def sync_gmail(
         With stop_when_all_known the scan ends at the first page whose messages were all scanned
         before: that is where the new mail ends and the old backlog begins.
         """
-        nonlocal scanned, fetched, imported, duplicates, unclassified, errors
+        nonlocal scanned, fetched, imported, duplicates, unclassified, errors, auto_applied
         token = start_token
         # The budget limits how many NEW messages are downloaded, not how many ids are listed, so
         # messages already scanned never use it up (and a hard cap keeps one sync bounded).
@@ -1173,8 +1271,10 @@ def sync_gmail(
                 try:
                     message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
                     outcome = _record_message(connection, message)
-                    if outcome == "imported":
+                    if outcome in ("imported", "auto_applied"):
                         imported += 1
+                        if outcome == "auto_applied":
+                            auto_applied += 1
                     elif outcome == "duplicate":
                         duplicates += 1
                     elif outcome == "unclassified":
@@ -1253,11 +1353,12 @@ def sync_gmail(
         "duplicates": duplicates,
         "unclassified": unclassified,
         "errors": errors,
-        "review_required": imported,
+        "review_required": imported - auto_applied,
+        "auto_applied": auto_applied,
         "more_pages_pending": bool(page_token),
         "full_email_bodies_stored": False,
         "note": (
-            "Detected events remain pending until you approve or ignore them. "
+            "Clear matches update your applications automatically (see the Approved tab); the rest wait for you to approve or ignore. "
             "If more pages remain, run Sync again to continue scanning older messages."
         ),
     }
@@ -1308,6 +1409,7 @@ def _apply_proposed_status(
     connection: sqlite3.Connection,
     application_id: int,
     proposed_status: str,
+    occurred_at: str | None = None,
 ) -> tuple[str, str]:
     application = connection.execute(
         "SELECT status, applied_at FROM applications WHERE id = ?",
@@ -1320,12 +1422,14 @@ def _apply_proposed_status(
         )
 
     current = str(application["status"])
-    if current not in {"applied", "assessment", "interview", "offer", "rejected"} or not application["applied_at"]:
+    confirmation_of_untracked_apply = current in PRE_APPLIED_STATUSES and proposed_status == "applied"
+    already_applied = current in {"applied", "assessment", "interview", "offer", "rejected"} and bool(application["applied_at"])
+    if not (confirmation_of_untracked_apply or already_applied):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                "Gmail events can update only applications that you have marked Applied "
-                "in JobPilot. Confirm the employer submission in the Applications tracker first."
+                "Only an application confirmation email can mark a tracked job as Applied. Other emails "
+                "(interview, assessment, offer, rejection) can update only applications you have already applied to."
             ),
         )
     next_status = current
@@ -1338,7 +1442,7 @@ def _apply_proposed_status(
         if next_status in {
             "applied", "assessment", "interview", "offer", "rejected", "withdrawn"
         } and not applied_at:
-            applied_at = _utc_now()
+            applied_at = occurred_at or _utc_now()  # the time of the confirmation email, when we have it
         connection.execute(
             "UPDATE applications SET status = ?, applied_at = ?, updated_at = ? WHERE id = ?",
             (next_status, applied_at, _utc_now(), application_id),
@@ -1404,6 +1508,7 @@ def review_email_event(
         connection,
         int(application_id),
         str(event["proposed_status"]),
+        occurred_at=event["received_at"],
     )
     connection.execute(
         """

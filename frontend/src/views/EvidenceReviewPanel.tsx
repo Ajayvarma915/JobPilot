@@ -106,7 +106,9 @@ export function EvidenceReviewPanel({ onChanged }: { onChanged?: () => void }) {
                     <input type="checkbox" className="mt-0.5" checked={selected.includes(item.evidence_id)} onChange={() => toggle(item.evidence_id)} />
                     <span>
                       <span className="font-medium text-slate-200">{item.title}</span>
-                      {item.statement && item.statement !== item.title ? <span className="block text-slate-500">{item.statement}</span> : null}
+                      {item.category !== "skill" && item.statement && item.statement !== item.title ? (
+                        <span className="block text-slate-500">{item.statement}</span>
+                      ) : null}
                     </span>
                   </label>
                 </li>

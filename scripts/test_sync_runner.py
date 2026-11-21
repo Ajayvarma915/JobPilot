@@ -9,6 +9,7 @@ from pathlib import Path
 
 _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["JOBPILOT_DATABASE_PATH"] = str(Path(_TEMP_DIR.name) / "test_sync_runner.db")
+os.environ["JOBPILOT_BACKUP_DIR"] = str(Path(_TEMP_DIR.name) / "backups")  # never the real backups folder
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -95,6 +96,45 @@ def test_a_stopped_update_is_reported_as_interrupted() -> None:
     check(state["steps"][0]["state"] == "running", "the step that was in progress is shown as unfinished")
 
 
+def test_backup_runs_before_the_steps() -> None:
+    import io
+    import json
+    import sqlite3
+    from contextlib import redirect_stdout
+
+    from scripts import run_job_update
+
+    live = Path(_TEMP_DIR.name) / "live_for_backup.db"
+    connection = sqlite3.connect(live)
+    connection.execute("CREATE TABLE t (x INTEGER)")
+    connection.execute("INSERT INTO t VALUES (1)")
+    connection.commit()
+    connection.close()
+    backups = Path(_TEMP_DIR.name) / "backups_for_update"
+    saved = run_job_update.backup_first(live, backups)
+    check(saved is not None and saved.is_file() and saved.parent == backups, "a backup file is written")
+    copy = sqlite3.connect(saved)
+    try:
+        check(copy.execute("SELECT x FROM t").fetchone() == (1,), "and it holds the data")
+    finally:
+        copy.close()  # an open handle blocks deleting the temporary folder on Windows
+    check(run_job_update.backup_first(Path(_TEMP_DIR.name) / "missing.db", backups) is None, "a missing database is skipped, not fatal")
+
+    # the update itself backs up first (default location is patched to the temp folder), then runs the steps
+    steps = Path(_TEMP_DIR.name) / "steps_backup.json"
+    steps.write_text(json.dumps([["Only step", ["-c", "print('Updated records       : 1')"]]]), encoding="utf-8")
+    original = run_job_update.backup_first
+    run_job_update.backup_first = lambda source=None, directory=None: original(live, backups)
+    try:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_job_update.main(["prog", str(steps)])
+    finally:
+        run_job_update.backup_first = original
+    text = out.getvalue()
+    check(code == 0 and text.index("Database backup") < text.index("=== STEP Only step ===") < text.index("=== DONE ==="), text)
+
+
 def test_second_start_while_running_is_refused() -> None:
     sync_runner.STEPS[:] = [("Slow step", ["-c", "import time; time.sleep(1.5)"])]
     client = TestClient(api_main.app)
@@ -107,6 +147,7 @@ TESTS = [
     ("Update runs its steps in order and reports the summary", test_update_runs_steps_in_order_and_reports),
     ("Progress is live and read from files", test_progress_is_live_and_survives_without_the_web_process),
     ("A stopped update is reported as interrupted", test_a_stopped_update_is_reported_as_interrupted),
+    ("A database backup runs before the update steps", test_backup_runs_before_the_steps),
     ("A second start while running is refused", test_second_start_while_running_is_refused),
 ]
 

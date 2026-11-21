@@ -279,6 +279,15 @@ export function JobsView({
             <option value="all">All job functions</option>
           </select>
 
+          <label className="flex items-center gap-2 rounded-xl border border-slate-700/60 px-3 py-2 text-[11px] text-slate-300">
+            <input
+              type="checkbox"
+              checked={filterDraft.new_only}
+              onChange={(event) => setFilterDraft({ ...filterDraft, new_only: event.target.checked })}
+            />
+            Only new (last 3 days)
+          </label>
+
           <button className="secondary-button" type="submit">
             <Filter size={14} />
             Apply filters
@@ -366,6 +375,11 @@ export function JobsView({
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <MatchBadge match={job.match} />
                       <CompensationBadge compensation={job.compensation} />
+                      {job.is_new && (
+                        <span className="rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
+                          New
+                        </span>
+                      )}
                       {job.review?.status === "pending" && (
                         <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
                           Needs your review

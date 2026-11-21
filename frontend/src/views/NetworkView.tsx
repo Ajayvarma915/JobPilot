@@ -24,7 +24,24 @@ interface Draft {
   status: string;
 }
 
-const EMPTY = { name: "", kind: "recruiter", role_title: "", company_name: "", email: "", linkedin_url: "", notes: "" };
+const EMPTY = { name: "", kind: "recruiter", role_title: "", company_name: "", email: "", linkedin_url: "", notes: "", referral_status: "none", follow_up_date: "" };
+
+const REFERRAL_STEPS: Array<[string, string]> = [
+  ["none", "No referral yet"],
+  ["asked", "Asked for a referral"],
+  ["agreed", "Agreed to refer me"],
+  ["submitted", "Referral submitted"],
+  ["declined", "Declined"],
+];
+
+interface TrackedJob {
+  id: number;
+  job_id: number;
+  status: string;
+  job: { id: number; title: string; company: string };
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
 
 // Contacts you track (recruiters and referrals). JobPilot only drafts a message; you send it yourself.
 export function NetworkView() {
@@ -34,6 +51,8 @@ export function NetworkView() {
   const [saving, setSaving] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const [reloadToken, setReloadToken] = useState(0);
+  const [tracked, setTracked] = useState<TrackedJob[]>([]);
+  const [forJob, setForJob] = useState("");
 
   const reload = useCallback(() => setReloadToken((value) => value + 1), []);
 
@@ -54,13 +73,39 @@ export function NetworkView() {
     };
   }, [reloadToken]);
 
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<{ items: TrackedJob[] }>("/api/applications?limit=100&offset=0")
+      .then((result) => {
+        if (!cancelled) setTracked(result.items);
+      })
+      .catch(() => undefined); // the job link is optional, so a failure here is not worth an error banner
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const changeReferral = (contact: Contact, patch: Partial<Pick<Contact, "referral_status" | "follow_up_date">>) =>
+    apiRequest(`/api/contacts/${contact.id}`, { method: "PATCH", body: JSON.stringify(patch) })
+      .then(reload)
+      .catch((caught: unknown) => setError(errorText(caught)));
+
   const addContact = (event: FormEvent) => {
     event.preventDefault();
     setSaving(true);
     const body = Object.fromEntries(Object.entries(form).map(([key, value]) => [key, value.trim() || null]));
-    apiRequest("/api/contacts", { method: "POST", body: JSON.stringify(body) })
-      .then(() => {
+    const chosen = tracked.find((item) => String(item.id) === forJob);
+    apiRequest<{ id: number }>("/api/contacts", { method: "POST", body: JSON.stringify(body) })
+      .then(async (created) => {
+        if (chosen) {
+          // Remember which job this person is helping with.
+          await apiRequest(`/api/contacts/${created.id}/interactions`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "note", body: `Referral contact for ${chosen.job.title} at ${chosen.job.company}.`, job_id: chosen.job.id }),
+          });
+        }
         setForm(EMPTY);
+        setForJob("");
         reload();
       })
       .catch((caught: unknown) => setError(errorText(caught)))
@@ -101,6 +146,18 @@ export function NetworkView() {
         <input className="field" placeholder="Role" value={form.role_title} onChange={(event) => setForm({ ...form, role_title: event.target.value })} />
         <input className="field" placeholder="Email (optional)" type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
         <input className="field" placeholder="LinkedIn link (optional)" value={form.linkedin_url} onChange={(event) => setForm({ ...form, linkedin_url: event.target.value })} />
+        <select className="field" aria-label="Referral status" value={form.referral_status} onChange={(event) => setForm({ ...form, referral_status: event.target.value })}>
+          {REFERRAL_STEPS.map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+        <input className="field" aria-label="Follow-up date" type="date" value={form.follow_up_date} onChange={(event) => setForm({ ...form, follow_up_date: event.target.value })} />
+        <select className="field sm:col-span-2" aria-label="Job this person helps with" value={forJob} onChange={(event) => setForJob(event.target.value)}>
+          <option value="">Not linked to a tracked job</option>
+          {tracked.map((item) => (
+            <option key={item.id} value={item.id}>{item.job.title} at {item.job.company}</option>
+          ))}
+        </select>
         <textarea className="field sm:col-span-2" rows={2} placeholder="Notes" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
         <div className="sm:col-span-2">
           <button className="primary-button" type="submit" disabled={saving || !form.name.trim()}>
@@ -127,6 +184,30 @@ export function NetworkView() {
                   {[contact.kind, contact.role_title, contact.company_name].filter(Boolean).join(" · ")}
                 </p>
                 {contact.notes && <p className="mt-2 text-[11px] text-slate-500">{contact.notes}</p>}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <select
+                    className="field !w-auto !py-1 text-[11px]"
+                    aria-label={`Referral status for ${contact.name}`}
+                    value={contact.referral_status}
+                    onChange={(event) => void changeReferral(contact, { referral_status: event.target.value })}
+                  >
+                    {REFERRAL_STEPS.map(([value, label]) => (
+                      <option key={value} value={value}>{label}</option>
+                    ))}
+                  </select>
+                  <input
+                    className="field !w-auto !py-1 text-[11px]"
+                    type="date"
+                    aria-label={`Follow-up date for ${contact.name}`}
+                    value={contact.follow_up_date ?? ""}
+                    onChange={(event) => void changeReferral(contact, { follow_up_date: event.target.value || null })}
+                  />
+                  {contact.follow_up_date && contact.follow_up_date <= today() && !["submitted", "declined"].includes(contact.referral_status) && (
+                    <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                      {contact.follow_up_date < today() ? "Follow-up overdue" : "Follow up today"}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="flex gap-2">
                 <button className="secondary-button !px-3 !py-2" onClick={() => void draftFor(contact)}>

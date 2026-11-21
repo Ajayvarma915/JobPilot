@@ -16,9 +16,30 @@ import { EmailIntelligenceView, type ApplicationEmailEvent, type EmailConnection
 import { JobsView } from "./views/JobsView";
 import { OverviewView } from "./views/OverviewView";
 import { ResumeView } from "./views/ResumeView";
+import { OnboardingChecklist } from "./views/OnboardingChecklist";
+
+const SCREEN_IDS = NAV_ITEMS.map((item) => item.id as string);
+
+// The screen lives in the address (#/jobs, #/applications ...) so the Back button, a refresh and a
+// bookmark all return to the same screen.
+function screenFromAddress(): Screen {
+  const id = window.location.hash.replace(/^#\/?/, "");
+  return SCREEN_IDS.includes(id) ? (id as Screen) : "overview";
+}
 
 function App() {
-  const [screen, setScreen] = useState<Screen>("overview");
+  const [screen, setScreenState] = useState<Screen>(screenFromAddress);
+  const setScreen = useCallback((next: Screen) => {
+    if (window.location.hash !== `#/${next}`) window.location.hash = `#/${next}`;
+    setScreenState(next);
+  }, []);
+
+  useEffect(() => {
+    const onAddressChange = () => setScreenState(screenFromAddress());
+    window.addEventListener("hashchange", onAddressChange);
+    return () => window.removeEventListener("hashchange", onAddressChange);
+  }, []);
+
   const [apiStatus, setApiStatus] = useState<ApiStatus>("checking");
   const [apiError, setApiError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(true);
@@ -73,6 +94,7 @@ function App() {
     role_scope: "software_engineering",
     compensation_filter: "all",
     review_scope: "main",
+    new_only: false,
   });
 
   const [appliedFilters, setAppliedFilters] = useState<JobFilters>({
@@ -83,6 +105,7 @@ function App() {
     role_scope: "software_engineering",
     compensation_filter: "all",
     review_scope: "main",
+    new_only: false,
   });
 
   const [jobTitle, setJobTitle] = useState("");
@@ -155,6 +178,7 @@ function App() {
         role_scope: appliedFilters.role_scope,
         compensation_filter: appliedFilters.compensation_filter,
         review_scope: appliedFilters.review_scope,
+        new_only: String(appliedFilters.new_only),
       });
 
       if (appliedQuery) params.set("q", appliedQuery);
@@ -239,6 +263,7 @@ function App() {
       let imported = 0;
       let duplicates = 0;
       let review = 0;
+      let autoApplied = 0;
       let morePending = false;
       for (let round = 0; round < 5; round += 1) {
         const result = await apiRequest<EmailSyncResult>("/api/email/sync", {
@@ -249,11 +274,12 @@ function App() {
         imported += result.imported;
         duplicates += result.duplicates;
         review += result.review_required;
+        autoApplied += result.auto_applied ?? 0;
         morePending = result.more_pages_pending;
         if (!morePending) break;
       }
       setEmailNotice(
-        `Sync complete: scanned ${scanned}, imported ${imported}, skipped ${duplicates} duplicates, and left ${review} event(s) for review.${morePending ? " Older messages remain; press Sync Gmail again to continue." : " Your whole mailbox window has been read."} Applications found for jobs you do not track are listed under "Applications found in your email".`,
+        `Sync complete: scanned ${scanned}, found ${imported} application email(s). ${autoApplied} updated your applications automatically (see Approved), ${review} wait for your review, ${duplicates} were already seen.${morePending ? " Older messages remain; press Sync Gmail again to continue." : " Your whole mailbox window has been read."} Applications found for jobs you do not track are listed under "Applications found in your email".`,
       );
       setEmailSyncCount((count) => count + 1);
       setEmailEventFilter("pending");
@@ -318,6 +344,36 @@ function App() {
   const handleEmailApplicationSelect = useCallback((eventId: number, applicationId: string) => {
     setEmailSelectedApplicationIds((current) => ({ ...current, [eventId]: applicationId }));
   }, []);
+
+  // While the app is open, read new mail on its own (at most every 30 minutes) so a confirmation or reply
+  // updates your applications without you pressing Sync. It reads one batch of the newest mail, read-only.
+  useEffect(() => {
+    if (apiStatus !== "connected") return;
+    let cancelled = false;
+    const syncIfDue = async () => {
+      try {
+        const status = await apiRequest<{ connected: boolean; last_sync_at: string | null }>("/api/email/status");
+        const last = status.last_sync_at ? new Date(status.last_sync_at).getTime() : 0;
+        if (!status.connected || Date.now() - last < 30 * 60 * 1000) return;
+        const result = await apiRequest<EmailSyncResult>("/api/email/sync", {
+          method: "POST",
+          body: JSON.stringify({ days_back: 180, max_messages: 100 }),
+        });
+        if (!cancelled && (result.auto_applied ?? 0) > 0) {
+          await loadApplications();
+          setEmailSyncCount((count) => count + 1);
+        }
+      } catch {
+        // a background check must never show an error; the Email screen's Sync button reports problems
+      }
+    };
+    void syncIfDue();
+    const timer = window.setInterval(() => void syncIfDue(), 10 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [apiStatus, loadApplications]);
 
   useEffect(() => {
     const timerId = window.setTimeout(() => {
@@ -499,6 +555,7 @@ function App() {
       role_scope: filterDraft.role_scope,
       compensation_filter: filterDraft.compensation_filter,
       review_scope: filterDraft.review_scope,
+      new_only: filterDraft.new_only,
     });
     setSuggestionsOpen(false);
   };
@@ -528,6 +585,7 @@ function App() {
       role_scope: filterDraft.role_scope,
       compensation_filter: filterDraft.compensation_filter,
       review_scope: filterDraft.review_scope,
+      new_only: filterDraft.new_only,
     };
 
     // When the query matched a company name rather than the title, and the
@@ -938,6 +996,12 @@ function App() {
                 exit={{ opacity: 0, y: -4 }}
                 transition={{ duration: 0.2, ease: "easeOut" }}
               >
+                {screen === "overview" && (
+                  <div className="mb-6">
+                    <OnboardingChecklist onNavigate={setScreen} />
+                  </div>
+                )}
+
                 {screen === "overview" && (
                   <OverviewView
                     stats={stats}

@@ -168,6 +168,8 @@ class GmailIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.client.get("/api/email/status")
+        # These tests exercise the manual approval path; the automatic path has its own tests below.
+        self.client.put("/api/email/settings", json={"auto_update": False})
         connection = sqlite3.connect(self.database_path)
         try:
             connection.execute("DELETE FROM application_email_events")
@@ -598,6 +600,91 @@ class GmailIntegrationTests(unittest.TestCase):
         ids = {row["gmail_message_id"] for row in self.client.get("/api/email/events?review_status=all").json()["items"]}
         self.assertIn("gmail-new", ids)
         self.assertFalse(result["more_pages_pending"])
+
+    # ---- automatic updates -------------------------------------------------------------------------------
+    def _sync_one(self, message: dict) -> dict:
+        fake = _FakeGmailService(message)
+        with patch.object(self.email_module, "_gmail_service", return_value=fake):
+            response = self.client.post("/api/email/sync", json={"days_back": 90, "max_messages": 10})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def _track(self, job_id: int, status: str = "saved") -> dict:
+        existing = self.client.get(f"/api/applications/by-job/{job_id}")
+        if existing.status_code == 200:
+            self.client.delete(f"/api/applications/{existing.json()['id']}")
+        return self.client.post("/api/applications", json={"job_id": job_id, "status": status}).json()
+
+    def test_shortlisting_and_scheduling_phrases_are_recognised(self) -> None:
+        classify = self.email_module.classify_email
+        shortlisted = classify(subject="Update", body_text="Good news: you have been shortlisted for the Software Engineer role at ExampleCo.")
+        self.assertEqual((shortlisted["event_type"], shortlisted["proposed_status"]), ("assessment_invitation", "assessment"))
+        scheduled = classify(subject="Next step", body_text="Your interview has been scheduled for Tuesday 11 am for the Software Engineer role.")
+        self.assertEqual(scheduled["event_type"], "interview_invitation")
+        # ordinary newsletters and job ads still do not count
+        self.assertIsNone(classify(subject="Top jobs for you", body_text="Shortlisted companies hiring this week: apply now to 20 openings."))
+        self.assertIsNone(classify(subject="HackerRank digest", body_text="Practice coding challenge of the week and improve your rank."))
+
+    def test_settings_default_on_and_can_be_turned_off(self) -> None:
+        self.client.put("/api/email/settings", json={"auto_update": True})
+        self.assertTrue(self.client.get("/api/email/settings").json()["auto_update"])
+        self.assertFalse(self.client.put("/api/email/settings", json={"auto_update": False}).json()["auto_update"])
+        self.assertFalse(self.client.get("/api/email/settings").json()["auto_update"])
+
+    def test_confirmation_email_marks_a_tracked_job_as_applied_automatically(self) -> None:
+        """The whole point: track a job, apply on the company site, and the confirmation email marks it Applied."""
+        self.client.put("/api/email/settings", json={"auto_update": True})
+        saved = self._track(2, "saved")
+        self.assertEqual(saved["status"], "saved")
+        result = self._sync_one(_message(
+            message_id="gmail-auto-confirm", subject="We received your application",
+            body="Thank you. We have received your application for the Backend Engineer role at ExampleCo."))
+        self.assertEqual((result["imported"], result["auto_applied"], result["review_required"]), (1, 1, 0), result)
+        application = self.client.get(f"/api/applications/{saved['id']}").json()
+        self.assertEqual(application["status"], "applied")
+        self.assertTrue(application["applied_at"], "the application time is recorded")
+        approved = self.client.get("/api/email/events", params={"review_status": "approved"}).json()["items"]
+        self.assertEqual(len(approved), 1)
+        self.assertEqual((approved[0]["before_status"], approved[0]["after_status"]), ("saved", "applied"))
+        self.assertIn("automatically", approved[0]["review_note"])
+
+    def test_with_automatic_updates_off_the_same_email_waits_for_approval(self) -> None:
+        self.client.put("/api/email/settings", json={"auto_update": False})
+        saved = self._track(2, "ready_to_apply")
+        result = self._sync_one(_message(
+            message_id="gmail-manual-confirm", subject="We received your application",
+            body="Thank you. We have received your application for the Backend Engineer role at ExampleCo."))
+        self.assertEqual((result["imported"], result["auto_applied"], result["review_required"]), (1, 0, 1), result)
+        self.assertEqual(self.client.get(f"/api/applications/{saved['id']}").json()["status"], "ready_to_apply")
+        event = self.client.get("/api/email/events").json()["items"][0]
+        self.assertEqual(event["matched_job"]["application_id"], saved["id"])
+        approve = self.client.post(f"/api/email/events/{event['id']}/review", json={"decision": "approve"})
+        self.assertEqual(approve.status_code, 200, approve.text)
+        self.assertEqual(self.client.get(f"/api/applications/{saved['id']}").json()["status"], "applied")
+
+    def test_only_a_confirmation_can_move_a_not_yet_applied_job(self) -> None:
+        self.client.put("/api/email/settings", json={"auto_update": True})
+        self._track(2, "saved")
+        result = self._sync_one(_message(
+            message_id="gmail-interview-for-unapplied", subject="Interview invitation for Backend Engineer",
+            body="We would like to invite you to interview for the Backend Engineer role at ExampleCo."))
+        self.assertEqual((result["imported"], result["auto_applied"]), (0, 0), "an interview email cannot prove you applied")
+        self.assertEqual(self.client.get("/api/applications/by-job/2").json()["status"], "saved")
+
+    def test_interview_email_moves_an_applied_job_forward_automatically(self) -> None:
+        self.client.put("/api/email/settings", json={"auto_update": True})
+        result = self._sync_one(_message(message_id="gmail-auto-interview"))  # default text: interview for Software Engineer at ExampleCo
+        self.assertEqual((result["imported"], result["auto_applied"], result["review_required"]), (1, 1, 0), result)
+        application = self.client.get(f"/api/applications/{self.application['id']}").json()
+        self.assertEqual(application["status"], "interview")
+        self.assertEqual(application["next_action"], "Prepare for and attend the interview")
+
+    def test_a_weak_match_is_never_applied_automatically(self) -> None:
+        self.client.put("/api/email/settings", json={"auto_update": True})
+        result = self._sync_one(_message(
+            message_id="gmail-weak", subject="Interview invitation", body="We would like to invite you to interview for a role at ExampleCo."))
+        self.assertEqual(result["auto_applied"], 0, result)
+        self.assertEqual(self.client.get(f"/api/applications/{self.application['id']}").json()["status"], "applied")
 
     def test_ignoring_event_does_not_change_application(self) -> None:
         fake = _FakeGmailService(_message(message_id="gmail-message-ignore"))

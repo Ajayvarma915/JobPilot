@@ -19,6 +19,17 @@
     </header>
 
     <section class="panel">
+      <div class="section-heading">
+        <h2>Save this job</h2>
+        <span class="local-badge">Reads the page only</span>
+      </div>
+      <p class="muted">On a job posting (any company, even one with no public job list), save it to JobPilot so you can track it and tailor a resume. Nothing on the page is changed or submitted.</p>
+      <button id="saveJobBtn" class="secondary-button">Save this job to JobPilot</button>
+      <button id="trackSavedJobBtn" class="primary-button hidden">Track it as an application</button>
+      <div id="saveJobStatus" class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
       <label for="applicationSelect">Tracked application</label>
       <select id="applicationSelect">
         <option value="">Loading applications…</option>

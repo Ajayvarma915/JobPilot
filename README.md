@@ -52,7 +52,16 @@ Open http://127.0.0.1:5173. Full instructions, including Ollama, Gmail and the b
 .\venv\Scripts\python.exe -m scripts.sync_target_companies --dry-run --only databricks
 ```
 
-Only jobs that pass every rule with no review flags are written. For unattended runs see `scripts/run_scheduled_sync.py` (Windows Task Scheduler command inside).
+Jobs that pass every rule are written; ones with something unclear (often no stated years of experience) are written too but wait in the **Needs your review** tab until you accept or dismiss them.
+
+## Daily use
+
+1. **Update jobs:** press **Update jobs now** on the Discover screen (backs up the database first, reads every company page and the remote job boards, closes jobs that were taken down). To do it automatically every morning, run once: `powershell -ExecutionPolicy Bypass -File scripts\register_daily_update.ps1` (undo with `-Remove`).
+2. **Confirm your resume:** after you change the PDF in `data/master_resume`, run `.\venv\Scripts\python.exe -m scripts.build_master_resume_store`, then confirm the statements in the panel at the top of the Resume screen. Tailored resumes use only confirmed statements.
+3. **Find, tailor, apply:** Discover (filter by company, "Only new"), **Tailor**, apply on the employer's own site, then press Confirm in the extension or track it by hand. JobPilot never submits anything.
+4. **A job from a company with no public list:** open its page and press **Save this job** in the browser extension, or paste the link under **Add a job by link**.
+5. **Gmail:** the app reads new mail by itself while it is open. Track a job, apply on the company site, and the confirmation email marks it Applied; clear interview, assessment, offer or rejection emails move it on. Everything automatic is listed under Approved (switch it off on the Email screen). Confirmations for jobs you do not track appear as suggestions you can add.
+6. **Remote jobs:** the Remote tab is filled from Remotive, Remote OK, Himalayas, We Work Remotely, Y Combinator's public jobs pages, Jobicy and Working Nomads. Wellfound cannot be used (login wall and no scraping allowed).
 
 ## Testing
 

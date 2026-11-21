@@ -80,6 +80,15 @@ def _skill_source_lines(skill: str, skill_lines: list[str]) -> list[str]:
     return _dedupe(found)
 
 
+def _canonical_name(item: str) -> str:
+    """The canonical skill name for a listed item ("React" -> "React.js"), or the item itself."""
+    lowered = item.casefold()
+    for canonical, aliases in TECHNOLOGY_ALIASES.items():
+        if lowered == canonical.casefold() or lowered in {alias.casefold() for alias in aliases}:
+            return canonical
+    return item
+
+
 def _skill_group(skill: str) -> str:
     if skill in PROGRAMMING_LANGUAGES:
         return "programming_language"
@@ -173,10 +182,21 @@ class MasterResumeEvidenceStore:
         skill_lines = parsed.sections.get("skills", [])
         evidence: list[dict[str, Any]] = []
 
+        # Where each skill sits in the resume's own skills section: canonical name -> (group, wording, position).
+        placement: dict[str, tuple[str, str, int]] = {}
+        position = 0
+        for group_label, group_items in parsed.skill_groups:
+            for raw_item in group_items:
+                canonical = _canonical_name(raw_item)
+                if canonical not in placement:
+                    placement[canonical] = (group_label, raw_item, position)
+                position += 1
+
         # Skills
         for skill in parsed.skills:
             lines = _skill_source_lines(skill, skill_lines)
             source_text = "\n".join(lines) if lines else skill
+            where = placement.get(skill)
 
             evidence.append(
                 _record(
@@ -187,7 +207,25 @@ class MasterResumeEvidenceStore:
                     source_file=source_file,
                     source_section="skills",
                     source_text=source_text,
-                    metadata={"skill_group": _skill_group(skill)},
+                    metadata={
+                        "skill_group": _skill_group(skill),
+                        # How the resume prints it: "Languages: Java, Python". Absent for skills only found in other text.
+                        **({"print_group": where[0], "print_text": where[1], "print_order": where[2]} if where else {}),
+                    },
+                )
+            )
+
+        # Summary paragraph (a record of its own, so you confirm exactly the text that will be printed)
+        if parsed.summary.strip():
+            evidence.append(
+                _record(
+                    category="summary",
+                    identity="summary",
+                    title="Summary",
+                    statement=parsed.summary.strip(),
+                    source_file=source_file,
+                    source_section="summary",
+                    source_text=parsed.summary.strip(),
                 )
             )
 
@@ -269,6 +307,7 @@ class MasterResumeEvidenceStore:
                     metadata={
                         "technologies": _dedupe(project.technologies),
                         "bullets": details,
+                        "tech_line": project.tech_line,
                     },
                 )
             )
@@ -311,6 +350,7 @@ class MasterResumeEvidenceStore:
                         "end_date": experience.end_date,
                         "location": experience.location,
                         "bullets": details,
+                        "context": experience.context,
                     },
                 )
             )

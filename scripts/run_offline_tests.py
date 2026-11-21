@@ -52,6 +52,7 @@ def main() -> int:
 
     names = sorted(p.stem for p in (PROJECT_ROOT / "scripts").glob("test_*.py") if args.keyword in p.stem)
     node_tests = [p for p in [PROJECT_ROOT / "scripts" / "test_extension_field_matcher.mjs",
+                              PROJECT_ROOT / "scripts" / "test_extension_job_capture.mjs",
                               PROJECT_ROOT / "scripts_test_extension_submission_confirmation.mjs"]
                   if p.is_file() and args.keyword in p.stem]
 

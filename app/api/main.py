@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import copy
 import hmac
 import json
@@ -11,7 +12,7 @@ import re
 import sqlite3
 from collections.abc import Generator
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,7 +39,7 @@ from app.ai.fit_analysis import (
 from app.ai.providers import get_provider
 from app.ai.runner import run_structured
 from app.services.sync_summary import build_change_summary
-from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, classify_google_page, decide as decide_job_status, list_only as job_list_only
+from app.services.job_status import CLOSED as JOB_CLOSED, OPEN as JOB_OPEN, UNKNOWN as JOB_UNKNOWN, classify_google_page, classify_job_page, decide as decide_job_status, list_only as job_list_only
 from app.db.job_repository import JobRepository, ensure_support_tables
 from app.services import job_review, sync_runner
 from app.services.job_import import ImportError_, fetch_job
@@ -785,7 +786,11 @@ def _apply_resume_choices(
         original = job_skills[skill.casefold()]
         if original.casefold() in covered_keys:
             continue  # already backed by verified evidence
-        evidence_id = "user-confirmed-skill-" + re.sub(r"[^a-z0-9]+", "-", original.casefold()).strip("-")
+        # The id must be unique per skill: stripping symbols alone turned both "C++" and "C#" into "c", the second
+        # record replaced the first, and generation failed with "selection report is stale". A short hash of the
+        # exact name keeps every skill apart.
+        evidence_id = ("user-confirmed-skill-" + re.sub(r"[^a-z0-9]+", "-", original.casefold()).strip("-") + "-"
+                       + hashlib.sha1(original.casefold().encode("utf-8")).hexdigest()[:8])
         record = {
             "evidence_id": evidence_id, "category": "skill", "title": original,
             "statement": f"Listed skill {original}",
@@ -1023,8 +1028,10 @@ def company_coverage(db: Session = Depends(get_db)) -> dict[str, Any]:
             if info["never_fetched"]:
                 return "Not read yet: press Update jobs now"
             raw = info.get("raw_jobs")
-            return (f"{raw} jobs read, none fit your role, location and experience rules" if raw is not None
-                    else "Read, but no job fits your rules")
+            why = ", ".join(f"{item['count']} {item['label']}" for item in (info.get("why_excluded") or [])[:3])
+            if raw is None:
+                return "Read, but no job fits your rules"
+            return f"{raw} jobs read, none fit your rules" + (f" ({why})" if why else "")
         if state in ("discovered", "awaiting_validation", "configured", "verified"):
             return "No public job list JobPilot can read yet (use Add a job by link)"
         return "Source unavailable right now"
@@ -1035,7 +1042,8 @@ def company_coverage(db: Session = Depends(get_db)) -> dict[str, Any]:
         c = counts.get(name, {"shown": 0, "review": 0})
         info = health.get(name) or {}
         items.append({"name": name, "shown": c["shown"], "review": c["review"], "state": info.get("state"),
-                      "in_registry": name in health, "note": note_for(name, c["shown"], c["review"])})
+                      "in_registry": name in health, "note": note_for(name, c["shown"], c["review"]),
+                      "why_excluded": info.get("why_excluded") or [], "raw_jobs": info.get("raw_jobs")})
     items.sort(key=lambda item: (-(item["shown"] + item["review"]), item["name"].casefold()))
     return {"items": items}
 
@@ -1320,6 +1328,10 @@ def job_suggestions(
 # Job search and persistent match cache
 # ---------------------------------------------------------------------
 
+# A job counts as "new" when JobPilot first saw it in the last few days.
+NEW_JOB_DAYS = 3
+
+
 @app.get("/api/jobs")
 def list_jobs(
     background_tasks: BackgroundTasks,
@@ -1332,6 +1344,7 @@ def list_jobs(
     role_scope: Literal["software_engineering", "all"] = Query(default="software_engineering"),
     compensation_filter: Literal["target_or_unknown", "target_only", "all"] = Query(
         default="all", description="Optional. Pay is information only, so the default shows every salary level."),
+    new_only: bool = Query(default=False, description="Only jobs first seen in the last NEW_JOB_DAYS days."),
     review_scope: Literal["main", "remote", "review", "dismissed"] = Query(
         default="main",
         description=("main = office and hybrid jobs, remote = remote-only jobs you could work from India, "
@@ -1365,6 +1378,9 @@ def list_jobs(
 
     if source and source.strip():
         filters.append(Job.source == source.strip())
+
+    if new_only:
+        filters.append(Job.first_seen_at >= datetime.utcnow() - timedelta(days=NEW_JOB_DAYS))
 
     statement = (
         select(Job, Company)
@@ -1545,6 +1561,7 @@ def list_jobs(
         items.append(
             {
                 "review": job_review.describe(review_rows.get(job.id)),
+                "is_new": bool(job.first_seen_at and job.first_seen_at >= datetime.utcnow() - timedelta(days=NEW_JOB_DAYS)),
                 "id": job.id,
                 "external_id": job.external_id,
                 "title": job.title,
@@ -1786,10 +1803,40 @@ def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any
                 "last_seen_at": job.last_seen_at.isoformat() if job.last_seen_at else None,
                 "checked_at": datetime.utcnow().isoformat()}
 
-    if entry is None or not (integration.get("provider") and integration.get("settings")):
-        return answer(JOB_UNKNOWN, "This company has no connector, so JobPilot cannot look the job up. Open the original posting to check.")
-    if integration.get("provider") == "google_careers":
-        # Google has no per-job lookup in its list feed, so read the job's own page instead.
+    def settle(status: str, reason: str) -> dict[str, Any]:
+        repository = JobRepository(db)
+        if status == JOB_OPEN:
+            repository.confirm_open(job)
+        elif status == JOB_CLOSED:
+            repository.mark_closed(job)
+        db.commit()
+        return answer(status, reason)
+
+    source = job.source or ""
+
+    # 1. A job from a remote job board is checked against THAT board, never against the company's own career
+    #    page (it is not listed there, which used to make every such job look closed).
+    if source.startswith("remote_board:"):
+        from app.collectors.remote_boards import COLLECTORS
+
+        board = source.split(":", 1)[1]
+        if board not in COLLECTORS:
+            return answer(JOB_UNKNOWN, f"JobPilot does not know the job board '{board}', so it cannot be checked there.")
+        try:
+            listed = COLLECTORS[board](fetch_details=False).collect()
+        except Exception as exc:  # noqa: BLE001 - any source problem must leave the job untouched
+            return answer(JOB_UNKNOWN, f"The job board could not be read right now ({type(exc).__name__}: {str(exc)[:120]}); the job was left unchanged.")
+        listed_ids = {str(item.get("external_id")) for item in listed if item.get("external_id") not in (None, "")}
+        stored_active = int(db.scalar(select(func.count()).select_from(Job).where(Job.source == source, Job.is_active.is_(True))) or 0)
+        status, reason = decide_job_status(external_id=job.external_id, fetched_ids=listed_ids, stored_active_count=stored_active)
+        if status == JOB_OPEN:
+            reason = f"The job is still listed on {board}."
+        elif status == JOB_CLOSED:
+            reason = f"{board} answered normally and no longer lists this job."
+        return settle(status, reason)
+
+    # 2. Google has no per-job lookup in its list feed, so read the job's own page instead.
+    if source == "google_careers":
         from urllib.parse import urlparse
 
         import requests
@@ -1800,32 +1847,44 @@ def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any
             page = requests.get(job.url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (JobPilot personal job check)"})
         except requests.RequestException as exc:
             return answer(JOB_UNKNOWN, f"Google's career site could not be reached ({type(exc).__name__}); the job was left unchanged.")
-        status, reason = classify_google_page(page.status_code, page.text)
-        repository = JobRepository(db)
-        if status == JOB_OPEN:
-            repository.confirm_open(job)
-        elif status == JOB_CLOSED:
-            repository.mark_closed(job)
-        db.commit()
-        return answer(status, reason)
+        return settle(*classify_google_page(page.status_code, page.text))
 
-    from scripts.sync_target_companies import _build_collector  # lazy: keeps the API importable without the scripts folder
+    # 3. A company connector, but only when it is the connector that produced this job.
+    if entry is not None and integration.get("provider") and integration.get("settings"):
+        from scripts.sync_target_companies import _build_collector  # lazy: keeps the API importable without the scripts folder
+
+        try:
+            fetched = _build_collector(job_list_only(entry)).collect()
+        except Exception as exc:  # noqa: BLE001
+            return answer(JOB_UNKNOWN, f"The source could not be read right now ({type(exc).__name__}: {str(exc)[:120]}); the job was left unchanged.")
+        fetched_sources = {str(item.get("source") or integration.get("provider")) for item in fetched}
+        if source in fetched_sources:
+            fetched_ids = {str(item.get("external_id")) for item in fetched if item.get("external_id") not in (None, "")}
+            stored_active = int(db.scalar(select(func.count()).select_from(Job).where(
+                Job.company_id == job.company_id, Job.source == job.source, Job.is_active.is_(True))) or 0)
+            return settle(*decide_job_status(external_id=job.external_id, fetched_ids=fetched_ids, stored_active_count=stored_active))
+        # Otherwise this job did not come from the company's career connector; fall through to its own page.
+
+    # 4. Anything else (a saved link, a job added from an email, a company with no connector): read the job's own page.
+    from app.services.job_import import ImportError_, check_public_https
+
+    import requests
 
     try:
-        fetched = _build_collector(job_list_only(entry)).collect()
-    except Exception as exc:  # noqa: BLE001 - any source problem must leave the job untouched
-        return answer(JOB_UNKNOWN, f"The source could not be read right now ({type(exc).__name__}: {str(exc)[:120]}); the job was left unchanged.")
-    fetched_ids = {str(item.get("external_id")) for item in fetched if item.get("external_id") not in (None, "")}
-    stored_active = int(db.scalar(select(func.count()).select_from(Job).where(
-        Job.company_id == job.company_id, Job.source == job.source, Job.is_active.is_(True))) or 0)
-    status, reason = decide_job_status(external_id=job.external_id, fetched_ids=fetched_ids, stored_active_count=stored_active)
-    repository = JobRepository(db)
-    if status == JOB_OPEN:
-        repository.confirm_open(job)
-    elif status == JOB_CLOSED:
-        repository.mark_closed(job)
-    db.commit()
-    return answer(status, reason)
+        url = check_public_https(job.url or "")
+        page = _page_get(url, headers={"User-Agent": "Mozilla/5.0 (JobPilot personal job check)"}, timeout=30)
+    except ImportError_ as exc:
+        return answer(JOB_UNKNOWN, f"This job's link cannot be checked ({exc}). Open the original posting to check.")
+    except requests.RequestException as exc:
+        return answer(JOB_UNKNOWN, f"The job's page could not be reached ({type(exc).__name__}); the job was left unchanged.")
+    return settle(*classify_job_page(page.status_code, page.text, job.title or ""))
+
+
+# Replaced in tests so no real page is fetched.
+def _page_get(url: str, **kwargs: Any) -> Any:
+    import requests
+
+    return requests.get(url, **kwargs)
 
 
 @app.post("/api/sync/start", status_code=202)
@@ -1858,16 +1917,57 @@ def import_job_from_link(request: ImportLinkRequest, db: Session = Depends(get_d
         details = fetch_job(request.url)
     except ImportError_ as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _store_imported_job(db, details)
+
+
+def _store_imported_job(db: Session, details: dict[str, Any]) -> dict[str, Any]:
     repository = JobRepository(db)
     company = repository.get_or_create_company(details["company"], source_type="imported_link")
     outcome = repository.upsert_job_detailed(company, {
         "source": "imported_link", "external_id": details["external_id"], "title": details["title"],
         "location": details["location"], "url": details["url"], "description": details["description"] or details["title"],
-        "employment_type": details["employment_type"], "posted_at": details["posted_at"],
+        "employment_type": details.get("employment_type"), "posted_at": details.get("posted_at"),
     })
     db.commit()
     return {"job_id": outcome.job.id, "created": outcome.created, "title": details["title"], "company": details["company"],
             "location": details["location"], "url": details["url"]}
+
+
+class ImportPageRequest(BaseModel):
+    """A job read by the browser extension from the page you are viewing."""
+
+    url: str = Field(min_length=8, max_length=2000)
+    title: str = Field(min_length=2, max_length=255)
+    company: str = Field(min_length=1, max_length=255)
+    location: list[str] = Field(default_factory=list, max_length=20)
+    description: str = Field(default="", max_length=20000)
+    external_id: str | None = Field(default=None, max_length=255)
+    confidence: Literal["structured", "page_text"] = "structured"
+
+
+@app.post("/api/jobs/import-page", status_code=201)
+def import_job_from_page(request: ImportPageRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Save a job the extension read from your open tab (works behind logins and script-rendered pages).
+
+    Only https pages on a public host are accepted. Nothing is fetched here: the details come from the extension.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(request.url.strip())
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not host or host in {"localhost"} or host.endswith(".local") or host.replace(".", "").isdigit():
+        raise HTTPException(status_code=422, detail="Only an https job page on a public website can be saved.")
+    import hashlib
+
+    from app.services.job_import import clean_company
+
+    company = clean_company(request.company) or request.company.strip()
+    external_id = (request.external_id or "").strip() or hashlib.sha1(request.url.strip().encode("utf-8")).hexdigest()[:16]
+    locations = [place.strip() for place in request.location if place.strip()]
+    return _store_imported_job(db, {
+        "title": request.title.strip(), "company": company, "location": locations, "url": request.url.strip(),
+        "description": request.description.strip(), "external_id": external_id,
+    })
 
 
 class ReviewDecisionRequest(BaseModel):

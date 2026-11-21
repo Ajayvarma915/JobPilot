@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select
 from sqlalchemy.orm import Session
 
 from app.db.models import Company, Job, JobReview, JobVersion
@@ -47,6 +47,14 @@ def ensure_support_tables(bind) -> None:
     """
     JobVersion.__table__.create(bind=bind, checkfirst=True)
     JobReview.__table__.create(bind=bind, checkfirst=True)
+    # A source_health table written by an older version lacks newer columns; reading it would fail
+    # ("no such column") and the coverage and health screens would silently lose every company.
+    inspector = inspect(bind)
+    if inspector.has_table("source_health"):
+        columns = {column["name"] for column in inspector.get_columns("source_health")}
+        if "exclusion_reasons" not in columns:
+            with bind.begin() as connection:
+                connection.exec_driver_sql("ALTER TABLE source_health ADD COLUMN exclusion_reasons TEXT")
 
 
 class JobRepository:

@@ -187,6 +187,8 @@ class SourceHealth(Base):
     pagination_status: Mapped[str] = mapped_column(
         String(50), default="not_reported", nullable=False
     )
+    # JSON object {reason: count} for the jobs the last read dropped (why they do not show).
+    exclusion_reasons: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow, nullable=False)
 
 

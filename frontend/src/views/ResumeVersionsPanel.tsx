@@ -29,6 +29,7 @@ interface VersionDetail extends VersionSummary {
       no_evidence_found: string[];
     };
     sections_changed: Array<{ section: string; items_included: number; change: string }>;
+    tailored_for_job?: { changes: string[]; relevant_skills: string[] };
     needs_review: Array<{ kind: string; title?: string; skill?: string; why: string }>;
     original_resume: { modified: boolean; note: string };
   };
@@ -54,6 +55,16 @@ function ReportDetail({ detail }: { detail: VersionDetail }) {
         <p>Waiting for your review: {report.required_skills.awaiting_your_review.join(", ") || "none"}</p>
         <p>No evidence found: {report.required_skills.no_evidence_found.join(", ") || "none"}</p>
       </div>
+      {report.tailored_for_job && report.tailored_for_job.changes.length > 0 && (
+        <div>
+          <p className="font-semibold text-slate-200">What was tailored for this job</p>
+          <ul className="list-disc pl-5">
+            {report.tailored_for_job.changes.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div>
         <p className="font-semibold text-slate-200">What changed from your master resume</p>
         <ul className="list-disc pl-5">

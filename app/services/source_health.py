@@ -87,8 +87,38 @@ def load_registry_companies(path: Path = REGISTRY_PATH) -> list[dict[str, Any]]:
 
 
 def ensure_source_health_table(session: Session) -> None:
-    """Create the table if missing (idempotent, never alters other tables)."""
-    SourceHealth.__table__.create(bind=session.get_bind(), checkfirst=True)
+    """Create the table if missing, and add columns newer than the stored table (idempotent, additive)."""
+    bind = session.get_bind()
+    SourceHealth.__table__.create(bind=bind, checkfirst=True)
+    existing = {column["name"] for column in inspect(bind).get_columns("source_health")}
+    if "exclusion_reasons" not in existing:
+        with bind.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE source_health ADD COLUMN exclusion_reasons TEXT")
+
+
+_REASON_LABELS = {
+    "senior_or_lead_title": "senior, staff or lead titles",
+    "non_software_title": "not software roles",
+    "outside_target_software_role_families": "other kinds of engineering role",
+    "internship_or_trainee": "internships or trainee roles",
+    "phd_required_or_phd_targeted_title": "roles that need a PhD",
+    "phd_required_in_minimum_qualifications": "roles that need a PhD",
+    "outside_india": "outside India",
+    "location_not_verified_as_india": "locations not in India",
+    "missing_location": "no location given",
+    "missing_title": "no title",
+}
+
+
+def describe_exclusions(reasons: dict[str, int] | None, limit: int = 4) -> list[dict[str, Any]]:
+    """Group raw reason codes into short labels, biggest first. Pure."""
+    grouped: dict[str, int] = {}
+    for reason, count in (reasons or {}).items():
+        label = ("ask for more experience than your limit" if reason.startswith("requires_")
+                 else _REASON_LABELS.get(reason, reason.replace("_", " ")))
+        grouped[label] = grouped.get(label, 0) + int(count)
+    ordered = sorted(grouped.items(), key=lambda item: (-item[1], item[0]))
+    return [{"label": label, "count": count} for label, count in ordered[:limit]]
 
 
 def record_fetch(
@@ -101,6 +131,7 @@ def record_fetch(
     counts: dict[str, int | None] | None = None,
     pagination_status: str | None = None,
     error: str | None = None,
+    exclusion_reasons: dict[str, int] | None = None,
     now: datetime | None = None,
 ) -> SourceHealth:
     """Upsert one fetch outcome. The caller commits."""
@@ -125,6 +156,8 @@ def record_fetch(
         row.eligible_jobs = counts.get("eligible_jobs")
         row.review_jobs = counts.get("review_jobs")
         row.jobs_with_description = counts.get("jobs_with_description")
+        if exclusion_reasons is not None:
+            row.exclusion_reasons = json.dumps(exclusion_reasons, sort_keys=True)
         row.detail_attempted = counts.get("detail_attempted")
         row.detail_succeeded = counts.get("detail_succeeded")
         if counts.get("detail_succeeded"):
@@ -137,6 +170,14 @@ def record_fetch(
         # Keep the last good counts; only the error and failure bookkeeping change.
         row.last_error = (error or "unknown error")[:1000]
     return row
+
+
+def _loads(text: str | None) -> dict[str, int] | None:
+    try:
+        value = json.loads(text) if text else None
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -173,6 +214,8 @@ def build_health_report(
             "last_failure_at": _iso(row.last_failure_at) if row else None,
             "last_error": row.last_error if row else None,
             "consecutive_failures": failures,
+            "exclusion_reasons": _loads(row.exclusion_reasons) if row else None,
+            "why_excluded": describe_exclusions(_loads(row.exclusion_reasons)) if row else [],
             "raw_jobs": row.raw_jobs if row else None,
             "unique_jobs": row.unique_jobs if row else None,
             "eligible_jobs": row.eligible_jobs if row else None,

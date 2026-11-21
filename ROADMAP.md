@@ -43,7 +43,7 @@ Delete or archive `*.bak`, backup `.db` files, root `target_sync_*` reports and 
 ## Progress note (17 Nov)
 Built since the last note: extension matcher and portal detection, Gmail hardening (closed postings still match, undated mail never matches, suggested follow-ups), funnel analytics, contact book with draft-only outreach, interview preparation, optional API token, backup/restore, Docker files, full documentation set and a one-command offline regression. See PROJECT_STATUS.md for exactly what is verified.
 
-Done since: needs-review job tab, still-open check, per-skill resume choices, India filter fix, collector retry/backoff, remote jobs tab and remote board sync, Network screen, application history and interview prep (see PROJECT_STATUS.md Sessions 11-13).
+Done since: why-excluded numbers, new-job chips, daily update script, extension Save this job, referral steps, first-run checklist and page addresses, CI workflow, needs-review job tab, still-open check, per-skill resume choices, India filter fix, collector retry/backoff, remote jobs tab and remote board sync, Network screen, application history and interview prep (see PROJECT_STATUS.md Sessions 11-13).
 
 Next, in priority order:
 1. **Verify with your own accounts and browser** (list in PROJECT_STATUS.md): extension on real forms, live Gmail, the new screens, a real sync.

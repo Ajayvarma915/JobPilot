@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from app.resume.resume_builder import build_tailored_resume
-from app.resume.resume_evaluator import evaluate_generated_resume
+from app.resume.resume_evaluator import _style_checks, evaluate_generated_resume
 from app.resume.resume_pdf_builder import build_tailored_resume_pdf
 
 
@@ -154,6 +154,65 @@ class ResumeEvaluatorTests(unittest.TestCase):
             result = evaluate_generated_resume(docx_path, pdf_path, selection, store)
             self.assertIn("SQL", result["job_relevance"]["required_skill_coverage"]["missing"])
             self.assertFalse(result["readiness_passes_local_checks"])
+
+
+class WritingStyleTests(unittest.TestCase):
+    @staticmethod
+    def _selection(bullets):
+        return {"selected_evidence": [{"category": "experience", "metadata": {"bullets": bullets}}]}
+
+    def test_clean_resume_scores_high(self) -> None:
+        style = _style_checks(self._selection([
+            "Built a queue worker that cut batch failures by 40% across 12 services.",
+            "Migrated authentication from SASL to OAuth 2.0 in 3 Node.js services.",
+            "Wrote 850+ unit tests across 11 repositories to meet an 85% coverage gate.",
+            "Designed an approval loop with 11 stages and a circuit breaker after 5 failures.",
+        ]))
+        self.assertGreaterEqual(style["score"], 95, style)
+        self.assertEqual((style["repeated_openers"], style["similar_pairs"], style["repeated_phrases"]), ([], 0, []))
+        self.assertEqual(style["metric_share"], 1.0)
+
+    def test_repetition_is_found_and_explained(self) -> None:
+        style = _style_checks(self._selection([
+            "Built a dashboard for the support team with charts and filters for tickets.",
+            "Built a dashboard for the support team with charts and filters for tickets.",
+            "Built an export tool that writes reports every night for managers.",
+            "Built a notification service that emails managers when a report is ready.",
+        ]))
+        self.assertEqual(style["repeated_openers"], [{"word": "built", "count": 4}])
+        self.assertGreaterEqual(style["similar_pairs"], 1)
+        self.assertTrue(style["repeated_phrases"])
+        self.assertLess(style["score"], 60, style)
+        joined = " ".join(style["issues"])
+        self.assertIn("start with", joined)
+        self.assertIn("almost the same thing", joined)
+
+    def test_missing_numbers_are_flagged_without_inventing_any(self) -> None:
+        style = _style_checks(self._selection([
+            "Created a scheduling tool for the team using React and Node.js.",
+            "Improved the onboarding flow for new users with clearer steps.",
+            "Developed an internal wiki that helps engineers find answers faster.",
+        ]))
+        self.assertEqual(style["metric_share"], 0.0)
+        self.assertTrue(any("never invents metrics" in issue for issue in style["issues"]))
+
+    def test_overall_score_and_the_85_target_are_reported(self) -> None:
+        selection, store = fixture()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            docx_path, pdf_path = root / "t.docx", root / "t.pdf"
+            build_tailored_resume(selection, store, docx_path)
+            build_tailored_resume_pdf(selection, store, pdf_path)
+            result = evaluate_generated_resume(docx_path, pdf_path, selection, store)
+        overall = result["overall"]
+        self.assertEqual(overall["target"], 85)
+        self.assertEqual(overall["meets_target"], overall["score"] >= 85)
+        parts = (result["ats_readability"]["score"], result["job_relevance"]["score"], result["achievement_quality"]["score"], result["writing_style"]["score"])
+        self.assertEqual(overall["score"], round(0.25 * parts[0] + 0.40 * parts[1] + 0.20 * parts[2] + 0.15 * parts[3]))
+        if not overall["meets_target"]:
+            self.assertTrue(overall["to_reach_target"], "a score below the target must say what to do")
+            self.assertTrue(any("SQL" in line for line in overall["to_reach_target"]), "the missing required skill is named")
+        self.assertFalse(result["readiness_passes_local_checks"], "a missing required skill still blocks readiness")
 
 
 if __name__ == "__main__":

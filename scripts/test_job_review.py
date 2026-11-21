@@ -173,12 +173,32 @@ def test_remote_jobs_have_their_own_section() -> None:
     check("Software Engineer r2" not in titles(client, "remote"), "a dismissed remote job is hidden")
 
 
+def test_new_jobs_are_marked_and_filterable() -> None:
+    from datetime import datetime, timedelta
+
+    client = fresh_client()
+    run_sync([posting("a1", STATED), posting("b1", STATED)])
+    session = SessionLocal()
+    try:
+        old = session.query(Job).filter(Job.external_id == "b1").one()
+        old.first_seen_at = datetime.utcnow() - timedelta(days=10)
+        session.commit()
+    finally:
+        session.close()
+    everything = client.get("/api/jobs", params={"location": "India", "limit": 50}).json()["items"]
+    flags = {item["title"]: item["is_new"] for item in everything}
+    check(flags == {"Software Engineer a1": True, "Software Engineer b1": False}, flags)
+    only_new = client.get("/api/jobs", params={"location": "India", "limit": 50, "new_only": "true"}).json()["items"]
+    check([item["title"] for item in only_new] == ["Software Engineer a1"], "only the job first seen this week")
+
+
 TESTS = [
     ("Sync stores ambiguous jobs and the API separates them", test_sync_stores_ambiguous_jobs_for_review),
     ("Accept, dismiss and reset are kept across syncs", test_decisions_are_kept_across_syncs),
     ("A job that becomes clear leaves the queue; removal still works", test_job_that_becomes_clear_leaves_the_queue_and_closed_jobs_still_close),
     ("Unverified sources store nothing", test_unverified_sources_never_store_review_jobs),
     ("Remote jobs have their own section", test_remote_jobs_have_their_own_section),
+    ("New jobs are marked and can be filtered", test_new_jobs_are_marked_and_filterable),
     ("The India filter finds city names and country codes", test_india_filter_sees_city_and_code_locations),
     ("An older database without the new tables syncs without locking", test_older_database_without_the_new_tables),
 ]

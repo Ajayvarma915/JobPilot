@@ -1,6 +1,7 @@
 import { CheckCircle2, ExternalLink, LoaderCircle, Mail, RefreshCw, ShieldCheck } from "lucide-react";
 import { formatNumber } from "../lib";
 import { EmailSuggestions } from "./EmailSuggestions";
+import { EmailAutoUpdate } from "./EmailAutoUpdate";
 import { type ApplicationStatus, type TrackedApplication } from "../types";
 
 export interface EmailConnectionStatus {
@@ -69,6 +70,7 @@ export interface EmailSyncResult {
   unclassified: number;
   errors: number;
   review_required: number;
+  auto_applied?: number;
   more_pages_pending: boolean;
   full_email_bodies_stored: boolean;
   note: string;
@@ -426,6 +428,8 @@ export function EmailIntelligenceView({
           </div>
         )}
       </section>
+
+      <EmailAutoUpdate />
 
       <EmailSuggestions refreshKey={suggestionsKey} />
 

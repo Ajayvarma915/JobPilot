@@ -113,12 +113,35 @@ def test_endpoint_stores_the_job_once() -> None:
         api_main.fetch_job = original
 
 
+def test_page_import_from_the_extension() -> None:
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    client = TestClient(api_main.app)
+    body = {"url": "https://careers.qualcomm.com/careers/job/3098178", "title": "Associate Engineer",
+            "company": "52 Qualcomm India Private Limited", "location": ["Bangalore, KA, IN"], "description": "Build chips",
+            "external_id": "3098178", "confidence": "structured"}
+    first = client.post("/api/jobs/import-page", json=body)
+    check(first.status_code == 201 and first.json()["created"] and first.json()["company"] == "Qualcomm", first.text)
+    again = client.post("/api/jobs/import-page", json=body).json()
+    check(again["created"] is False and again["job_id"] == first.json()["job_id"], "saving twice does not duplicate")
+    # without an id the link decides identity, so the same page is still one job
+    no_id = {**body, "external_id": None, "url": "https://careers.example.com/job/9", "title": "Engineer", "company": "Example"}
+    a, b = client.post("/api/jobs/import-page", json=no_id).json(), client.post("/api/jobs/import-page", json=no_id).json()
+    check(a["job_id"] == b["job_id"] and b["created"] is False, "id derived from the link")
+    for bad in ("http://careers.example.com/job/1", "https://localhost/job/1", "https://127.0.0.1/job/1", "ftp://x.example/1"):
+        check(client.post("/api/jobs/import-page", json={**body, "url": bad}).status_code == 422, f"{bad} is refused")
+    check(client.post("/api/jobs/import-page", json={**body, "title": ""}).status_code == 422, "a missing title is refused")
+    listing = client.get("/api/jobs", params={"career_level": "all", "role_scope": "all", "location": "India", "company": "Qualcomm"}).json()
+    check(listing["pagination"]["total"] == 1, "the saved job shows in the list")
+
+
 TESTS = [
     ("Only public https pages are fetched", test_address_checks),
     ("Company names are cleaned", test_company_names_are_cleaned),
     ("A Workday page is read from its own JSON", test_workday_page_is_read_from_its_json),
     ("A JobPosting page is read; unreadable or missing pages are refused", test_json_ld_page_and_unreadable_page),
     ("The endpoint stores the job once", test_endpoint_stores_the_job_once),
+    ("A job read by the extension is saved once and unsafe pages are refused", test_page_import_from_the_extension),
 ]
 
 

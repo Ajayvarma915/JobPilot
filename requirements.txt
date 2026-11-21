@@ -12,6 +12,8 @@ beautifulsoup4>=4.12,<5
 python-docx>=1.1,<2
 reportlab>=4.0,<5
 pypdf>=5.0,<7
+pymupdf>=1.24,<2
+# ^ reads your master resume PDF (the resume parser needs it)
 
 google-api-python-client>=2.150,<3
 google-auth-httplib2>=0.2,<1

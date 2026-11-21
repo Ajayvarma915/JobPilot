@@ -393,6 +393,18 @@ export function ResumeView({
                   </div>
                 </div>
 
+                {generated.report?.tailored_for_job && generated.report.tailored_for_job.changes.length > 0 && (
+                  <div className="mt-4 border-t border-emerald-300/10 pt-4">
+                    <p className="text-[12px] font-semibold text-slate-100">What was tailored for this job</p>
+                    <p className="mt-1 text-[10px] text-slate-500">Compared with your master resume. Your wording is never rewritten.</p>
+                    <ul className="mt-2 space-y-1 text-[11px] text-slate-300">
+                      {generated.report.tailored_for_job.changes.map((line) => (
+                        <li key={line}>• {line}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {generated.evaluation && (
                   <div className="mt-4 border-t border-emerald-300/10 pt-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -415,7 +427,29 @@ export function ResumeView({
                       </span>
                     </div>
 
-                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {generated.evaluation.overall && (
+                      <div className={`mt-3 rounded-xl border p-3 ${generated.evaluation.overall.meets_target ? "border-emerald-400/30 bg-emerald-400/[0.05]" : "border-amber-400/30 bg-amber-400/[0.05]"}`}>
+                        <div className="flex flex-wrap items-baseline justify-between gap-2">
+                          <p className="text-[12px] font-semibold text-slate-100">
+                            Overall score for this job: {generated.evaluation.overall.score}/100
+                            <span className="ml-2 text-[10px] font-normal text-slate-400">target {generated.evaluation.overall.target}+</span>
+                          </p>
+                          <span className={`rounded-full border px-2.5 py-1 text-[10px] ${generated.evaluation.overall.meets_target ? "border-emerald-400/30 text-emerald-200" : "border-amber-400/30 text-amber-200"}`}>
+                            {generated.evaluation.overall.label}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-slate-500">{generated.evaluation.overall.weights}. It checks your resume against this job; it is not an employer's score.</p>
+                        {!generated.evaluation.overall.meets_target && generated.evaluation.overall.to_reach_target.length > 0 && (
+                          <ul className="mt-2 space-y-1 text-[11px] text-amber-100/90">
+                            {generated.evaluation.overall.to_reach_target.map((line) => (
+                              <li key={line}>• {line}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
                       {[
                         {
                           label: "ATS readability",
@@ -432,6 +466,15 @@ export function ResumeView({
                           score: generated.evaluation.achievement_quality.score,
                           detail: generated.evaluation.achievement_quality.label,
                         },
+                        ...(generated.evaluation.writing_style
+                          ? [{
+                              label: "Repetition and metrics",
+                              score: generated.evaluation.writing_style.score,
+                              detail: generated.evaluation.writing_style.metric_share === null
+                                ? generated.evaluation.writing_style.label
+                                : `${Math.round(generated.evaluation.writing_style.metric_share * 100)}% of bullets contain a number`,
+                            }]
+                          : []),
                       ].map((item) => (
                         <div key={item.label} className="rounded-xl border border-slate-700/60 bg-slate-950/40 p-3">
                           <p className="text-[10px] text-slate-400">{item.label}</p>

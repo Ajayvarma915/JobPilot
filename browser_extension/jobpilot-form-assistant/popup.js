@@ -12,7 +12,12 @@ const elements = {
   actionStatus: document.getElementById("actionStatus"),
   questionCount: document.getElementById("questionCount"),
   questionsList: document.getElementById("questionsList"),
+  saveJobBtn: document.getElementById("saveJobBtn"),
+  trackSavedJobBtn: document.getElementById("trackSavedJobBtn"),
+  saveJobStatus: document.getElementById("saveJobStatus"),
 };
+
+let savedJobId = null;
 
 let applications = [];
 let selectedPreparation = null;
@@ -769,6 +774,69 @@ elements.openPostingBtn.addEventListener("click", async () => {
 });
 
 elements.fillBtn.addEventListener("click", fillCurrentTab);
+
+function setSaveStatus(message, type = "") {
+  elements.saveJobStatus.textContent = message;
+  elements.saveJobStatus.className = `status ${type}`.trim();
+}
+
+// Reads the job posting the active tab is showing (its own structured data, heading and text) and saves
+// it in JobPilot. Nothing on the page is clicked, typed into or submitted.
+async function saveCurrentJob() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id || !safeHttpUrl(tab.url) || new URL(tab.url).protocol !== "https:") {
+    setSaveStatus("Open the job posting (an https page) in the active tab first.", "error");
+    return;
+  }
+  if (["127.0.0.1", "localhost"].includes(new URL(tab.url).hostname)) {
+    setSaveStatus("You are on the local JobPilot page. Open the job posting in this tab first.", "error");
+    return;
+  }
+  elements.saveJobBtn.disabled = true;
+  elements.trackSavedJobBtn.classList.add("hidden");
+  setSaveStatus("Reading the job posting…");
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["job_capture.js"] });
+    const execution = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => globalThis.JobPilotJobCapture.captureFromDocument(),
+    });
+    const captured = execution?.[0]?.result;
+    if (!captured?.ok) {
+      throw new Error(captured?.reason || "The page did not return a job.");
+    }
+    const saved = await apiRequest("/api/jobs/import-page", {
+      method: "POST",
+      body: JSON.stringify({ ...captured.job, confidence: captured.confidence }),
+    });
+    savedJobId = saved.job_id;
+    const careful = captured.confidence === "page_text" ? " (read from the page text, so check the title and company)" : "";
+    setSaveStatus(`${saved.created ? "Saved" : "Already saved"}: ${saved.title} at ${saved.company}${careful}.`, "success");
+    elements.trackSavedJobBtn.classList.remove("hidden");
+  } catch (error) {
+    setSaveStatus(error.message || String(error), "error");
+  } finally {
+    elements.saveJobBtn.disabled = false;
+  }
+}
+
+async function trackSavedJob() {
+  if (!savedJobId) return;
+  elements.trackSavedJobBtn.disabled = true;
+  try {
+    await apiRequest("/api/applications", { method: "POST", body: JSON.stringify({ job_id: savedJobId }) });
+    setSaveStatus("Tracked. It is now in your Applications list.", "success");
+    elements.trackSavedJobBtn.classList.add("hidden");
+    await loadApplications();
+  } catch (error) {
+    setSaveStatus(error.message || String(error), "error");
+  } finally {
+    elements.trackSavedJobBtn.disabled = false;
+  }
+}
+
+elements.saveJobBtn.addEventListener("click", saveCurrentJob);
+elements.trackSavedJobBtn.addEventListener("click", trackSavedJob);
 elements.markAppliedBtn.addEventListener("click", confirmSuccessfulSubmission);
 
 loadApplications();

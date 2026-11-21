@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import csv
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -64,6 +64,7 @@ class SyncResult:
     skipped: int = 0
     review_required: int = 0
     stored_for_review: int = 0
+    exclusions: dict[str, int] = field(default_factory=dict)
     auto_sync_eligible: int = 0
     error: str | None = None
     # Health metrics (None = the connector did not report it).
@@ -504,6 +505,7 @@ def _record_health(company: dict[str, Any], result: SyncResult) -> None:
                     "detail_succeeded": result.detail_succeeded,
                 },
                 error=result.error,
+                exclusion_reasons=result.exclusions if success else None,
             )
             db.commit()
         finally:
@@ -610,6 +612,10 @@ def sync_company(
     _mark_possible_duplicates(company_audits)
     if audit_rows is not None:
         audit_rows.extend(company_audits)
+    for audit in company_audits:
+        if not audit["final_eligible"]:
+            reason = str(audit["role_reason"] if not audit["role_eligible"] else audit["location_reason"]) or "excluded"
+            result.exclusions[reason] = result.exclusions.get(reason, 0) + 1
 
     # Jobs that pass role and location but are ambiguous (for example the years of experience are
     # not stated) are stored too, marked "needs review", so they are not silently lost. They stay out

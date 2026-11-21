@@ -1,137 +1,87 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from typing import Any
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import inch
-from reportlab.platypus import (
-    HRFlowable,
-    KeepTogether,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import HRFlowable, KeepTogether, Paragraph, SimpleDocTemplate, Spacer
 
 from app.resume.resume_builder import ResumeBuildError, _validated_records
+from app.resume.resume_layout import STYLE, Bullet, Line, Run, build_layout
+
+# Calibri is the master resume's font. It is used from the copy installed with Windows/Office (never bundled
+# here). Carlito is the metric-compatible open font on Linux. Without either, the PDF falls back to Helvetica
+# and says so in its log, so the file still builds.
+_FONT_SETS = (
+    ("C:/Windows/Fonts", ("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "calibriz.ttf")),
+    ("/usr/share/fonts/truetype/crosextra", ("Carlito-Regular.ttf", "Carlito-Bold.ttf", "Carlito-Italic.ttf", "Carlito-BoldItalic.ttf")),
+    ("/usr/share/fonts/truetype/carlito", ("Carlito-Regular.ttf", "Carlito-Bold.ttf", "Carlito-Italic.ttf", "Carlito-BoldItalic.ttf")),
+    ("/Library/Fonts", ("Calibri.ttf", "Calibri Bold.ttf", "Calibri Italic.ttf", "Calibri Bold Italic.ttf")),
+)
 
 
-NAVY = colors.HexColor("#1F3756")
-DARK = colors.HexColor("#23262A")
-DARK_HEX = "#23262A"
-MUTED = colors.HexColor("#565E69")
-MUTED_HEX = "#565E69"
-RULE = colors.HexColor("#C6D0DB")
+@lru_cache(maxsize=1)
+def _fonts() -> dict[str, str]:
+    """Register the master's font family once and return the font names to use."""
+    for folder, files in _FONT_SETS:
+        paths = [Path(folder) / name for name in files]
+        if all(path.is_file() for path in paths):
+            names = {"regular": "JPResume", "bold": "JPResume-Bold", "italic": "JPResume-Italic", "bolditalic": "JPResume-BoldItalic"}
+            try:
+                for key, path in zip(("regular", "bold", "italic", "bolditalic"), paths):
+                    pdfmetrics.registerFont(TTFont(names[key], str(path)))
+                pdfmetrics.registerFontFamily("JPResume", normal=names["regular"], bold=names["bold"], italic=names["italic"], boldItalic=names["bolditalic"])
+                return {**names, "family": "Calibri-compatible"}
+            except Exception:  # noqa: BLE001 - a font file that cannot be read must not stop the resume
+                continue
+    return {"regular": "Helvetica", "bold": "Helvetica-Bold", "italic": "Helvetica-Oblique", "bolditalic": "Helvetica-BoldOblique", "family": "Helvetica"}
 
 
-def _safe(value: Any) -> str:
-    """Escape source-backed text for ReportLab's paragraph mini-HTML parser."""
-    text = str(value or "")
-    text = re.sub(r"\s+", " ", text).strip()
-    return escape(text, quote=False)
+def _markup(runs: list[Run]) -> str:
+    """Runs to ReportLab's mini-HTML. Text is escaped; newlines never become markup."""
+    out = []
+    for run in runs:
+        # Collapse runs of spaces and newlines, but keep ONE space at either edge ("Languages: " + "Java").
+        text = escape(re.sub(r"\s+", " ", run.text), quote=False)
+        if not text.strip():
+            continue
+        if run.bold and run.italic:
+            text = f"<b><i>{text}</i></b>"
+        elif run.bold:
+            text = f"<b>{text}</b>"
+        elif run.italic:
+            text = f"<i>{text}</i>"
+        colour = {"muted": STYLE["muted"], "link": STYLE["link"]}.get(run.kind)
+        out.append(f'<font color="{colour}">{text}</font>' if colour else text)
+    return "".join(out)
 
 
-def _contact_lines(candidate: dict[str, Any]) -> list[str]:
-    parts = [candidate.get("email"), candidate.get("phone"), candidate.get("location")]
-    first = "  |  ".join(str(value).strip() for value in parts if value and str(value).strip())
-    links = [candidate.get("linkedin"), candidate.get("github")]
-    second = "  |  ".join(str(value).strip() for value in links if value and str(value).strip())
-    return [value for value in (first, second) if value]
-
-
-def _paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
-    # Explicitly normalize newlines before escaping. Newlines in source content
-    # should not be interpreted as markup or silently create malformed XML.
-    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
-    return Paragraph(escape(cleaned, quote=False), style)
-
-
-def _bullet_paragraph(text: Any, styles: dict[str, ParagraphStyle]) -> Paragraph | None:
-    cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
-    if not cleaned:
-        return None
-    return Paragraph(
-        f'<font color="{DARK_HEX}">&#8226;</font>&nbsp;&nbsp;{escape(cleaned, quote=False)}',
-        styles["bullet"],
-    )
-
-
-def _entry_heading(
-    story: list[Any], title: str, detail: str | None, styles: dict[str, ParagraphStyle]
-) -> None:
-    headline = escape(re.sub(r"\s+", " ", str(title or "")).strip(), quote=False)
-    if detail:
-        detail_text = escape(re.sub(r"\s+", " ", str(detail)).strip(), quote=False)
-        content = f"<b>{headline}</b> <font color='{MUTED_HEX}'> | {detail_text}</font>"
-    else:
-        content = f"<b>{headline}</b>"
-    story.append(Paragraph(content, styles["entry"]))
-
-
-def _render_education(story: list[Any], item: dict[str, Any], styles: dict[str, ParagraphStyle]) -> None:
-    metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-    title_parts = [metadata.get("degree"), metadata.get("field_of_study")]
-    title = " — ".join(str(value).strip() for value in title_parts if value)
-    if not title:
-        title = str(item.get("title") or "Education")
-
-    details: list[str] = []
-    for key, label in (("institution", None), ("cgpa", "CGPA"), ("start_date", None)):
-        value = metadata.get(key)
-        if value is not None and str(value).strip():
-            details.append(f"{label}: {value}" if label else str(value))
-    end_date = metadata.get("end_date")
-    if end_date and (not metadata.get("start_date") or str(end_date) != str(metadata.get("start_date"))):
-        details.append(str(end_date))
-    if metadata.get("location"):
-        details.append(str(metadata["location"]))
-
-    _entry_heading(story, title, " | ".join(details) if details else None, styles)
-
-
-def _render_experience(story: list[Any], item: dict[str, Any], styles: dict[str, ParagraphStyle]) -> None:
-    metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-    title_parts = [metadata.get("role"), metadata.get("company")]
-    title = " — ".join(str(value).strip() for value in title_parts if value)
-    title = title or str(item.get("title") or "Experience")
-    date_parts = [metadata.get("start_date"), metadata.get("end_date")]
-    detail = " - ".join(str(value).strip() for value in date_parts if value)
-    if metadata.get("location"):
-        detail = f"{detail} | {metadata['location']}" if detail else str(metadata["location"])
-
-    block: list[Any] = []
-    _entry_heading(block, title, detail or None, styles)
-    bullets = metadata.get("bullets", [])
-    if not isinstance(bullets, list):
-        bullets = []
-    if not bullets and item.get("statement"):
-        bullets = [item["statement"]]
-    for value in bullets:
-        bullet = _bullet_paragraph(value, styles)
-        if bullet:
-            block.extend([bullet, Spacer(1, 1.5)])
-    story.append(KeepTogether(block))
-
-
-def _render_project(story: list[Any], item: dict[str, Any], styles: dict[str, ParagraphStyle]) -> None:
-    block: list[Any] = []
-    _entry_heading(block, str(item.get("title") or "Project"), None, styles)
-    metadata = item.get("metadata", {}) if isinstance(item.get("metadata"), dict) else {}
-    bullets = metadata.get("bullets", [])
-    if not isinstance(bullets, list):
-        bullets = []
-    if not bullets and item.get("statement"):
-        bullets = [item["statement"]]
-    for value in bullets:
-        bullet = _bullet_paragraph(value, styles)
-        if bullet:
-            block.extend([bullet, Spacer(1, 1.5)])
-    story.append(KeepTogether(block))
+def _styles() -> dict[str, ParagraphStyle]:
+    font = _fonts()
+    base = getSampleStyleSheet()["Normal"]
+    text = colors.HexColor(STYLE["text"])
+    common = dict(parent=base, fontName=font["regular"], fontSize=STYLE["body_size"], leading=STYLE["body_leading"],
+                  textColor=text, splitLongWords=True, wordWrap="LTR")
+    return {
+        "name": ParagraphStyle("JPName", **{**common, "fontName": font["bold"], "fontSize": STYLE["name_size"], "leading": STYLE["name_leading"],
+                                            "alignment": TA_CENTER, "keepWithNext": True}),
+        "contact": ParagraphStyle("JPContact", **{**common, "alignment": TA_CENTER}),
+        "section": ParagraphStyle("JPSection", **{**common, "fontName": font["bold"], "fontSize": STYLE["heading_size"], "leading": STYLE["heading_leading"],
+                                                  "alignment": TA_LEFT, "spaceBefore": 6, "spaceAfter": 0.5, "keepWithNext": True}),
+        "body": ParagraphStyle("JPBody", **common),
+        "entry": ParagraphStyle("JPEntry", **{**common, "fontName": font["bold"], "spaceBefore": 1.5, "keepWithNext": True}),
+        "sub": ParagraphStyle("JPSub", **{**common, "fontName": font["italic"], "keepWithNext": True}),
+        "bullet": ParagraphStyle("JPBullet", **{**common, "leftIndent": STYLE["bullet_indent"], "firstLineIndent": 0, "bulletIndent": 1.5,
+                                                "bulletFontName": font["regular"], "bulletFontSize": STYLE["body_size"]}),
+    }
 
 
 def build_tailored_resume_pdf(
@@ -139,135 +89,72 @@ def build_tailored_resume_pdf(
     store: dict[str, Any],
     output_path: str | Path,
 ) -> Path:
-    """Create a selectable-text, one-column PDF from currently verified evidence.
+    """Create a selectable-text, one-column PDF in the master resume's style from currently verified evidence.
 
-    The same validation routine used by the DOCX builder is run before rendering.
-    Content is not generated or rewritten here; source-verified statements are
-    formatted only. The layout intentionally avoids photos, tables, columns,
-    icons, and text boxes to favor reliable parsing.
+    The same validation as the DOCX builder runs first. Content is not generated or rewritten; verified
+    statements are only laid out. No photos, tables, columns, icons or text boxes, so it parses reliably.
     """
     candidate = store.get("candidate")
     if not isinstance(candidate, dict) or not candidate.get("name"):
         raise ResumeBuildError("Evidence store has no candidate name.")
 
-    records = _validated_records(selection, store)
+    from app.resume.tailoring_logic import tailor_for_job
+
+    content = tailor_for_job(selection, store)
+    layout = build_layout(content.records, candidate, content.matches)
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-
-    base = getSampleStyleSheet()
-    styles: dict[str, ParagraphStyle] = {
-        "name": ParagraphStyle(
-            "JobPilotResumeName", parent=base["Normal"], fontName="Helvetica-Bold",
-            fontSize=18, leading=21, textColor=NAVY, alignment=TA_CENTER,
-            spaceAfter=2, keepWithNext=True,
-        ),
-        "contact": ParagraphStyle(
-            "JobPilotResumeContact", parent=base["Normal"], fontName="Helvetica",
-            fontSize=8.1, leading=10, textColor=MUTED, alignment=TA_CENTER,
-            spaceAfter=1, splitLongWords=True,
-        ),
-        "section": ParagraphStyle(
-            "JobPilotResumeSection", parent=base["Normal"], fontName="Helvetica-Bold",
-            fontSize=10.2, leading=12, textColor=NAVY, alignment=TA_LEFT,
-            spaceBefore=5.5, spaceAfter=2.5, keepWithNext=True,
-        ),
-        "entry": ParagraphStyle(
-            "JobPilotResumeEntry", parent=base["Normal"], fontName="Helvetica",
-            fontSize=9.2, leading=11, textColor=DARK, spaceBefore=2,
-            spaceAfter=1.5, keepWithNext=True, splitLongWords=True,
-        ),
-        "body": ParagraphStyle(
-            "JobPilotResumeBody", parent=base["Normal"], fontName="Helvetica",
-            fontSize=9.1, leading=11.3, textColor=DARK, spaceAfter=1.5,
-            splitLongWords=True, wordWrap="LTR",
-        ),
-        "bullet": ParagraphStyle(
-            "JobPilotResumeBullet", parent=base["Normal"], fontName="Helvetica",
-            fontSize=9.1, leading=11.3, textColor=DARK,
-            leftIndent=11, firstLineIndent=0, spaceAfter=1,
-            splitLongWords=True, wordWrap="LTR",
-        ),
-    }
-
-    by_category: dict[str, list[dict[str, Any]]] = {}
-    for item in records:
-        by_category.setdefault(str(item.get("category", "")), []).append(item)
-
-    story: list[Any] = [_paragraph(candidate["name"], styles["name"])]
-    for line in _contact_lines(candidate):
-        story.append(_paragraph(line, styles["contact"]))
-    story.append(Spacer(1, 3))
-
-    def section(title: str) -> None:
-        story.append(Paragraph(escape(title.upper()), styles["section"]))
-        story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceBefore=0, spaceAfter=3))
-
-    skill_records = by_category.get("skill", [])
-    skill_names = list(dict.fromkeys(
-        str(item.get("title", "")).strip()
-        for item in skill_records
-        if str(item.get("title", "")).strip()
-    ))
-    if skill_names:
-        section("Technical Skills")
-        story.append(_paragraph(", ".join(skill_names), styles["body"]))
-
-    experience = by_category.get("experience", [])
-    if experience:
-        section("Experience")
-        for item in experience:
-            _render_experience(story, item, styles)
-
-    projects = by_category.get("project", [])
-    if projects:
-        section("Projects")
-        for item in projects:
-            _render_project(story, item, styles)
-
-    education = by_category.get("education", [])
-    if education:
-        section("Education")
-        for item in education:
-            _render_education(story, item, styles)
-
-    certifications = by_category.get("certification", [])
-    if certifications:
-        section("Certifications")
-        for item in certifications:
-            bullet = _bullet_paragraph(item.get("title") or item.get("statement", ""), styles)
-            if bullet:
-                story.extend([bullet, Spacer(1, 1.5)])
-
-    achievements = by_category.get("achievement", [])
-    if achievements:
-        section("Achievements")
-        for item in achievements:
-            bullet = _bullet_paragraph(item.get("statement", ""), styles)
-            if bullet:
-                story.extend([bullet, Spacer(1, 1.5)])
-
     title = f"Tailored Resume - {selection.get('job', {}).get('title', 'Job Application')}"
+    _draw_pdf(layout, str(output), title)
+    return output
+
+
+def page_count(layout: Any) -> int:
+    """How many pages this layout needs (drawn in memory)."""
+    import io
+
+    buffer = io.BytesIO()
+    return _draw_pdf(layout, buffer, "measure")
+
+
+def _draw_pdf(layout: Any, target: Any, title: str) -> int:
+    styles = _styles()
+
+    story: list[Any] = [Paragraph(_markup([Run(layout.name)]), styles["name"])]
+    for line in layout.contact:
+        story.append(Paragraph(_markup(line), styles["contact"]))
+
+    for section in layout.sections:
+        heading = [
+            Paragraph(escape(section.title.upper()), styles["section"]),
+            HRFlowable(width="100%", thickness=STYLE["rule_width"], color=colors.HexColor(STYLE["rule"]), spaceBefore=0.5, spaceAfter=2.5),
+        ]
+        items = list(section.items)
+        # Keep a heading with the first line under it, never alone at the bottom of a page.
+        first = items.pop(0) if items else None
+        story.append(KeepTogether(heading + ([_paragraph_for(first, styles)] if first else [])))
+        story.extend(_paragraph_for(item, styles) for item in items)
+
     document = SimpleDocTemplate(
-        str(output),
-        pagesize=LETTER,
-        rightMargin=0.62 * inch,
-        leftMargin=0.62 * inch,
-        topMargin=0.48 * inch,
-        bottomMargin=0.48 * inch,
+        target,
+        pagesize=A4,
+        # ReportLab's frame adds 6 pt of padding on every side; remove it so the margins are the master's.
+        leftMargin=STYLE["margin_left"] - 6,
+        rightMargin=STYLE["margin_right"] - 6,
+        topMargin=STYLE["margin_top"] - 6,
+        bottomMargin=STYLE["margin_bottom"] - 6,
         title=title[:240],
-        author="JobPilot",
+        author=layout.name or "JobPilot",
         subject="Resume generated from user-verified evidence",
     )
+    document.build(story)
+    return int(document.page)
 
-    def draw_footer(canvas, doc) -> None:
-        canvas.saveState()
-        canvas.setFont("Helvetica", 7.5)
-        canvas.setFillColor(MUTED)
-        canvas.drawCentredString(LETTER[0] / 2, 0.25 * inch, f"Page {doc.page}")
-        canvas.restoreState()
 
-    document.build(story, onFirstPage=draw_footer, onLaterPages=draw_footer)
-    return output
+def _paragraph_for(item: Line | Bullet, styles: dict[str, ParagraphStyle]) -> Paragraph:
+    if isinstance(item, Bullet):
+        return Paragraph(_markup(item.runs), styles["bullet"], bulletText="\u2022")
+    return Paragraph(_markup(item.runs), styles[item.style if item.style in styles else "body"])
 
 
 __all__ = ["build_tailored_resume_pdf"]

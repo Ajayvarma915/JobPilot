@@ -16,7 +16,7 @@ from app.api import main as api_main  # noqa: E402
 from app.db.database import Base, SessionLocal, engine  # noqa: E402
 from app.db.job_repository import JobRepository  # noqa: E402
 from app.db.models import Job, JobVersion  # noqa: E402
-from app.services.job_status import CLOSED, OPEN, UNKNOWN, classify_google_page, decide, list_only  # noqa: E402
+from app.services.job_status import CLOSED, OPEN, UNKNOWN, classify_google_page, classify_job_page, decide, list_only  # noqa: E402
 from scripts import sync_target_companies as sync  # noqa: E402
 
 
@@ -45,7 +45,7 @@ class FakeCollector:
     def collect(self):
         if isinstance(self.jobs, Exception):
             raise self.jobs
-        return self.jobs
+        return [{"source": "lever:acme", **job} for job in self.jobs]
 
 
 def test_endpoint_updates_jobs_only_when_sure() -> None:
@@ -73,6 +73,7 @@ def test_endpoint_updates_jobs_only_when_sure() -> None:
         {"id": "google", "name": "Google", "integration": {"provider": "google_careers", "status": "active", "verified": True, "settings": {"queries": ["x"]}}},
     ]
     original = (api_main.load_registry_companies, sync._build_collector)
+    original_page_get = api_main._page_get
     api_main.load_registry_companies = lambda: registry
     client = TestClient(api_main.app)
 
@@ -113,14 +114,21 @@ def test_endpoint_updates_jobs_only_when_sure() -> None:
         partial = client.post(f"/api/jobs/{ids['b']}/verify-open").json()
         check(partial["status"] == "unknown" and state("b")[0] and "partial" in partial["reason"], f"a partial answer closes nothing: {partial}")
 
+        # no connector: the job's own page is read instead (nothing here may reach the network, so it is faked)
+        from app.services import job_import
+        real_dns = job_import.socket.getaddrinfo
+        job_import.socket.getaddrinfo = lambda host, port: [(2, 1, 6, "", ("93.184.216.34", port))]
+        api_main._page_get = lambda url, **kw: type("R", (), {"status_code": 200, "text": "<html>An unrelated page</html>"})()
         no_connector = client.post(f"/api/jobs/{ids['n']}/verify-open").json()
-        check(no_connector["status"] == "unknown" and "no connector" in no_connector["reason"].lower(), no_connector)
+        check(no_connector["status"] == "unknown" and "did not clearly show" in no_connector["reason"], no_connector)
+        job_import.socket.getaddrinfo = real_dns
         # Google: read the job's own page. The link in this test is not a Google page, so nothing is fetched.
         google = client.post(f"/api/jobs/{ids['g']}/verify-open").json()
         check(google["status"] == "unknown" and "not a Google careers page" in google["reason"], google)
         check(client.post("/api/jobs/99999/verify-open").status_code == 404, "unknown job -> 404")
     finally:
         api_main.load_registry_companies, sync._build_collector = original
+        api_main._page_get = original_page_get
 
 
 def test_google_page_rules() -> None:
@@ -132,8 +140,80 @@ def test_google_page_rules() -> None:
           "errors and unclear pages change nothing")
 
 
+def test_job_from_a_remote_board_is_checked_on_that_board() -> None:
+    """Regression: a GitLab job saved from We Work Remotely was checked against GitLab's own Greenhouse board,
+    where it is never listed, so it always came back 'closed' (even right after an update)."""
+    from app.collectors import remote_boards
+
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    try:
+        repo = JobRepository(session)
+        gitlab = repo.get_or_create_company("GitLab")
+        ids = {}
+        for key in ("w1", "w2", "w3"):
+            ids[key] = repo.upsert_job_detailed(gitlab, {"source": "remote_board:weworkremotely", "external_id": f"weworkremotely-{key}",
+                                                         "title": f"Backend Engineer {key}", "location": ["Remote - Worldwide"],
+                                                         "url": f"https://wwr.example/{key}", "description": "Build things."}).job.id
+        session.commit()
+    finally:
+        session.close()
+
+    registry = [{"id": "gitlab", "name": "GitLab", "integration": {"provider": "greenhouse", "status": "active", "verified": True, "settings": {"board": "gitlab"}}}]
+    original = (api_main.load_registry_companies, sync._build_collector, dict(remote_boards.COLLECTORS))
+    api_main.load_registry_companies = lambda: registry
+
+    def company_connector_must_not_be_used(company, **kwargs):
+        raise AssertionError("a remote-board job must never be checked against the company's own connector")
+
+    sync._build_collector = company_connector_must_not_be_used
+
+    class FakeBoard:
+        source = "remote_board:weworkremotely"
+
+        def __init__(self, listed):
+            self.listed = listed
+
+        def collect(self):
+            if isinstance(self.listed, Exception):
+                raise self.listed
+            return [{"external_id": f"weworkremotely-{key}"} for key in self.listed]
+
+    def board_lists(listed):
+        remote_boards.COLLECTORS["weworkremotely"] = lambda **kwargs: FakeBoard(listed)
+
+    client = TestClient(api_main.app)
+    try:
+        board_lists(["w1", "w2", "w3"])
+        listed = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
+        check(listed["status"] == "open" and "weworkremotely" in listed["reason"], f"still on the board -> open: {listed}")
+        board_lists(["w2", "w3"])
+        gone = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
+        check(gone["status"] == "closed" and not gone["is_active"], f"gone from a normal board answer -> closed: {gone}")
+        board_lists([])
+        check(client.post(f"/api/jobs/{ids['w2']}/verify-open").json()["status"] == "unknown", "an empty board answer closes nothing")
+        board_lists(RuntimeError("HTTP 503"))
+        failed = client.post(f"/api/jobs/{ids['w2']}/verify-open").json()
+        check(failed["status"] == "unknown" and "503" in failed["reason"], failed)
+    finally:
+        api_main.load_registry_companies, sync._build_collector = original[0], original[1]
+        remote_boards.COLLECTORS.clear()
+        remote_boards.COLLECTORS.update(original[2])
+
+
+def test_page_check_for_saved_links() -> None:
+    check(classify_job_page(404, "", "Engineer")[0] == CLOSED, "a missing page means closed")
+    check(classify_job_page(200, "<h1>Backend Engineer</h1> Apply now", "Backend Engineer")[0] == OPEN, "the title is still on the page")
+    check(classify_job_page(200, "Sorry, this job is no longer available. Backend Engineer", "Backend Engineer")[0] == CLOSED, "an explicit closed notice wins")
+    check(classify_job_page(200, "Welcome to our careers site", "Backend Engineer")[0] == UNKNOWN, "an unrelated page proves nothing")
+    check(classify_job_page(503, "", "x")[0] == UNKNOWN and classify_job_page(200, "", "")[0] == UNKNOWN, "errors and empty pages change nothing")
+
+
 TESTS = [
     ("Google page rules", test_google_page_rules),
+    ("A job from a remote board is checked on that board, not the company's page", test_job_from_a_remote_board_is_checked_on_that_board),
+    ("A saved link is checked from its own page", test_page_check_for_saved_links),
     ("Decision rules never close a job on doubt", test_decision_rules),
     ("Endpoint closes, reopens and leaves doubtful jobs alone", test_endpoint_updates_jobs_only_when_sure),
 ]

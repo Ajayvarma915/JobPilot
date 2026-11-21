@@ -131,6 +131,27 @@ def test_contacts_and_draft_only_outreach() -> None:
     check("verified skills" in crm.build_outreach_draft(contact={"name": "Dana"}, facts={}, job=None, verified_skills=[])["warnings"][0], "no skills -> no claim")
 
 
+def test_referral_workflow_as_the_screen_uses_it() -> None:
+    """The Network screen sends nulls for blank fields, changes the referral step from a dropdown, clears the
+    follow-up date, and links a contact to a job through a note."""
+    _reset()
+    client = TestClient(api_main.app)
+    job_id = _make_jobs(1)[0]
+    created = client.post("/api/contacts", json={
+        "name": "Nagendra", "kind": "referral", "role_title": None, "company_name": "Qualcomm", "email": None, "linkedin_url": None,
+        "notes": None, "referral_status": "asked", "follow_up_date": "2026-11-25"})
+    check(created.status_code == 201 and created.json()["referral_status"] == "asked", created.text)
+    contact_id = created.json()["id"]
+    check(client.patch(f"/api/contacts/{contact_id}", json={"referral_status": "agreed"}).json()["follow_up_date"] == "2026-11-25",
+          "changing the step leaves the date alone")
+    cleared = client.patch(f"/api/contacts/{contact_id}", json={"follow_up_date": None}).json()
+    check(cleared["follow_up_date"] is None and cleared["referral_status"] == "agreed", cleared)
+    check(client.patch(f"/api/contacts/{contact_id}", json={"referral_status": "maybe"}).status_code == 422, "unknown step refused")
+    link = client.post(f"/api/contacts/{contact_id}/interactions", json={"kind": "note", "body": "Referral contact for Backend Engineer at Acme.", "job_id": job_id})
+    check(link.status_code == 201 and link.json()["job_id"] == job_id, link.text)
+    check(client.get(f"/api/contacts/{contact_id}").json()["interactions"][0]["job_id"] == job_id, "the link is kept")
+
+
 def test_interview_prep_plan() -> None:
     _reset()
     client = TestClient(api_main.app)
@@ -168,6 +189,7 @@ def test_interview_prep_plan() -> None:
 TESTS = [
     ("Funnel counts, follow-ups and the small-sample rule", test_funnel_counts_and_small_sample_rule),
     ("Contacts and draft-only outreach", test_contacts_and_draft_only_outreach),
+    ("Referral workflow as the Network screen uses it", test_referral_workflow_as_the_screen_uses_it),
     ("Interview preparation plan and progress", test_interview_prep_plan),
 ]
 

@@ -77,7 +77,7 @@ def test_collectors_normalise_each_board() -> None:
                                 "locationRestrictions": [], "description": "d"}], "nextCursor": None}),
     ]
     session = FakeSession(*pages)
-    jobs = HimalayasCollector(session=session).collect()
+    jobs = HimalayasCollector(session=session, searches=()).collect()
     check([j["location"] for j in jobs] == [["Remote - India, Nepal"], ["Remote - Worldwide"]], "regions")
     check(len(session.calls) == 2 and session.calls[1][1]["params"]["cursor"] == "c2", "cursor paging uses nextCursor")
 
@@ -87,6 +87,101 @@ def test_collectors_normalise_each_board() -> None:
     jobs = WeWorkRemotelyCollector(session=FakeSession(FakeResponse(content=rss))).collect()
     check(len(jobs) == 1 and jobs[0]["company"] == "Epsilon" and jobs[0]["title"] == "Software Engineer"
           and jobs[0]["location"] == ["Remote - Worldwide"], jobs)
+
+
+class UrlSession(FakeSession):
+    """Answers by URL text, so collectors that call several pages can be tested."""
+
+    def __init__(self, routes):
+        super().__init__(FakeResponse(payload={}))
+        self.routes = routes
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        for marker, response in self.routes:
+            if marker in url:
+                return response
+        raise AssertionError(f"unexpected request {url}")
+
+
+class TextResponse(FakeResponse):
+    def __init__(self, text, status=200):
+        super().__init__()
+        self.text, self.status_code = text, status
+
+
+def yc_html(props):
+    import html as html_lib
+    import json as json_lib
+
+    return TextResponse('<html><div id="app" data-page="' + html_lib.escape(json_lib.dumps({"props": props}), quote=True) + '"></div></html>')
+
+
+def test_new_boards_normalise() -> None:
+    from app.collectors.remote_boards import JobicyCollector, WorkingNomadsCollector, YCombinatorCollector
+
+    posts = [
+        {"id": 1, "title": "Software Engineer", "url": "/companies/acme/jobs/a", "location": "Remote (Worldwide)", "minExperience": "1+ years",
+         "companyName": "Acme", "type": "Full-time"},
+        {"id": 2, "title": "Software Engineer", "url": "/companies/beta/jobs/b", "location": "HQ / Bengaluru, KA, IN", "minExperience": "Any (new grads ok)",
+         "companyName": "Beta", "type": "Full-time"},
+        {"id": 3, "title": "Senior Software Engineer", "url": "/companies/gamma/jobs/c", "location": "Remote (US)", "minExperience": "6+ years", "companyName": "Gamma"},
+        {"id": 4, "title": "Software Engineer", "url": "/companies/delta/jobs/d", "location": "San Francisco, CA, US", "minExperience": "2+ years", "companyName": "Delta"},
+    ]
+    session = UrlSession([
+        ("/jobs/role/", yc_html({"jobPostings": posts})),
+        ("/jobs/location/", yc_html({"jobPostings": []})),
+        ("/companies/acme/jobs/a", yc_html({"job": {"description": "**Build** backend services in Python."}})),
+        ("/companies/beta/jobs/b", yc_html({"job": {"description": "Join the Bengaluru team."}})),
+    ])
+    collector = YCombinatorCollector(session=session, pages_per_role=1, pause=0)
+    collector.ROLES = ("software-engineer",)
+    collector.LOCATIONS = ()
+    jobs = {job["company"]: job for job in collector.collect()}
+    check(set(jobs) == {"Acme", "Beta", "Gamma", "Delta"}, set(jobs))
+    check(jobs["Acme"]["location"] == ["Remote - Worldwide"] and jobs["Acme"]["workplace_type"] == "remote", jobs["Acme"])
+    check(jobs["Acme"]["description"].startswith("Minimum qualifications: 1+ years") and "backend services" in jobs["Acme"]["description"], jobs["Acme"]["description"])
+    check(jobs["Beta"]["location"] == ["Bengaluru, KA, IN"] and jobs["Beta"]["workplace_type"] == "onsite", jobs["Beta"])
+    check("0 years of experience" in jobs["Beta"]["description"], "new grads ok is read as a stated 0 years")
+    detail_calls = [url for url, _ in session.calls if "/companies/" in url]
+    check(len(detail_calls) == 2, f"descriptions are fetched only for jobs that pass the pre-check: {detail_calls}")
+    check(jobs["Gamma"]["location"] == ["Remote - US"] and jobs["Delta"]["workplace_type"] == "onsite", "other jobs keep their place and are not fetched")
+    only_list = YCombinatorCollector(session=UrlSession([("/jobs/", yc_html({"jobPostings": posts}))]), pages_per_role=1, pause=0, fetch_details=False)
+    only_list.ROLES, only_list.LOCATIONS = ("software-engineer",), ()
+    check(len(only_list.collect()) == 4 and not any("/companies/" in url for url, _ in only_list.session.calls), "the still-open check reads lists only")
+
+    jobicy = JobicyCollector(session=FakeSession(FakeResponse({"jobs": [
+        {"id": 7, "url": "https://jobicy.com/jobs/7", "jobTitle": "Backend Engineer", "companyName": "Zed", "jobGeo": "Anywhere", "jobType": ["Full-Time"],
+         "jobDescription": "<p>Python</p>", "pubDate": "2026-11-18 10:00:00"}]})))
+    job = jobicy.collect()[0]
+    check((job["external_id"], job["location"], job["source"]) == ("jobicy-7", ["Remote - Worldwide"], "remote_board:jobicy"), job)
+    nomads = WorkingNomadsCollector(session=FakeSession(FakeResponse([
+        {"url": "https://www.workingnomads.com/job/go/2034803/", "title": "Backend Developer", "company_name": "Nom", "category_name": "Development",
+         "location": "Anywhere", "description": "<p>Go</p>", "pub_date": "2026-11-19T07:13:33-05:00"},
+        {"url": "https://www.workingnomads.com/job/go/1/", "title": "Content Writer", "company_name": "X", "category_name": "Marketing", "location": "Anywhere"}])))
+    found = nomads.collect()
+    check(len(found) == 1 and found[0]["external_id"] == "workingnomads-2034803", found)
+
+
+def test_himalayas_search_adds_india_and_worldwide_results() -> None:
+    def listing(guid, restrictions):
+        return {"guid": guid, "companyName": "Acme", "title": "Backend Engineer", "applicationLink": f"https://h.example/{guid}",
+                "locationRestrictions": restrictions, "description": "d"}
+
+    session = UrlSession([
+        ("/jobs/api/search", FakeResponse({"jobs": [listing("s-india", ["India", "Nepal"]), listing("s-world", [])]})),
+        ("/jobs/api", FakeResponse({"jobs": [listing("browse-1", [])], "nextCursor": None})),
+    ])
+    collector = HimalayasCollector(session=session, searches=("backend developer",), search_pages=1, pause=0)
+    jobs = collector.collect()
+    ids = {job["external_id"] for job in jobs}
+    check({"himalayas-browse-1", "himalayas-s-india", "himalayas-s-world"} == ids, ids)
+    queries = [kw["params"] for url, kw in session.calls if "/search" in url]
+    check(any(p.get("country") == "India" for p in queries), f"roles open to India are asked for: {queries}")
+    check(any(p.get("worldwide") == "true" for p in queries), "worldwide roles are asked for too")
+    only_feed = HimalayasCollector(session=UrlSession([("/jobs/api", FakeResponse({"jobs": [listing("b", [])], "nextCursor": None}))]),
+                                   searches=("x",), fetch_details=False, pause=0)
+    check(len(only_feed.collect()) == 1 and not any("/search" in url for url, _ in only_feed.session.calls), "the still-open check skips the searches")
 
 
 def job(key, title, region, description=GOOD, company="Acme"):
@@ -136,6 +231,8 @@ def test_sync_stores_by_eligibility_and_closes_gone_jobs() -> None:
 
 TESTS = [
     ("Collectors normalise each board", test_collectors_normalise_each_board),
+    ("YC, Jobicy and Working Nomads are read correctly", test_new_boards_normalise),
+    ("Himalayas search adds India and worldwide results", test_himalayas_search_adds_india_and_worldwide_results),
     ("Sync keeps eligible remote jobs, holds unclear ones, closes gone ones", test_sync_stores_by_eligibility_and_closes_gone_jobs),
 ]
 

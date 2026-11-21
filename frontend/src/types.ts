@@ -55,6 +55,7 @@ export interface JobFilters {
   role_scope: RoleScopeFilter;
   compensation_filter: CompensationFilter;
   review_scope: ReviewScope;
+  new_only: boolean;
 }
 
 // Why a stored job is waiting for your decision (only present on jobs the sync held for review).
@@ -118,6 +119,7 @@ export interface Job {
   is_active: boolean;
   match?: JobMatch;
   review?: JobReviewInfo | null;
+  is_new?: boolean;
 }
 
 export interface DashboardStats {
@@ -296,6 +298,21 @@ interface ResumeScoreCheck {
 }
 
 interface ResumeEvaluation {
+  overall?: {
+    score: number;
+    target: number;
+    meets_target: boolean;
+    label: string;
+    to_reach_target: string[];
+    weights: string;
+  };
+  writing_style?: {
+    score: number;
+    label: string;
+    bullet_count: number;
+    metric_share: number | null;
+    issues: string[];
+  };
   readiness_label: string;
   readiness_passes_local_checks: boolean;
   global_disclaimer: string;
@@ -352,6 +369,7 @@ export interface GeneratedResume {
   pdf_filename?: string;
   pdf_download_url?: string;
   evaluation?: ResumeEvaluation;
+  report?: { tailored_for_job?: { changes: string[]; relevant_skills: string[] } };
   safety: {
     verified_evidence_required: boolean;
     claims_invented: boolean;

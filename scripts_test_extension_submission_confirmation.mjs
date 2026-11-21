@@ -39,6 +39,7 @@ async function runCase(initialStatus, shouldConfirm) {
     'applicationSelect', 'jobMeta', 'blockerSummary', 'refreshBtn',
     'openPostingBtn', 'overwriteExisting', 'fillBtn', 'markAppliedBtn',
     'actionStatus', 'questionCount', 'questionsList',
+    'saveJobBtn', 'trackSavedJobBtn', 'saveJobStatus',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, new FakeElement(id)]));
   const calls = [];

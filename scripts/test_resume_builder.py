@@ -304,6 +304,7 @@ def test_builds_ats_docx_and_audit() -> None:
                 for i in range(project_index + 1, len(paragraphs))
                 if paragraphs[i]
                 in {
+                    "TECHNICAL SKILLS",  # in the master's order the skills come right after the projects
                     "EDUCATION",
                     "CERTIFICATIONS",
                     "ACHIEVEMENTS",
