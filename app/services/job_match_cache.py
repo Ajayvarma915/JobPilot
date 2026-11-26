@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.services.match_weights import load_match_weights
 
 
-CACHE_VERSION = "jobpilot-match-cache-v2"
+CACHE_VERSION = "jobpilot-match-cache-v3"  # v3: experience requirements are read differently
 TABLE_NAME = "job_match_cache"
 
 _init_lock = threading.Lock()

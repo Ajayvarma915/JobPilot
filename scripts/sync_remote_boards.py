@@ -6,8 +6,9 @@
 
 The same deterministic eligibility rules as the company sync apply (software role, early career,
 open to India or worldwide). Jobs that pass cleanly are stored for the Remote jobs tab; ambiguous ones
-are stored held for your review; everything else is dropped. A job that leaves a board is marked
-closed, but only when the board answered with a believable number of jobs.
+are stored held for your review; everything else is dropped. Board feeds show only recent postings, so
+a job is marked closed only after the board has not shown it for 14 days, and only when the board
+answered with a believable number of jobs.
 """
 from __future__ import annotations
 
@@ -15,11 +16,13 @@ import argparse
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.collectors.remote_boards import COLLECTORS
 from app.db.database import SessionLocal
 from app.db.job_repository import JobRepository
+from app.services.job_status import REMOTE_EXPIRY_DAYS
 from app.services.target_role_policy import ELIGIBLE, ELIGIBLE_NEEDS_REVIEW, evaluate_eligibility
 
 
@@ -99,7 +102,8 @@ def sync_board(board: str, jobs: list[dict[str, Any]], *, source: str, dry_run: 
             result.note = f"closure check skipped: the board listed {len(jobs)} jobs against {stored} stored"
         else:
             # Jobs this board listed but we dropped (no longer eligible) are not "closed", just not wanted.
-            result.removed = len(repository.mark_source_missing_inactive(source, listed_ids))
+            expired_before = datetime.utcnow() - timedelta(days=REMOTE_EXPIRY_DAYS)
+            result.removed = len(repository.mark_source_missing_inactive(source, listed_ids, not_seen_since=expired_before))
         db.commit()
         result.status = "success"
         return result

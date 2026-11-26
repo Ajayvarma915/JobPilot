@@ -66,16 +66,72 @@ SENIORITY_TITLE_RE = re.compile(
 )
 INTERN_TITLE_RE = re.compile(r"\b(?:intern|internship|apprentice|trainee)\b", re.IGNORECASE)
 
+# Headings that are unmistakable wherever they appear.
+_STRONG_MINIMUM_HEADING = (
+    r"(?:(?:minimum|basic|required|mandatory)\s+qualifications|minimum\s+requirements|required\s+experience|"
+    r"what\s+you(?:'|’)?ll\s+need|what\s+you\s+will\s+need)"
+)
+# A bare "requirements" is a heading only when it stands alone on its line or is followed by a colon. In a
+# sentence ("non-functional requirements such as ...") it is an ordinary word.
 _MINIMUM_SECTION_RE = re.compile(
-    r"(?:minimum qualifications|required qualifications|basic qualifications|minimum requirements|"
-    r"required experience|what you'll need|what you will need|requirements)",
-    re.IGNORECASE,
+    _STRONG_MINIMUM_HEADING + r"|^[ \t#*•\-]*(?:job\s+)?requirements\b[ \t]*(?::|\r?$)|\brequirements\s*:",
+    re.IGNORECASE | re.MULTILINE,
 )
 _SECTION_END_RE = re.compile(
     r"(?:preferred qualifications|nice to have|preferred skills|bonus points|about the team|responsibilities|what you'll do|what you will do)",
     re.IGNORECASE,
 )
 _PHD_RE = re.compile(r"\b(?:ph\.?\s*d\.?|doctorate|doctoral degree)\b", re.IGNORECASE)
+
+# A heading that starts a list of optional extras: it starts a line, or has a colon after it.
+# "The preferred qualifications are a bonus" is a sentence, not a heading.
+_PREFERRED_PHRASE = (
+    r"(?:preferred\s+(?:qualifications|skills|experience|requirements)|nice[ -]to[ -]haves?|good[ -]to[ -]haves?|"
+    r"bonus\s+(?:points|skills|qualifications))"
+)
+_PREFERRED_HEADING_RE = re.compile(
+    r"^[ \t#*•\-]*" + _PREFERRED_PHRASE + r"(?![ \t]+(?:are|is|will)\b)[^\n.]{0,40}?(?::|\r?$)|" + _PREFERRED_PHRASE + r"\s*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Where an optional list stops.
+_AFTER_PREFERRED_RE = re.compile(
+    _STRONG_MINIMUM_HEADING + r"|^[ \t#*•\-]*(?:key\s+)?(?:job\s+)?(?:requirements|responsibilities)\b[^\n]{0,30}?(?::|\r?$)"
+    r"|^[ \t]*(?-i:[A-Z])[A-Za-z /&]{2,30}:[ \t]*$",  # any other short "Something:" line starts a new part
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                 "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+_NUMBER = r"(?:\d{1,2}(?:\.\d+)?|" + "|".join(_NUMBER_WORDS) + r")"
+# "3 years", "3+ yrs", "2–5 years", "7years+", "six (6) years", "6 months to 12 years".
+_YEARS_RE = re.compile(
+    r"(?<![\w.])(?P<low>" + _NUMBER + r")\s*(?:\(\s*\d+\s*\)\s*)?(?P<low_unit>months?\b\s*)?(?P<plus>\+|plus\b)?\s*"
+    r"(?:(?:-|–|—|to\b)\s*" + _NUMBER + r"\s*\+?\s*)?(?:years?|yrs?)(?![a-z])(?P<tail_plus>\s*\+)?",
+    re.IGNORECASE,
+)
+_NOT_EXPERIENCE_AFTER_RE = re.compile(
+    r"^\W*(?:(?:full[ -]time\s+)?(?:degree|bachelor|college|university|diploma|program|undergraduate)|old\b|of age\b|ago\b|"
+    r"bond\b|contract\b|warranty\b|anniversary\b|in a row\b|running\b)",
+    re.IGNORECASE,
+)
+_NOT_EXPERIENCE_BEFORE_RE = re.compile(
+    r"(?:\b(?:past|last|next|previous|first|every|within|since|founded)|\bfor (?:over|more than|nearly|almost|the past)|"
+    r"\b(?:over|in) the)\s*$",
+    re.IGNORECASE,
+)
+# The sentence is about the employer, not about you.
+_EMPLOYER_SENTENCE_RE = re.compile(
+    r"\b(?:we(?:'ve|’ve| have| bring)|(?:company|firm|platform|our team|our founders|our leadership) (?:has|have|with|brings)|"
+    r"in business|combined experience|has been)\b|^\s*with (?:over|more than) ",
+    re.IGNORECASE,
+)
+_EXPERIENCE_WORDS_RE = re.compile(
+    r"experien|\b(?:building|developing|development|developer|programming|coding|engineering|engineer|working|designing|"
+    r"hands[ -]on|professional|industry|relevant|software|shipping|expertise|role|position)\b",
+    re.IGNORECASE,
+)
+_OPTIONAL_RE = re.compile(r"\b(?:preferred|a plus|nice to have|good to have|ideally|bonus|advantage(?:ous)?|desirable)\b", re.IGNORECASE)
+_ADVANCED_DEGREE_RE = re.compile(r"^[^.;\n]{0,60}?\bwith (?:an? )?(?:advanced degree|master|ph\.?d)", re.IGNORECASE)
 
 
 def _minimum_qualification_text(description: str | None) -> tuple[str, bool]:
@@ -91,48 +147,59 @@ def _minimum_qualification_text(description: str | None) -> tuple[str, bool]:
     return (tail[:end.start()] if end else tail[:6000]), True
 
 
+def _without_preferred(text: str) -> str:
+    """The description with the "preferred / nice to have" lists cut out."""
+    kept: list[str] = []
+    position = 0
+    while True:
+        heading = _PREFERRED_HEADING_RE.search(text, position)
+        if not heading:
+            kept.append(text[position:])
+            break
+        kept.append(text[position:heading.start()])
+        resume = _AFTER_PREFERRED_RE.search(text, heading.end())
+        if not resume:
+            break
+        position = resume.start()
+    return "\n".join(kept)
+
+
 def extract_minimum_experience_years(description: str | None) -> float | None:
-    """Extract a conservative minimum-experience figure from a JD.
+    """Extract the minimum experience a job description asks for.
 
-    Uses the minimum/basic/requirements section when present; for a range such
-    as '2-4 years', returns the lower bound rather than the upper bound.
-    Returns None when the JD does not state a usable minimum.
+    Optional ("preferred") lists are ignored. A range such as "2-5 years" counts as its lower end. When a
+    description states several requirements ("3+ years of development, 2+ years of design"), all of them must
+    be met, so the largest is returned. Returns None when no usable figure is stated.
     """
-    text, _section_found = _minimum_qualification_text(description)
-    if not text.strip():
-        return None
-
-    range_match = re.search(
-        r"\b(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
-        text,
-        re.IGNORECASE,
-    )
-    if range_match:
-        return float(range_match.group(1))
-
-    patterns = (
-        r"\b(?:at least|minimum of|min\.?|minimum)\s*(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
-        # Amazon-style wording: "3+ years of non-internship professional
-        # software development experience". Descriptors may occur before
-        # the final "experience" token.
-        # A degree length such as "4 year degree ... or equivalent experience"
-        # is not an experience requirement, so those nouns are excluded.
-        r"\b(\d+(?:\.\d+)?)\s*\+\s*years?\s+(?!(?:degree|bachelor|college|university|diploma|program|undergraduate)\b)(?:of\s+)?"
-        r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
-        r"\b(\d+(?:\.\d+)?)\s+years?\s+(?!(?:degree|bachelor|college|university|diploma|program|undergraduate)\b)(?:of\s+)?"
-        r"(?:[a-z][a-z0-9/&,-]*\s+){0,6}experience\b",
-        r"\bexperience\s+of\s+(\d+(?:\.\d+)?)\s*\+?\s*years?\b",
-        # Some listings express tenure as a duration in a named role rather
-        # than using the word "experience", e.g. "4 years in a Salesforce
-        # Developer or Architect role". Keep the search inside minimum
-        # qualifications so unrelated dates/tenure elsewhere are not used.
-        r"\b(\d+(?:\.\d+)?)\s*\+?\s*years?\s+(?:in|as)\s+[^.;\n]{1,140}?\b(?:role|position|capacity|developer|engineer|architect)\b",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
-    return None
+    text = _without_preferred(str(description or "").replace("\r", ""))
+    found: list[tuple[float, bool]] = []  # (years, applies only with an advanced degree)
+    for match in _YEARS_RE.finditer(text):
+        raw = match.group("low").lower()
+        years = float(_NUMBER_WORDS[raw]) if raw in _NUMBER_WORDS else float(raw)
+        if match.group("low_unit"):
+            years /= 12
+        if years > 20:
+            continue
+        # The sentence or bullet around the figure.
+        before = re.split(r"[.!?]\s|\n\s*[-•*]\s", text[max(0, match.start() - 90):match.start()])[-1]
+        after_full = re.sub(r"\s+", " ", text[match.end():match.end() + 140]).strip()
+        after = re.split(r"[.!?;](?:\s|$)| [•*] | - (?=\d)", after_full)[0][:110]
+        before_flat = re.sub(r"\s+", " ", before)
+        if _NOT_EXPERIENCE_AFTER_RE.search(after_full) or _NOT_EXPERIENCE_BEFORE_RE.search(before_flat):
+            continue
+        if _EMPLOYER_SENTENCE_RE.search(before_flat):
+            continue
+        if _OPTIONAL_RE.search(after[:90]) or _OPTIONAL_RE.search(before.split("\n")[-1]):
+            continue
+        more_than = before_flat.rstrip().endswith(">")  # "NodeJs ecosystem (>3 years)"
+        stated_as_minimum = bool(more_than or match.group("plus") or match.group("tail_plus")
+                                 or re.search(r"\b(?:at least|minimum(?: of)?|min\.?)\s*$", before_flat, re.IGNORECASE))
+        about_experience = bool(_EXPERIENCE_WORDS_RE.search(after) or re.search(r"experien|expertise", before_flat[-60:], re.IGNORECASE))
+        if not (about_experience or more_than or (stated_as_minimum and re.match(r"(?:of|in|with|as)\b", after, re.IGNORECASE))):
+            continue
+        found.append((years, bool(_ADVANCED_DEGREE_RE.search(after))))
+    usable = [years for years, advanced in found if not advanced] or [years for years, _ in found]
+    return round(max(usable), 2) if usable else None
 
 
 def _clean_title(title: str | None) -> str:

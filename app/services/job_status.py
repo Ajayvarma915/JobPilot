@@ -17,6 +17,10 @@ OPEN = "open"
 CLOSED = "closed"
 UNKNOWN = "unknown"
 
+# A remote board feed shows only recent postings (or a sample), so one missing answer proves nothing.
+# A remote job is closed only after the board has not shown it for this many days.
+REMOTE_EXPIRY_DAYS = 14
+
 # A source answering with fewer than this share of the jobs we hold active looks partial.
 MIN_SHARE_OF_STORED = 0.5
 

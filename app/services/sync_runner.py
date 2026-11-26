@@ -22,6 +22,7 @@ from app.db.database import PROJECT_ROOT
 STEPS: list[tuple[str, list[str]]] = [
     ("Company career pages", ["-m", "scripts.sync_target_companies", "--mode", "full", "--concurrency", "3"]),
     ("Remote job boards", ["-m", "scripts.sync_remote_boards"]),
+    ("Score new jobs", ["-m", "scripts.score_jobs"]),
 ]
 SUMMARY_KEYS = ("Raw jobs collected", "Role/location candidates", "Eligible needing review", "New database records",
                 "Updated records", "Removed from source", "Failed API sources", "Boards:")

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.collectors.greenhouse import GreenhouseCollector
 from app.collectors.lever import LeverCollector
+from app.collectors.workday import WorkdayCollector
 
 
 class FakeResponse:
@@ -186,6 +187,35 @@ def test_lever_normalization() -> None:
     )
 
 
+def test_workday_filter_and_page_limit() -> None:
+    """Regression: NVIDIA's board is far larger than the page limit, so collection stopped at 500 silently."""
+
+    def collector_for(**kwargs: object) -> tuple[WorkdayCollector, list[dict]]:
+        collector = WorkdayCollector("example", "Careers", "Example Inc", host="example.wd1.myworkdayjobs.com",
+                                     page_size=2, fetch_details=False, **kwargs)
+        sent: list[dict] = []
+
+        def post(url: str, json: dict, timeout: int) -> FakeResponse:
+            sent.append(json)
+            offset = json["offset"]
+            return FakeResponse({"total": 5 if offset == 0 else 0, "jobPostings": [
+                {"title": f"Software Engineer {n}", "externalPath": f"/job/{n}", "locationsText": "Bengaluru, India"}
+                for n in range(offset, min(offset + 2, 5))]})
+
+        collector.session.post = post  # type: ignore[method-assign]
+        return collector, sent
+
+    facets = {"locationHierarchy1": ["india-id"]}
+    complete, sent = collector_for(max_pages=3, applied_facets=facets)
+    jobs = complete.collect()
+    check(len(jobs) == 5 and jobs.partial_note is None, f"all five read: {len(jobs)}, {jobs.partial_note}")
+    check(all(body["appliedFacets"] == facets for body in sent), "the site's filter is sent with every page")
+
+    capped, _ = collector_for(max_pages=2)
+    jobs = capped.collect()
+    check(len(jobs) == 4 and "4 of 5" in str(jobs.partial_note), f"hitting the limit is reported: {jobs.partial_note}")
+
+
 def main() -> int:
     tests = [
         (
@@ -195,6 +225,10 @@ def main() -> int:
         (
             "Lever mapping, description, metadata and deduplication",
             test_lever_normalization,
+        ),
+        (
+            "Workday sends the site filter and reports a cut-off collection",
+            test_workday_filter_and_page_limit,
         ),
     ]
 

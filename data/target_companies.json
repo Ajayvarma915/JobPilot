@@ -243,7 +243,12 @@
           "locale": "en-US",
           "page_size": 20,
           "max_pages": 25,
-          "fetch_details": true
+          "fetch_details": true,
+          "applied_facets": {
+            "locationHierarchy1": [
+              "2fcb99c455831013ea52b82135ba3266"
+            ]
+          }
         }
       }
     },

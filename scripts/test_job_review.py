@@ -7,15 +7,19 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["JOBPILOT_DATABASE_PATH"] = str(Path(_TEMP_DIR.name) / "test_job_review.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 
 from app.api import main as api_main  # noqa: E402
 from app.db.database import Base, SessionLocal, engine  # noqa: E402
+from app.db.job_repository import JobRepository  # noqa: E402
+from app.services import job_review  # noqa: E402
 from app.db.models import Job, JobReview, JobVersion  # noqa: E402
 from scripts import sync_target_companies as sync  # noqa: E402
 
@@ -192,7 +196,40 @@ def test_new_jobs_are_marked_and_filterable() -> None:
     check([item["title"] for item in only_new] == ["Software Engineer a1"], "only the job first seen this week")
 
 
+def test_jobs_no_update_confirms_are_hidden_but_kept() -> None:
+    """Regression: jobs from a source no update reads any more stayed listed as open for weeks."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    session = SessionLocal()
+    try:
+        company = JobRepository(session).get_or_create_company("Example")
+        now = datetime.utcnow()
+
+        def add(key: str, age_days: int, source: str = "greenhouse:example") -> None:
+            session.add(Job(company_id=company.id, external_id=key, title=key, location="India", url=f"https://x.example/{key}",
+                            description="", source=source, first_seen_at=now, last_seen_at=now - timedelta(days=age_days), is_active=True))
+
+        for n in range(30):
+            add(f"current-{n}", 20)  # the latest update ran 20 days ago
+        add("old", 60)
+        add("slightly-older", 30)
+        add("saved-by-me", 200, "imported_link")
+        add("from-my-email", 200, "email_application")
+        add("checked-by-hand-today", 0)
+        session.commit()
+
+        listed = set(session.scalars(select(Job.title).where(job_review.confirmed_clause(session))).all())
+        check("old" not in listed, "a job unconfirmed for 40 days longer than the latest update is hidden")
+        check({"current-0", "slightly-older", "saved-by-me", "from-my-email", "checked-by-hand-today"} <= listed,
+              f"a pause in updating, a single re-check and jobs you added hide nothing else: {sorted(listed)[:6]}")
+        check(session.query(Job).count() == 35 and session.query(Job).filter(Job.is_active.is_(True)).count() == 35,
+              "nothing is deleted or closed")
+    finally:
+        session.close()
+
+
 TESTS = [
+    ("Jobs no update confirms are hidden but kept", test_jobs_no_update_confirms_are_hidden_but_kept),
     ("Sync stores ambiguous jobs and the API separates them", test_sync_stores_ambiguous_jobs_for_review),
     ("Accept, dismiss and reset are kept across syncs", test_decisions_are_kept_across_syncs),
     ("A job that becomes clear leaves the queue; removal still works", test_job_that_becomes_clear_leaves_the_queue_and_closed_jobs_still_close),

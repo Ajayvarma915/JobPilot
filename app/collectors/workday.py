@@ -15,6 +15,12 @@ from bs4 import BeautifulSoup
 from app.collectors.base import JobCollector
 
 
+class CollectedJobs(list):
+    """The collected jobs. `partial_note` says why the list is incomplete, or is None when it is complete."""
+
+    partial_note: str | None = None
+
+
 class WorkdayCollector(JobCollector):
     """Collect public Workday CXS job postings for one verified tenant/site.
 
@@ -36,6 +42,7 @@ class WorkdayCollector(JobCollector):
         max_pages: int = 25,
         fetch_details: bool = True,
         timeout: int = 30,
+        applied_facets: dict[str, list[str]] | None = None,
     ) -> None:
         self.tenant = tenant.strip()
         self.site = site.strip()
@@ -54,6 +61,8 @@ class WorkdayCollector(JobCollector):
         self.max_pages = max_pages
         self.fetch_details = fetch_details
         self.timeout = timeout
+        # The site's own filters (for example its India location), so a very large board fits in the page limit.
+        self.applied_facets = dict(applied_facets or {})
         # external_id -> description already stored; set by the sync in FAST mode.
         self.known_descriptions: dict[str, str] = {}
         self.source = f"workday:{self.tenant.casefold()}:{self.site.casefold()}"
@@ -73,7 +82,7 @@ class WorkdayCollector(JobCollector):
         for attempt in range(3):
             response = self.session.post(
                 f"{self.api_root}/jobs",
-                json={"appliedFacets": {}, "limit": self.page_size, "offset": offset, "searchText": ""},
+                json={"appliedFacets": self.applied_facets, "limit": self.page_size, "offset": offset, "searchText": ""},
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -85,9 +94,10 @@ class WorkdayCollector(JobCollector):
         raise ValueError(f"Workday answered '{self.company_name}' with an unreadable body 3 times in a row: {last_error}")
 
     def collect(self) -> list[dict[str, Any]]:
-        results: list[dict[str, Any]] = []
+        results = CollectedJobs()
         seen: set[str] = set()
         offset = 0
+        reached_end = False
         known_total: int | None = None
         for _ in range(self.max_pages):
             payload = self._post_page(offset)
@@ -122,10 +132,13 @@ class WorkdayCollector(JobCollector):
             if isinstance(page_total, int) and page_total > 0:
                 known_total = page_total
             offset += len(postings)
-            if not postings or len(postings) < self.page_size:
+            if not postings or len(postings) < self.page_size or (known_total is not None and offset >= known_total):
+                reached_end = True
                 break
-            if known_total is not None and offset >= known_total:
-                break
+        if not reached_end:
+            of_total = f" of {known_total}" if known_total else ""
+            results.partial_note = (f"stopped at the page limit after {offset}{of_total} postings; "
+                                    "later jobs were not read")
         return results
 
     def _normalise_summary(self, raw: dict[str, Any]) -> dict[str, Any] | None:

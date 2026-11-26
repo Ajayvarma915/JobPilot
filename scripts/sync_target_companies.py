@@ -305,6 +305,7 @@ def _make_collector(company: dict[str, Any]) -> Any:
             page_size=int(settings.get("page_size", 20)),
             max_pages=int(settings.get("max_pages", 25)),
             fetch_details=bool(settings.get("fetch_details", True)),
+            applied_facets=settings.get("applied_facets"),
         )
     raise ValueError(f"No configured public API connector for provider: {provider!r}")
 
@@ -681,7 +682,10 @@ def sync_company(
 
         # Removal detection: only after a complete FULL fetch, and never when the
         # fetch looks partial (so a flaky source cannot wipe the stored jobs).
-        if detect_removals and not fast_google_scan and result.collected > 0:
+        partial_note = getattr(jobs, "partial_note", None)
+        if partial_note:
+            result.removal_note = f"INCOMPLETE: {partial_note}; no stored job was closed"
+        if detect_removals and not fast_google_scan and not partial_note and result.collected > 0:
             existing_company = repository.get_company(str(company["name"]))
             if existing_company is not None:
                 active_now = repository.active_job_count(existing_company, raw_sources)

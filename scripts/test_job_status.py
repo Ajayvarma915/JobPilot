@@ -189,8 +189,21 @@ def test_job_from_a_remote_board_is_checked_on_that_board() -> None:
         listed = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
         check(listed["status"] == "open" and "weworkremotely" in listed["reason"], f"still on the board -> open: {listed}")
         board_lists(["w2", "w3"])
-        gone = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
-        check(gone["status"] == "closed" and not gone["is_active"], f"gone from a normal board answer -> closed: {gone}")
+        missing = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
+        check(missing["status"] == "unknown" and missing["is_active"],
+              f"a board shows only recent postings, so a missing job is never closed by this check: {missing}")
+
+        # A board with a search is asked for the job by title before giving up (Himalayas' feed is only the newest jobs).
+        searched = []
+
+        class FakeSearchableBoard(FakeBoard):
+            def find_listed(self, title, external_id):
+                searched.append((title, external_id))
+                return True
+
+        remote_boards.COLLECTORS["weworkremotely"] = lambda **kwargs: FakeSearchableBoard(["w2"])
+        found = client.post(f"/api/jobs/{ids['w1']}/verify-open").json()
+        check(found["status"] == "open" and searched == [("Backend Engineer w1", "weworkremotely-w1")], f"found by search -> open: {found}")
         board_lists([])
         check(client.post(f"/api/jobs/{ids['w2']}/verify-open").json()["status"] == "unknown", "an empty board answer closes nothing")
         board_lists(RuntimeError("HTTP 503"))

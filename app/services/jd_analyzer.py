@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Iterable
 
+from app.services.target_role_policy import extract_minimum_experience_years
+
 
 @dataclass
 class JobAnalysis:
@@ -410,10 +412,8 @@ class JobDescriptionAnalyzer:
             if skill not in required_skills
         ]
 
-        required_years_min = self._extract_required_years(
-            clean_description,
-            sections,
-        )
+        # The same reader the job filter uses, so a score can never disagree with why a job is shown.
+        required_years_min = extract_minimum_experience_years(description)
 
         preferred_years_min = self._extract_preferred_years(
             clean_description,

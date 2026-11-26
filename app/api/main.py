@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from app.applications.tracker import router as applications_router
@@ -103,8 +103,6 @@ from app.services.job_match_cache import (
     ensure_match_cache_table,
     load_cached_matches,
     profile_fingerprint,
-    release_cache_warmup,
-    reserve_cache_warmup,
     save_cached_match,
 )
 from app.services.job_matcher import JobMatcher
@@ -657,55 +655,6 @@ def _serialize_match(result: Any) -> dict[str, Any]:
     }
 
 
-def _warm_match_cache(
-    job_ids: list[int],
-    profile_hash: str,
-) -> None:
-    """Populate missing cache records using the application's database."""
-    if not job_ids:
-        return
-
-    db: Session | None = None
-
-    try:
-        ensure_match_cache_table(engine)
-        db = SessionLocal()
-
-        profile = _candidate_profile()
-        if profile_fingerprint(profile) != profile_hash:
-            return
-
-        matcher = JobMatcher(candidate_profile=profile)
-        processed = 0
-
-        for job_id in job_ids:
-            job = db.get(Job, job_id)
-            if job is None:
-                continue
-
-            if job.id in load_cached_matches(db, [job], profile_hash):
-                continue
-
-            match_data = _serialize_match(matcher.match(job))
-            save_cached_match(db, job, profile_hash, match_data)
-            processed += 1
-
-            if processed % 20 == 0:
-                db.commit()
-
-        db.commit()
-
-    except Exception:
-        if db is not None:
-            db.rollback()
-        logger.exception("Job match-cache warm-up failed.")
-
-    finally:
-        if db is not None:
-            db.close()
-        release_cache_warmup(job_ids, profile_hash)
-
-
 # ---------------------------------------------------------------------
 # Resume evidence helpers
 # ---------------------------------------------------------------------
@@ -1232,6 +1181,7 @@ def job_suggestions(
     filters = [
         Job.is_active.is_(True),
         job_review.not_hidden_clause(),
+        job_review.confirmed_clause(db),
         or_(
             Job.title.ilike(pattern),
             Company.name.ilike(pattern),
@@ -1334,7 +1284,6 @@ NEW_JOB_DAYS = 3
 
 @app.get("/api/jobs")
 def list_jobs(
-    background_tasks: BackgroundTasks,
     q: str | None = Query(default=None, max_length=200),
     company: str | None = Query(default=None, max_length=200),
     location: str | None = Query(default=None, max_length=200),
@@ -1362,6 +1311,7 @@ def list_jobs(
 
     if active_only:
         filters.append(Job.is_active.is_(True))
+        filters.append(job_review.confirmed_clause(db))
 
     if q and q.strip():
         pattern = f"%{q.strip()}%"
@@ -1447,107 +1397,33 @@ def list_jobs(
         (row[0] for row in candidates),
         profile_hash,
     )
-    cache_ready = len(cached_matches) == len(candidates)
 
-    page_results: list[
-        tuple[Job, Company, str | None, int, dict[str, Any]]
-    ] = []
-
-    if cache_ready:
-        ranked = [
-            (
-                job,
-                company_obj,
-                matched_location,
-                title_match,
-                cached_matches[int(job.id)],
-            )
-            for job, company_obj, matched_location, title_match in candidates
-        ]
-
-        ranked.sort(
-            key=lambda row: (
-                float(row[4].get("score", 0)),
-                row[3],
-                (
-                    row[0].last_seen_at.isoformat()
-                    if row[0].last_seen_at
-                    else ""
-                ),
-                row[0].id or 0,
-            ),
-            reverse=True,
-        )
-        page_results = ranked[offset:offset + limit]
-
-    else:
-        page_candidates = candidates[offset:offset + limit]
-
-        if any(
-            int(row[0].id) not in cached_matches
-            for row in page_candidates
-        ):
-            matcher = JobMatcher(candidate_profile=profile)
-        else:
-            matcher = None
-
-        for job, company_obj, matched_location, title_match in page_candidates:
-            job_id = int(job.id)
-            match_data = cached_matches.get(job_id)
-
-            if match_data is None:
-                assert matcher is not None
-                match_data = _serialize_match(matcher.match(job))
-                save_cached_match(db, job, profile_hash, match_data)
-                cached_matches[job_id] = match_data
-
-            page_results.append(
-                (
-                    job,
-                    company_obj,
-                    matched_location,
-                    title_match,
-                    match_data,
-                )
-            )
-
+    # Score every job before cutting pages. Ordering page 1 by date and page 2 by score showed some jobs
+    # twice and never showed others. Scores are cached, so this costs time only for new or changed jobs.
+    matcher: JobMatcher | None = None
+    for job, _, _, _ in candidates:
+        job_id = int(job.id)
+        if job_id not in cached_matches:
+            matcher = matcher or JobMatcher(candidate_profile=profile)
+            cached_matches[job_id] = _serialize_match(matcher.match(job))
+            save_cached_match(db, job, profile_hash, cached_matches[job_id])
+    if matcher is not None:
         db.commit()
 
-        page_results.sort(
-            key=lambda row: (
-                float(row[4].get("score", 0)),
-                row[3],
-                (
-                    row[0].last_seen_at.isoformat()
-                    if row[0].last_seen_at
-                    else ""
-                ),
-                row[0].id or 0,
-            ),
-            reverse=True,
-        )
-
-    pending_ids = [
-        int(job.id)
-        for job, _, _, _ in candidates
-        if int(job.id) not in cached_matches
+    ranked = [
+        (job, company_obj, matched_location, title_match, cached_matches[int(job.id)])
+        for job, company_obj, matched_location, title_match in candidates
     ]
-
-    scheduled_ids: list[int] = []
-
-    # Do not warm IDs from test databases in the real application database.
-    if request_engine is engine and pending_ids:
-        scheduled_ids = reserve_cache_warmup(
-            pending_ids,
-            profile_hash,
-        )
-
-        if scheduled_ids:
-            background_tasks.add_task(
-                _warm_match_cache,
-                scheduled_ids,
-                profile_hash,
-            )
+    ranked.sort(
+        key=lambda row: (
+            float(row[4].get("score", 0)),
+            row[3],
+            row[0].last_seen_at.isoformat() if row[0].last_seen_at else "",
+            row[0].id or 0,
+        ),
+        reverse=True,
+    )
+    page_results = ranked[offset:offset + limit]
 
     items: list[dict[str, Any]] = []
     review_rows = {
@@ -1595,8 +1471,6 @@ def list_jobs(
             }
         )
 
-    cache_ready = len(cached_matches) == len(candidates)
-
     return {
         "items": items,
         "pagination": {
@@ -1631,17 +1505,9 @@ def list_jobs(
                 else None
             ),
             "candidate_experience_years": _candidate_experience_years(),
-            "sort": (
-                "candidate_match_score_descending"
-                if cache_ready
-                else "recent_listings_while_cache_warms"
-            ),
+            "sort": "candidate_match_score_descending",
         },
-        "match_cache": {
-            "ready": cache_ready,
-            "pending_jobs": len(pending_ids),
-            "scheduled_jobs": len(scheduled_ids),
-        },
+        "match_cache": {"ready": True, "pending_jobs": 0, "scheduled_jobs": 0},
     }
 
 
@@ -1660,7 +1526,7 @@ def recommendations(
     ensure_match_cache_table(db.get_bind())
     rows = db.execute(
         select(Job, Company).join(Company, Company.id == Job.company_id).where(
-            Job.is_active.is_(True), job_review.not_hidden_clause()
+            Job.is_active.is_(True), job_review.not_hidden_clause(), job_review.confirmed_clause(db)
         )
     ).all()
     candidates = [
@@ -1823,17 +1689,18 @@ def verify_job_open(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any
         if board not in COLLECTORS:
             return answer(JOB_UNKNOWN, f"JobPilot does not know the job board '{board}', so it cannot be checked there.")
         try:
-            listed = COLLECTORS[board](fetch_details=False).collect()
+            collector = COLLECTORS[board](fetch_details=False)
+            listed = collector.collect()
+            found = bool(job.external_id) and any(str(item.get("external_id")) == job.external_id for item in listed)
+            if not found and job.external_id and hasattr(collector, "find_listed"):
+                found = collector.find_listed(job.title, job.external_id)
         except Exception as exc:  # noqa: BLE001 - any source problem must leave the job untouched
             return answer(JOB_UNKNOWN, f"The job board could not be read right now ({type(exc).__name__}: {str(exc)[:120]}); the job was left unchanged.")
-        listed_ids = {str(item.get("external_id")) for item in listed if item.get("external_id") not in (None, "")}
-        stored_active = int(db.scalar(select(func.count()).select_from(Job).where(Job.source == source, Job.is_active.is_(True))) or 0)
-        status, reason = decide_job_status(external_id=job.external_id, fetched_ids=listed_ids, stored_active_count=stored_active)
-        if status == JOB_OPEN:
-            reason = f"The job is still listed on {board}."
-        elif status == JOB_CLOSED:
-            reason = f"{board} answered normally and no longer lists this job."
-        return settle(status, reason)
+        if found:
+            return settle(JOB_OPEN, f"The job is still listed on {board}.")
+        # A board feed holds only recent postings, so "not found" is never proof that the job closed.
+        return answer(JOB_UNKNOWN, f"{board} did not show this job just now. Its feed holds only recent postings, "
+                                   "so this does not prove the job closed. Open the original posting to check.")
 
     # 2. Google has no per-job lookup in its list feed, so read the job's own page instead.
     if source == "google_careers":

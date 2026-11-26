@@ -1,6 +1,7 @@
 """Tests for the remote job board collectors and sync (fake feeds, temp database, no network)."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 import os
 import sys
 import tempfile
@@ -10,6 +11,7 @@ _TEMP_DIR = tempfile.TemporaryDirectory()
 os.environ["JOBPILOT_DATABASE_PATH"] = str(Path(_TEMP_DIR.name) / "test_remote_boards.db")
 
 from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import inspect, text  # noqa: E402
 
 from app.api import main as api_main  # noqa: E402
 from app.collectors.remote_boards import (  # noqa: E402
@@ -215,8 +217,17 @@ def test_sync_stores_by_eligibility_and_closes_gone_jobs() -> None:
     tiny = run([])
     check("closure check skipped" in (tiny.note or "") and tiny.removed == 0, f"a tiny answer closes nothing: {tiny.note}")
     check(run([one, two]).removed == 0, "both still listed, nothing closed")
+    just_missed = run([two, job("5", "Junior Software Engineer", "Worldwide", company="Zed")])
+    check(just_missed.removed == 0, f"missing from one recent-postings feed does not close a job seen today: {just_missed}")
+    session = SessionLocal()
+    try:  # pretend job 1 was last shown 20 days ago
+        old = session.query(Job).filter(Job.title == "Junior Software Engineer", Job.external_id.like("%1")).one()
+        old.last_seen_at = datetime.utcnow() - timedelta(days=20)
+        session.commit()
+    finally:
+        session.close()
     gone = run([two, job("5", "Junior Software Engineer", "Worldwide", company="Zed")])
-    check(gone.removed == 1, f"job 1 left the board, so it is closed: {gone}")
+    check(gone.removed == 1, f"job 1 has not been shown for over 14 days, so it is closed: {gone}")
     session = SessionLocal()
     try:
         check(session.query(Job).filter(Job.is_active.is_(False)).count() == 1, "exactly one job is closed")
@@ -229,7 +240,34 @@ def test_sync_stores_by_eligibility_and_closes_gone_jobs() -> None:
           and restricted.skip_reasons.get("region_not_open_to_india") == 1, f"restrictions are honoured: {restricted}")
 
 
+def test_list_pages_never_repeat_or_skip_jobs() -> None:
+    """Regression: before scores were cached, page 1 was cut by date and page 2 by score, so on a first load
+    146 remote rows held only 109 different jobs."""
+    Base.metadata.drop_all(bind=engine)
+    Base.metadata.create_all(bind=engine)
+    client = TestClient(api_main.app)
+    skills = ("Python", "Java", "Node.js", "Cobol", "Kafka")
+    run([job(str(100 + n), f"Software Engineer {skills[n % 5]} Team {n}", "Worldwide",
+             description=f"Minimum qualifications:\n1 year of experience with {skills[n % 5]}." + (" Redis and Docker." if n % 3 == 0 else ""))
+         for n in range(30)])
+    session = SessionLocal()
+    try:
+        session.execute(text("DELETE FROM job_match_cache")) if inspect(engine).has_table("job_match_cache") else None
+        session.commit()
+    finally:
+        session.close()
+    seen: list[int] = []
+    scores: list[float] = []
+    for offset in (0, 10, 20):
+        body = client.get("/api/jobs", params={"review_scope": "remote", "career_level": "all", "limit": 10, "offset": offset}).json()
+        seen += [item["id"] for item in body["items"]]
+        scores += [item["match"]["score"] for item in body["items"]]
+    check(len(seen) == 30 and len(set(seen)) == 30, f"30 jobs, each exactly once: {len(seen)} rows, {len(set(seen))} unique")
+    check(scores == sorted(scores, reverse=True), f"one ranking across all pages: {scores}")
+
+
 TESTS = [
+    ("List pages never repeat or skip jobs", test_list_pages_never_repeat_or_skip_jobs),
     ("Collectors normalise each board", test_collectors_normalise_each_board),
     ("YC, Jobicy and Working Nomads are read correctly", test_new_boards_normalise),
     ("Himalayas search adds India and worldwide results", test_himalayas_search_adds_india_and_worldwide_results),

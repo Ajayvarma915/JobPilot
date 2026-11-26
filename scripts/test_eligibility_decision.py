@@ -6,6 +6,7 @@ from app.api.main import (
     _is_early_career_suitable,
     _is_target_software_role,
 )
+from app.services.jd_analyzer import JobDescriptionAnalyzer
 from app.services.target_role_policy import (
     ELIGIBLE,
     ELIGIBLE_NEEDS_REVIEW,
@@ -117,7 +118,47 @@ def test_amazon_style_titles_and_business_domain_words() -> None:
     check(not _is_target_software_role("Manager, Software Development, Accounting Insights"), "managers are still excluded")
 
 
+# Shortened from real postings that the earlier reader got wrong.
+REAL_WORDINGS = (
+    (3.0, "the word 'requirements' in a sentence is not the heading",
+     "Key job responsibilities\n- Balance functional and non-functional requirements such as scale.\n- Own your responsibilities.\n"
+     "Basic qualifications:\n- 3+ years of non-internship professional software development experience\n"
+     "- 2+ years of non-internship design or architecture experience\nPreferred qualifications:\n- 5+ years of full life cycle experience"),
+    (3.0, "'N+ years building' needs no word 'experience'",
+     "What You will Need:\n\n3+ years building and shipping production frontend applications"),
+    (5.0, "every requirement must be met, so the largest counts",
+     "Requirements\nAt least 1 year of experience with Hybris\nAt least 3 years of experience with Angular\n"
+     "At least 5 years of experience in building user interfaces"),
+    (7.0, "a sentence naming preferred qualifications is not a preferred list",
+     "The preferred qualifications are a bonus, not a requirement.\nMinimum requirements\n7+ years of industry software engineering experience\n"
+     "Preferred qualifications\nExperience with payments"),
+    (5.0, "a figure marked with > in brackets",
+     "First-class understanding of NodeJs (>3 years)\nExcellent understanding of Redis (>5 years)"),
+    (4.0, "a new part after an optional line is still read",
+     "Good to have: Certification on GCP\n\nFunctional:\n\n4 to 5 years of relevant experience in cloud infrastructure"),
+    (2.0, "an advanced-degree alternative does not lower the figure",
+     "Minimum Qualifications\n2 years of experience with software development, or 1 year of experience with an advanced degree.\n"
+     "Preferred Qualifications\n5 years of experience with data structures"),
+    (2.0, "a range counts as its lower end",
+     "Experience and Education\n2–5 years of experience\nin software engineering"),
+    (None, "an optional list alone states no minimum",
+     "Minimum Qualifications\nBachelor's degree.\nPreferred Qualifications\n5 years of experience with recommendation engines."),
+    (None, "the employer's own history is not your experience",
+     "The team has 50+ years of combined Machine Learning experience. In the last 5 years we grew to 9000 customers. "
+     "We have 6+ years of experience serving brands. Applicants must be 18 years of age."),
+)
+
+
+def test_experience_wording_from_real_postings() -> None:
+    for expected, why, text in REAL_WORDINGS:
+        got = extract_minimum_experience_years(text)
+        check(got == expected, f"{why}: expected {expected}, got {got}")
+        check(JobDescriptionAnalyzer().analyze("Software Engineer", text).required_years_min == expected,
+              f"the match score reads the same figure ({why})")
+
+
 TESTS = [
+    ("Experience is read correctly from real posting wording", test_experience_wording_from_real_postings),
     ("Amazon-style titles and business-domain words", test_amazon_style_titles_and_business_domain_words),
     ("Degree length is not experience", test_degree_length_is_not_experience),
     ("API delegates to the central policy", test_api_delegates_to_policy),

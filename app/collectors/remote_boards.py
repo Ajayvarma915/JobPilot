@@ -189,6 +189,16 @@ class HimalayasCollector(_BoardCollector):
                     time.sleep(self.pause)
         return list(found.values())
 
+    def find_listed(self, title: str, external_id: str) -> bool:
+        """Search for one stored job by its title. The feed only holds the newest postings, so an older job
+        that is still open is usually only found this way."""
+        for variant in self.SEARCH_VARIANTS:
+            response = self.session.get(self.SEARCH_URL, params={"q": title, **variant, "page": 1}, timeout=self.timeout)
+            response.raise_for_status()
+            if any((self._from_raw(raw) or {}).get("external_id") == external_id for raw in response.json().get("jobs") or []):
+                return True
+        return False
+
     def collect(self) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
         cursor: str | None = None

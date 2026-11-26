@@ -7,8 +7,11 @@ never changed by a later sync.
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+from datetime import timedelta
+
+from sqlalchemy import or_, select, true
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.orm import Session
 
 from app.db.models import Job, JobReview
 
@@ -25,6 +28,36 @@ FLAG_TEXT = {
     "description_missing": "The source gave no description for this job.",
     "needs_review": "Something about this posting is ambiguous.",
 }
+
+
+# A job found by an update is listed only while updates keep confirming it.
+UNCONFIRMED_AFTER_DAYS = 14
+# "The latest update" is the time shared by at least this many jobs, so that re-checking a few single jobs
+# by hand cannot make everything else look old.
+_BULK_UPDATE_JOBS = 25
+# Added by you, never refreshed by an update, so age says nothing about them.
+_ADDED_BY_YOU = ("imported_link", "email_application")
+
+
+def confirmed_clause(db: Session):
+    """SQL condition: hide jobs no update has confirmed for a long time. Nothing is deleted or changed.
+
+    Age is measured against the latest update, not today, so a pause in updating hides nothing.
+    """
+    latest = db.scalar(
+        select(Job.last_seen_at)
+        .where(Job.is_active.is_(True), Job.source.not_in(_ADDED_BY_YOU), Job.last_seen_at.is_not(None))
+        .order_by(Job.last_seen_at.desc())
+        .offset(_BULK_UPDATE_JOBS - 1)
+        .limit(1)
+    )
+    if latest is None:
+        return true()
+    return or_(
+        Job.source.in_(_ADDED_BY_YOU),
+        Job.last_seen_at.is_(None),
+        Job.last_seen_at >= latest - timedelta(days=UNCONFIRMED_AFTER_DAYS),
+    )
 
 
 def ensure_review_table(bind: Engine | Connection) -> None:

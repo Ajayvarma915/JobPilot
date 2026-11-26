@@ -287,12 +287,19 @@ class JobRepository:
         self.db.flush()
         self._record_version(job, "removed")
 
-    def mark_source_missing_inactive(self, source: str, seen_external_ids: set[str]) -> list[Job]:
-        """For a feed that mixes many employers: close this source's jobs that are no longer listed."""
+    def mark_source_missing_inactive(
+        self, source: str, seen_external_ids: set[str], *, not_seen_since: datetime | None = None,
+    ) -> list[Job]:
+        """For a feed that mixes many employers: close this source's jobs that are no longer listed.
+
+        With `not_seen_since`, a missing job is closed only if it was also last seen before that time.
+        """
         now = datetime.utcnow()
         removed: list[Job] = []
         for job in self.db.scalars(select(Job).where(Job.source == source, Job.is_active.is_(True))).all():
             if job.external_id is not None and job.external_id in seen_external_ids:
+                continue
+            if not_seen_since is not None and job.last_seen_at is not None and job.last_seen_at >= not_seen_since:
                 continue
             if not self._has_versions(job):
                 self._record_version(job, "baseline", now=job.last_seen_at)
