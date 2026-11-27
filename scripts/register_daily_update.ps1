@@ -15,8 +15,13 @@ if ($Remove) {
 }
 $root = Split-Path -Parent $PSScriptRoot
 $script = Join-Path $root "scripts\daily_update.ps1"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -WorkingDirectory $root
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"" -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
+# By default Windows will not start a task on battery and stops it when you unplug, so both are switched off.
+# A run missed because the PC was off or asleep starts when it is next available.
+# No "only when the network is available" condition: in testing, the task was ended when Wi-Fi dropped.
+# The update itself waits for the network instead.
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 3)
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Description "Reads company career pages and remote job boards into JobPilot." -Force | Out-Null
 "Scheduled '$name' daily at $At. Run it now with:  Start-ScheduledTask -TaskName '$name'"

@@ -88,6 +88,10 @@ def _parse_log(running: bool) -> tuple[list[dict[str, Any]], str | None, str | N
             current = {"name": started.group(1), "state": "running", "summary": [], "error": None, "sources_done": 0}
             steps.append(current)
             buffer = []
+        elif current is not None and line.strip() == "=== RETRY ===":
+            # The step is being run again from the start: report only the new attempt.
+            buffer = []
+            current["sources_done"] = 0
         elif current is not None:
             buffer.append(line)
             if re.match(r"^\s+(success|FAILED|dry_run)", line):
@@ -119,22 +123,42 @@ def status() -> dict[str, Any]:
                 "interrupted": bool(state.get("interrupted")), "steps": steps, "current": current, "progress": progress if running else None}
 
 
-def start() -> bool:
-    """Start an update unless one is already running. Returns False when one is running."""
+def _launch(*, detached: bool) -> subprocess.Popen | None:
+    """Start the update process and record it, unless one is already running (then None)."""
     with _lock:
         state = _read_state()
         if state.get("state") == "running" and _pid_alive(state.get("pid")):
-            return False
+            return None
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         STEPS_FILE.write_text(json.dumps(STEPS), encoding="utf-8")
         log = open(LOG_FILE, "w", encoding="utf-8")  # noqa: SIM115 - handed to the child process
         flags = 0
         if os.name == "nt":
-            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | \
-                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if detached:
+                flags |= getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         process = subprocess.Popen([sys.executable, "-u", "-m", "scripts.run_job_update", str(STEPS_FILE)], cwd=str(PROJECT_ROOT),
                                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, creationflags=flags,
-                                   start_new_session=(os.name != "nt"))
+                                   start_new_session=(detached and os.name != "nt"),
+                                   # Job titles can hold any character; Windows' default code page cannot print them all.
+                                   env={**os.environ, "PYTHONUTF8": "1"})
         log.close()
         _write_state({"state": "running", "pid": process.pid, "started_at": _now(), "finished_at": None})
-        return True
+        return process
+
+
+def start() -> bool:
+    """Start an update unless one is already running. Returns False when one is running."""
+    return _launch(detached=True) is not None
+
+
+def run_and_wait() -> dict[str, Any] | None:
+    """For the scheduled daily update: the same update as the button, waited for. None if one is already running.
+
+    It shares the button's state and log files, so the two can never run at once and the app shows its progress.
+    """
+    process = _launch(detached=False)
+    if process is None:
+        return None
+    process.wait()
+    return status()

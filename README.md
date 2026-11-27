@@ -56,7 +56,7 @@ Jobs that pass every rule are written; ones with something unclear (often no sta
 
 ## Daily use
 
-1. **Update jobs:** press **Update jobs now** on the Discover screen (backs up the database first, reads every company page and the remote job boards, closes jobs that were taken down). To do it automatically every morning, run once: `powershell -ExecutionPolicy Bypass -File scripts\register_daily_update.ps1` (undo with `-Remove`).
+1. **Update jobs:** press **Update jobs now** on the Discover screen (backs up the database first, reads every company page and the remote job boards, closes jobs that were taken down). To do it automatically every morning, run once: `powershell -ExecutionPolicy Bypass -File scripts\register_daily_update.ps1` (add `-At 07:30` for another time, `-Remove` to undo). The scheduled run is the same update as the button, is skipped if one is already running, and keeps its history in `data\daily_update.log`. It runs only while you are logged in; a run missed while the PC was off starts when it is next available.
 2. **Confirm your resume:** after you change the PDF in `data/master_resume`, run `.\venv\Scripts\python.exe -m scripts.build_master_resume_store`, then confirm the statements in the panel at the top of the Resume screen. Tailored resumes use only confirmed statements.
 3. **Find, tailor, apply:** Discover (filter by company, "Only new"), **Tailor**, apply on the employer's own site, then press Confirm in the extension or track it by hand. JobPilot never submits anything.
 4. **A job from a company with no public list:** open its page and press **Save this job** in the browser extension, or paste the link under **Add a job by link**.

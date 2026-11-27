@@ -143,12 +143,78 @@ def test_second_start_while_running_is_refused() -> None:
     wait_until_done(client)
 
 
+def test_daily_run_keeps_history_and_never_overlaps_the_button() -> None:
+    from scripts import run_daily_update
+
+    history = Path(_TEMP_DIR.name) / "daily_history.log"
+    client = TestClient(api_main.app)
+    # A warning on stderr and a title Windows' default code page cannot print must not stop the update.
+    noisy = "import sys; print('a warning', file=sys.stderr); print('Remote \\U0001F30D Engineer'); print('Updated records       : 3')"
+    sync_runner.STEPS[:] = [("Only step", ["-c", noisy])]
+    check(run_daily_update.main(history) == 0, "a finished run succeeds")
+    text_ = history.read_text(encoding="utf-8")
+    check("a warning" in text_ and "\U0001F30D" in text_ and "result: finished" in text_, text_)
+    check(client.get("/api/sync/status").json()["state"] == "finished", "the app sees the scheduled run")
+
+    sync_runner.STEPS[:] = [("Broken step", ["-c", "import sys; sys.exit(2)"])]
+    check(run_daily_update.main(history) == 1, "a failed step makes the scheduled run fail")
+    check(history.read_text(encoding="utf-8").count("daily update =====") == 2, "each run is added to the history")
+
+    sync_runner.STEPS[:] = [("Slow step", ["-c", "import time; time.sleep(1.5)"])]
+    check(client.post("/api/sync/start").status_code == 202, "the button starts an update")
+    check(run_daily_update.main(history) == 0, "the scheduled run steps aside")
+    check("Skipped: an update was already running." in history.read_text(encoding="utf-8"), "and says so")
+    wait_until_done(client)
+
+
+def test_a_dropped_connection_is_waited_for_and_the_step_retried() -> None:
+    """Regression: Wi-Fi dropped during a scheduled run and all seven remote boards failed."""
+    import io
+    from contextlib import redirect_stdout
+
+    from scripts import run_job_update
+
+    saved = (run_job_update.network_up, run_job_update.subprocess.call, run_job_update.time.sleep)
+    run_job_update.time.sleep = lambda seconds: None
+    try:
+        def scenario(network: list[bool], exit_codes: list[int], args: list[str]) -> tuple[int, int, str]:
+            calls: list[list[str]] = []
+            answers = iter(network)
+            codes = iter(exit_codes)
+            run_job_update.network_up = lambda: next(answers)
+            run_job_update.subprocess.call = lambda command: calls.append(command) or next(codes)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = run_job_update.run_step(args)
+            return code, len(calls), out.getvalue()
+
+        sync_args = ["-m", "scripts.sync_remote_boards"]
+        # up at the start; the step fails and the network is down; down once more, then back
+        code, runs, text_ = scenario([True, False, False, False, True], [1, 0], sync_args)
+        check((code, runs) == (0, 2) and "=== RETRY ===" in text_, f"retried after the network returns: {code}, {runs}, {text_}")
+        code, runs, text_ = scenario([True, True], [1], sync_args)
+        check((code, runs) == (1, 1) and "RETRY" not in text_, "a failure with a working network is reported, not repeated")
+        code, runs, _ = scenario([], [1], ["-m", "scripts.score_jobs"])
+        check((code, runs) == (1, 1), "a step that does not read job sites never waits for the network")
+    finally:
+        run_job_update.network_up, run_job_update.subprocess.call, run_job_update.time.sleep = saved
+
+    sync_runner.LOG_FILE.write_text("\n".join([
+        "=== STEP Remote job boards ===", "  FAILED: no connection", "Boards: 0 ok, 7 failed", "The connection dropped during this step.",
+        "=== RETRY ===", "  success: raw=5", "Boards: 7 ok, 0 failed", "=== STEP Remote job boards EXIT 0 ===", "=== DONE ===", ""]),
+        encoding="utf-8")
+    steps, _, _ = sync_runner._parse_log(False)
+    check(steps[0]["summary"] == ["Boards: 7 ok, 0 failed"] and steps[0]["sources_done"] == 1, f"only the retry is reported: {steps}")
+
+
 TESTS = [
     ("Update runs its steps in order and reports the summary", test_update_runs_steps_in_order_and_reports),
     ("Progress is live and read from files", test_progress_is_live_and_survives_without_the_web_process),
     ("A stopped update is reported as interrupted", test_a_stopped_update_is_reported_as_interrupted),
     ("A database backup runs before the update steps", test_backup_runs_before_the_steps),
     ("A second start while running is refused", test_second_start_while_running_is_refused),
+    ("The daily run keeps a history and never overlaps the button", test_daily_run_keeps_history_and_never_overlaps_the_button),
+    ("A dropped connection is waited for and the step retried", test_a_dropped_connection_is_waited_for_and_the_step_retried),
 ]
 
 

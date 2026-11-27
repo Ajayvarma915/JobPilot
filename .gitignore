@@ -46,3 +46,4 @@ backups/
 
 # Job update runner state and log
 data/job_update*
+data/daily_update.log

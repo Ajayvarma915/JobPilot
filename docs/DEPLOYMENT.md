@@ -40,6 +40,8 @@ Backups use SQLite's online backup, are integrity-checked before they are kept, 
 
 ## Scheduled syncs
 
+For the normal daily update on your own Windows PC, use `scripts\register_daily_update.ps1` (see the README). Do not also schedule the command below; the two do not know about each other.
+
 `scripts/run_scheduled_sync.py` syncs the verified sources and saves a summary of what changed under `data\sync_reports\`. Example (daily 08:00, FAST mode):
 
 ```powershell
